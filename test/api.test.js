@@ -351,3 +351,43 @@ test('app files are revalidated on every load so new deploys show immediately', 
   });
   assert.equal(status, 304); // unchanged files are not re-downloaded
 });
+
+test('employee import: preview, skip clerical, create, then re-import updates without duplicates', async () => {
+  const rows = [
+    { 'Employee #': '9001', 'First Name': 'Alan', 'Last Name': 'Pierce', Phone: '(618)790-4668', Trade: 'Carpenter', 'Union Local': 'Zone 3 Carpenters', Classification: 'Carpenter Foreman', 'Hire Date': '6/22/2026', Active: 'Yes', Skills: 'OSHA 30; Forklift' },
+    { 'Employee #': '9002', 'First Name': 'Pat', 'Last Name': 'Budz', Classification: 'Project Manager', 'Hire Date': '2023-02-02' },
+    { 'Employee #': '9003', 'First Name': 'Ann', 'Last Name': 'Office', Trade: 'CLER', Classification: 'Clerical' },
+    { 'Employee #': '9004', 'First Name': '', 'Last Name': 'NoFirst' },
+    { 'Employee #': '9005', 'First Name': 'Bad', 'Last Name': 'Date', 'Hire Date': '31/31/2026' },
+  ];
+  assert.equal((await sup('POST', '/employees/import', { rows })).status, 403);
+
+  // Preview changes nothing
+  const pre = (await boss('POST', '/employees/import', { rows, skip: ['Clerical', 'CLER'] })).body;
+  assert.deepEqual(pre.summary, { create: 2, update: 0, skip: 1, error: 2 });
+  assert.equal(pre.committed, false);
+  assert.match(pre.results.find((r) => r.line === 5).reason, /First and last name/);
+  assert.match(pre.results.find((r) => r.line === 6).reason, /not a date/);
+  assert.ok(!(await boss('GET', '/employees')).body.some((e) => e.employee_no === '9001'));
+
+  // Commit is refused while errors remain
+  assert.equal((await boss('POST', '/employees/import', { rows, skip: ['Clerical', 'CLER'], commit: true })).status, 400);
+  const good = rows.slice(0, 3);
+  const done = (await boss('POST', '/employees/import', { rows: good, skip: ['Clerical', 'CLER'], commit: true })).body;
+  assert.deepEqual(done.summary, { create: 2, update: 0, skip: 1, error: 0 });
+  const all = (await boss('GET', '/employees?all=1')).body;
+  const alan = all.find((e) => e.employee_no === '9001');
+  assert.equal(alan.hire_date, '2026-06-22');
+  assert.equal(alan.union_local, 'Zone 3 Carpenters');
+  assert.deepEqual(alan.skills.map((s) => s.name).sort(), ['Forklift', 'OSHA 30']);
+  assert.ok(!all.some((e) => e.last_name === 'Office'));
+
+  // Re-import: matched by employee #, blank cells keep existing data, can deactivate
+  const again = (await boss('POST', '/employees/import', { rows: [{ 'Employee #': '9001', 'First Name': 'Alan', 'Last Name': 'Pierce', Phone: '', Classification: 'General Foreman', Active: 'No' }], commit: true })).body;
+  assert.deepEqual(again.summary, { create: 0, update: 1, skip: 0, error: 0 });
+  const alan2 = (await boss('GET', '/employees?all=1')).body.find((e) => e.employee_no === '9001');
+  assert.equal(alan2.classification, 'General Foreman');
+  assert.equal(alan2.phone, '(618)790-4668');
+  assert.equal(alan2.active, 0);
+  assert.equal((await boss('GET', '/employees?all=1')).body.filter((e) => e.employee_no === '9001').length, 1);
+});
