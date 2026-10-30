@@ -1,5 +1,5 @@
 'use strict';
-const { weekStart } = require('./dates');
+const { periodStart } = require('./dates');
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -29,7 +29,8 @@ function rateLookup(rateRows) {
  * Cost out a list of assignment rows.
  *
  * Hours used per row: verified actual hours when present, otherwise planned.
- * Overtime is assigned chronologically within each employee's Mon-Sun week
+ * Overtime is assigned chronologically within each employee's payroll week
+ * (settings.payroll_week_start, e.g. Wed–Tue)
  * (by date, then start time on split days): once the week passes the OT
  * threshold, every further hour is OT and is charged to whichever project it
  * was worked on. Each row uses the pay rate in effect on its work date.
@@ -43,6 +44,7 @@ function costAssignments(rows, rateFor, settings) {
   const otMult = Number(settings.ot_multiplier) || 1.5;
   const defBurden = Number(settings.default_burden_pct) || 0;
 
+  const startDow = Number(settings.payroll_week_start ?? 1);
   const sorted = [...rows].sort((a, b) =>
     a.employee_id - b.employee_id || a.work_date.localeCompare(b.work_date) ||
     (a.start_time || '99:99').localeCompare(b.start_time || '99:99') || a.id - b.id);
@@ -50,7 +52,7 @@ function costAssignments(rows, rateFor, settings) {
   const weekly = new Map();
   return sorted.map((r) => {
     const hours = r.status === 'no_show' ? 0 : (r.actual_hours ?? r.planned_hours ?? 0);
-    const key = `${r.employee_id}|${weekStart(r.work_date)}`;
+    const key = `${r.employee_id}|${periodStart(r.work_date, startDow)}`;
     const before = weekly.get(key) || 0;
     weekly.set(key, before + hours);
     const reg = Math.max(0, Math.min(hours, threshold - before));

@@ -373,7 +373,8 @@ function overDayMap() {
 }
 
 function chip(a, label = shortName(a)) {
-  const hrs = a.planned_hours !== 8 ? `<span class="hr">${fmtH(a.planned_hours)}h</span>` : '';
+  const hrs = a.source === 'timecard' ? `<span class="hr" title="Worked but not scheduled – from time card">${fmtH(a.actual_hours)}h TC</span>`
+    : a.planned_hours !== 8 ? `<span class="hr">${fmtH(a.planned_hours)}h</span>` : '';
   const dayTotal = S.sched ? overDayMap()[`${a.employee_id}|${a.work_date}`] : null;
   const over = dayTotal ? `<span class="over-flag" title="Scheduled ${fmtH(dayTotal)} hrs this day">⚠${fmtH(dayTotal)}</span>` : '';
   const st = a.status === 'scheduled' ? '' : a.status === 'no_show' ? 'no_show' : 'verified';
@@ -987,66 +988,187 @@ async function renderMy(page) {
 // Verify hours
 // ---------------------------------------------------------------------------
 S.verifyWeek = null; S.verifyProject = '';
+// Verify Hours: the payroll week (e.g. Wed–Tue). Import the weekly time card
+// export (Procore), compare it with the schedule, then adjust any number.
+const RECON = {
+  matched: ['Matches schedule', 'ok'], variance: ['Differs from schedule', 'warn'], unscheduled: ['Not scheduled – from time card', 'bad'],
+  no_timecard: ['No time card', 'warn'], not_imported: ['', ''],
+};
 async function renderVerify(page) {
-  if (!S.verifyWeek) S.verifyWeek = weekStart(addDays(todayStr(), new Date().getDay() === 1 ? -7 : 0));
+  if (!S.verifyWeek) S.verifyWeek = addDays(todayStr(), -7); // last payroll week by default
   const [r] = await Promise.all([api('GET', `/verification?start=${S.verifyWeek}&project_id=${S.verifyProject}`), S.projects ? null : loadLookups()]);
+  S.verifyWeek = r.start;
   const s = r.summary;
   const today = todayStr();
+  const imported = r.imports.length > 0;
+  const filter = S.verifyFilter || 'all';
+  const shown = r.rows.filter((x) => filter === 'all' || x.recon === filter);
   const pastPending = r.rows.filter((x) => x.status === 'scheduled' && x.work_date <= today);
   const byDay = {};
-  for (const x of r.rows) (byDay[x.work_date] ||= []).push(x);
+  for (const x of shown) (byDay[x.work_date] ||= []).push(x);
+  const periodLabel = `${dayLabel(r.start, { weekday: 'short', month: 'short', day: 'numeric' })} – ${dayLabel(r.end, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}`;
+  const chip = (key, label, n) => `<button class="${filter === key ? 'on' : ''}" data-filter="${key}">${label}${n !== undefined ? ` (${n})` : ''}</button>`;
+  const variance = (x) => {
+    if (x.status === 'scheduled') return '';
+    const d = (x.status === 'no_show' ? 0 : x.actual_hours ?? 0) - x.planned_hours;
+    return d === 0 ? '<span class="muted">0</span>' : `<b class="${d > 0 ? 'var-up' : 'var-down'}">${d > 0 ? '+' : ''}${fmtH(d)}</b>`;
+  };
 
   page.innerHTML = `
     <div class="toolbar"><h1 style="margin:0">Verify Hours</h1><span class="spacer"></span>
-      <button data-act="prev">‹</button><strong>${weekLabel(r.start)}</strong><button data-act="next">›</button></div>
+      <button data-act="prev" aria-label="Previous payroll week">‹</button><strong>Payroll week ${periodLabel}</strong><button data-act="next" aria-label="Next payroll week">›</button></div>
     <div class="toolbar">
+      ${isAdmin() ? '<button class="primary" data-act="import-tc">Import Procore time cards…</button>' : ''}
       <select data-act="proj"><option value="">All projects</option>${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, S.verifyProject)).join('')}</select>
       <span class="spacer"></span>
-      ${pastPending.length ? `<button class="ok" data-act="all">✓ Verify all ${pastPending.length} as scheduled (through today)</button>` : ''}
+      ${pastPending.length ? `<button class="ok" data-act="all">✓ Verify ${pastPending.length} remaining as scheduled</button>` : ''}
     </div>
+    <div class="tc-status small">${imported
+      ? r.imports.map((i) => `Time cards imported ${esc(i.imported_at.slice(0, 10))}${i.imported_by_name ? ` by ${esc(i.imported_by_name)}` : ''}: <b>${esc(i.filename || 'file')}</b> – ${i.line_count} lines, ${fmtH(i.total_hours)} h, ${esc(i.period_start)} to ${esc(i.period_end)}`).join('<br>')
+      : `No time cards imported for this payroll week yet.${isAdmin() ? ' Export the Procore time card report and click <b>Import Procore time cards</b>.' : ''}`}</div>
     <div class="stats">
-      <div class="stat"><div class="v">${fmtH(s.planned)}</div><div class="l">Projected hours</div></div>
+      <div class="stat"><div class="v">${fmtH(s.planned)}</div><div class="l">Scheduled hours</div></div>
+      <div class="stat"><div class="v">${imported ? fmtH(s.timecard) : '—'}</div><div class="l">Time card hours</div></div>
       <div class="stat"><div class="v">${fmtH(s.actual)}</div><div class="l">Verified actual hours</div></div>
-      <div class="stat ${s.variance < 0 ? 'bad' : s.variance > 0 ? 'warn' : 'ok'}"><div class="v">${s.variance > 0 ? '+' : ''}${fmtH(s.variance)}</div><div class="l">Variance (verified)</div></div>
+      <div class="stat ${s.variance < 0 ? 'bad' : s.variance > 0 ? 'warn' : 'ok'}"><div class="v">${s.variance > 0 ? '+' : ''}${fmtH(s.variance)}</div><div class="l">Actual vs scheduled</div></div>
       <div class="stat ${pastPending.length ? 'warn' : 'ok'}"><div class="v">${s.verified_count} / ${r.rows.length}</div><div class="l">Verified</div></div>
       <div class="stat ${s.no_show_count ? 'bad' : ''}"><div class="v">${s.no_show_count}</div><div class="l">No-shows</div></div>
     </div>
-    ${r.rows.length ? Object.entries(byDay).map(([day, rows]) => `
-      <h2>${dayLabel(day, { weekday: 'long', month: 'short', day: 'numeric' })} <span class="muted small">${rows.length} people · ${fmtH(rows.reduce((a, x) => a + x.planned_hours, 0))} h projected</span></h2>
-      <div class="table-wrap"><table class="list">
-        <thead><tr><th>Project</th><th>Employee</th><th class="right">Projected</th><th style="width:110px">Actual</th><th>Status</th><th></th></tr></thead>
-        <tbody>${rows.map((x) => `<tr data-id="${x.id}">
+    ${imported ? `<div class="seg recon-filter">${chip('all', 'All', r.rows.length)}${chip('matched', 'Matches', s.matched)}${chip('variance', 'Differs', s.variances)}${chip('unscheduled', 'Not scheduled', s.unscheduled)}${chip('no_timecard', 'No time card', s.no_timecard)}</div>` : ''}
+    ${shown.length ? Object.entries(byDay).map(([day, rows]) => `
+      <h2>${dayLabel(day, { weekday: 'long', month: 'short', day: 'numeric' })} <span class="muted small">${rows.length} entries · ${fmtH(rows.reduce((a, x) => a + x.planned_hours, 0))} h scheduled${imported ? ` · ${fmtH(rows.reduce((a, x) => a + (x.timecard_hours ?? 0), 0))} h on time cards` : ''}</span></h2>
+      <div class="table-wrap"><table class="list verify">
+        <thead><tr><th>Project</th><th>Employee</th><th class="right">Scheduled</th>${imported ? '<th class="right">Time card</th>' : ''}<th style="width:100px">Actual</th><th class="right">+/−</th><th>Status</th><th></th></tr></thead>
+        <tbody>${rows.map((x) => `<tr data-id="${x.id}" class="recon-${x.recon}">
           <td>${esc(x.job_number)}<div class="small muted">${esc(x.project_name)}</div></td>
           <td>${esc(fullName(x))}<div class="small muted">${esc(x.trade || '')}</div></td>
-          <td class="right">${fmtH(x.planned_hours)}</td>
-          <td><input type="number" step="0.25" min="0" max="24" value="${x.status === 'scheduled' ? x.planned_hours : x.actual_hours ?? 0}" data-actual></td>
-          <td>${x.status === 'scheduled' ? `<span class="pill ${day <= today ? 'warn' : ''}">${day <= today ? 'Pending' : 'Upcoming'}</span>`
-            : x.status === 'no_show' ? `<span class="pill bad">No-show</span>${x.verify_note ? `<div class="small">${esc(x.verify_note)}</div>` : ''}`
-            : `<span class="pill ok">${x.status === 'adjusted' ? 'Adjusted' : 'Verified'}</span>`}
+          <td class="right">${x.source === 'timecard' ? '<span class="muted">—</span>' : fmtH(x.planned_hours)}</td>
+          ${imported ? `<td class="right">${x.timecard_hours === null ? '<span class="muted">—</span>' : `<b>${fmtH(x.timecard_hours)}</b>`}
+            ${x.timecard_lines.length > 1 || (x.timecard_lines[0] && (x.timecard_lines[0].cost_code || x.timecard_lines[0].description)) ? `<div class="tc-lines">${x.timecard_lines.map((l) => `<div>${fmtH(l.hours)} h ${esc(l.cost_code || '')} ${esc(l.cost_code_name || '')}${l.description ? ` – <i>${esc(l.description)}</i>` : ''}</div>`).join('')}</div>` : ''}</td>` : ''}
+          <td><input type="number" step="0.25" min="0" max="24" value="${x.status === 'scheduled' ? x.planned_hours : x.actual_hours ?? 0}" data-actual aria-label="Actual hours"></td>
+          <td class="right">${variance(x)}</td>
+          <td>${x.recon && RECON[x.recon][0] ? `<span class="pill ${RECON[x.recon][1]}">${RECON[x.recon][0]}</span>` : ''}
+            ${x.source === 'timecard' ? '' : x.status === 'scheduled' ? `<span class="pill ${day <= today ? 'warn' : ''}">${day <= today ? 'Pending' : 'Upcoming'}</span>`
+              : x.status === 'no_show' ? '<span class="pill bad">No-show</span>'
+              : `<span class="pill job">${x.status === 'adjusted' ? 'Adjusted' : 'Verified'}</span>`}
+            ${x.verify_note && !/^(From time card|Not scheduled – from time card)$/.test(x.verify_note) ? `<div class="small">${esc(x.verify_note)}</div>` : ''}
             ${x.verified_by_name ? `<div class="small muted">${esc(x.verified_by_name)}</div>` : ''}</td>
-          <td class="nowrap"><button class="ok" data-v="verified" title="Confirm hours">✓</button> <button class="danger" data-v="no_show" title="No-show">✗</button>
-            ${x.status !== 'scheduled' ? '<button class="link" data-v="scheduled" title="Undo">undo</button>' : ''}</td>
+          <td class="nowrap"><button class="ok" data-v="verified" title="Save the actual hours">✓</button>
+            ${x.source === 'timecard' ? '<button class="danger" data-v="remove" title="Remove this time card entry">✕</button>' : '<button class="danger" data-v="no_show" title="No-show">✗</button>'}
+            ${x.status !== 'scheduled' && x.source !== 'timecard' ? '<button class="link" data-v="scheduled" title="Clear the verification">undo</button>' : ''}</td>
         </tr>`).join('')}</tbody>
-      </table></div>`).join('') : '<div class="card muted">Nothing scheduled this week.</div>'}`;
+      </table></div>`).join('') : `<div class="card muted">${filter === 'all' ? 'Nothing scheduled or on time cards this payroll week.' : 'Nothing in this group.'}</div>`}
+    ${r.unmatched.length ? `<h2>Time card lines that didn't match (${r.unmatched.length})</h2>
+      <div class="small muted" style="margin-bottom:6px">These people or jobs aren't in the app yet, so their hours aren't counted. Add them, then click Re-match.</div>
+      <div class="table-wrap"><table class="list"><thead><tr><th>Date</th><th>Employee</th><th>Job</th><th class="right">Hours</th><th>Cost code</th><th>Why</th><th></th></tr></thead>
+      <tbody>${r.unmatched.map((u) => `<tr><td class="nowrap">${esc(u.work_date)}</td><td>${esc(u.employee_name || '')} <span class="muted">#${esc(u.employee_no || '?')}</span></td>
+        <td>${esc(u.job_number || '')} <span class="small muted">${esc(u.project_name || '')}</span></td><td class="right">${fmtH(u.hours)}</td>
+        <td class="small">${esc([u.cost_code, u.cost_code_name].filter(Boolean).join(' '))}</td><td class="small">${esc(u.reason)}</td>
+        <td class="nowrap">${isAdmin() ? `${!u.employee_id ? `<button class="link" data-add-emp="${u.id}">Add employee</button>` : ''}${!u.project_id ? `<button class="link" data-add-job="${u.id}">Add job</button>` : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>
+      ${isAdmin() ? '<div class="toolbar" style="margin-top:8px"><button data-act="rematch">Re-match time cards</button></div>' : ''}` : ''}`;
 
-  const go = (w) => { S.verifyWeek = w; renderVerify(page); };
-  $('[data-act=prev]', page).onclick = () => go(addDays(S.verifyWeek, -7));
-  $('[data-act=next]', page).onclick = () => go(addDays(S.verifyWeek, 7));
+  const go = (d) => { S.verifyWeek = d; renderVerify(page); };
+  $('[data-act=prev]', page).onclick = () => go(addDays(r.start, -7));
+  $('[data-act=next]', page).onclick = () => go(addDays(r.start, 7));
   $('[data-act=proj]', page).onchange = (e) => { S.verifyProject = e.target.value; renderVerify(page); };
+  $$('[data-filter]', page).forEach((b) => (b.onclick = () => { S.verifyFilter = b.dataset.filter; renderVerify(page); }));
+  const imp = $('[data-act=import-tc]', page); if (imp) imp.onclick = () => importTimecardsModal(page);
   const all = $('[data-act=all]', page);
   if (all) all.onclick = async () => {
-    if (!confirm(`Confirm ${pastPending.length} assignments worked as scheduled?`)) return;
+    if (!confirm(`Confirm ${pastPending.length} entries worked as scheduled?`)) return;
     const res = await api('POST', '/verification/bulk', { ids: pastPending.map((x) => x.id) });
     toast(`Verified ${res.verified}`); renderVerify(page);
   };
   $$('tr[data-id] [data-v]', page).forEach((b) => (b.onclick = async () => {
-    const tr = b.closest('tr');
-    if (b.dataset.v === 'no_show') return noShowModal(r.rows.find((x) => x.id === Number(tr.dataset.id)), () => renderVerify(page));
+    const tr = b.closest('tr'); const row = r.rows.find((x) => x.id === Number(tr.dataset.id));
+    if (b.dataset.v === 'no_show') return noShowModal(row, () => renderVerify(page));
     try {
-      await api('POST', `/assignments/${tr.dataset.id}/verify`, { status: b.dataset.v, actual_hours: $('[data-actual]', tr).value });
+      if (b.dataset.v === 'remove') {
+        if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'remove?'; return; }
+        await api('DELETE', `/assignments/${row.id}`); toast('Removed'); return renderVerify(page);
+      }
+      await api('POST', `/assignments/${row.id}/verify`, { status: b.dataset.v, actual_hours: $('[data-actual]', tr).value });
       renderVerify(page);
     } catch (e) { toast(e.message, true); }
   }));
+  const rematch = async () => {
+    const res = await api('POST', '/timecards/rematch', { from: r.start, to: r.end });
+    toast(`Linked ${res.linked} line${res.linked === 1 ? '' : 's'}${res.still_unmatched ? `; ${res.still_unmatched} still unmatched` : ''}`);
+    renderVerify(page);
+  };
+  const rm = $('[data-act=rematch]', page); if (rm) rm.onclick = rematch;
+  $$('[data-add-emp]', page).forEach((b) => (b.onclick = () => {
+    const u = r.unmatched.find((x) => x.id === Number(b.dataset.addEmp));
+    const parts = String(u.employee_name || '').trim().split(/\s+/);
+    quickAddModal('Add employee from time card', [
+      ['first_name', 'First name', parts.slice(0, -1).join(' ')], ['last_name', 'Last name', parts.slice(-1)[0] || ''],
+      ['employee_no', 'Employee # (Procore Employee ID)', u.employee_no || ''], ['trade', 'Union trade', ''], ['classification', 'Classification', ''],
+    ], (f) => api('POST', '/employees', f), rematch);
+  }));
+  $$('[data-add-job]', page).forEach((b) => (b.onclick = () => {
+    const u = r.unmatched.find((x) => x.id === Number(b.dataset.addJob));
+    quickAddModal('Add job from time card', [['job_number', 'Job number', u.job_number || ''], ['name', 'Project name', u.project_name || '']],
+      (f) => api('POST', '/projects', { ...f, status: 'active' }), async () => { await loadLookups(); await rematch(); });
+  }));
+}
+
+// Small form used to add a missing employee or job straight from the time card review.
+function quickAddModal(title, fields, save, after) {
+  const m = modal({
+    title,
+    body: `<div class="grid2">${fields.map(([name, label, value]) => `<label>${esc(label)}<input name="${name}" value="${esc(value)}"></label>`).join('')}</div>`,
+    footer: '<button data-close>Cancel</button><button class="primary" data-act="go">Add and re-match</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    try { await save(formData(m.el)); m.close(); await after(); } catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+// Import the weekly Procore time card CSV: preview against the schedule, then import.
+function importTimecardsModal(page) {
+  let rows = []; let filename = '';
+  const m = modal({
+    title: 'Import Procore time cards',
+    wide: true,
+    body: `<div class="small muted">In Procore, export the time card report for the payroll week as CSV and choose it here. Lines are matched by
+        <b>Employee ID</b> (employee #) and <b>Project Number</b> (job number). Hours for the same person, day and job are added together across cost codes.
+        Importing the same dates again replaces those time card lines. Hand-entered changes on those days are replaced by the new time card totals.</div>
+      <label>Time card CSV<input type="file" accept=".csv,text/csv" data-act="file"></label>
+      <div id="tc-out"></div>`,
+    footer: '<button data-close>Cancel</button><button class="primary" data-act="go" disabled>Import</button>',
+  });
+  const out = $('#tc-out', m.el); const go = $('[data-act=go]', m.el);
+  $('[data-act=file]', m.el).onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    filename = f.name; errorBox(m.el, '');
+    rows = parseCsv(await f.text());
+    if (!rows.length) { out.innerHTML = ''; go.disabled = true; return errorBox(m.el, 'That file has no rows under the heading row.'); }
+    try {
+      const { preview: p } = await api('POST', '/timecards/import', { rows, filename });
+      out.innerHTML = `<div class="small" style="margin:8px 0">Dates <b>${esc(p.period.from)}</b> to <b>${esc(p.period.to)}</b> · ${p.lines} lines · ${p.people} people · <b>${fmtH(p.total_hours)} h</b></div>
+        <div class="stats">
+          <div class="stat ok"><div class="v">${p.matched}</div><div class="l">Match the schedule</div></div>
+          <div class="stat ${p.variances ? 'warn' : ''}"><div class="v">${p.variances}</div><div class="l">Differ from schedule</div></div>
+          <div class="stat ${p.unscheduled ? 'warn' : ''}"><div class="v">${p.unscheduled}</div><div class="l">Worked, not scheduled</div></div>
+          <div class="stat ${p.no_timecard ? 'warn' : ''}"><div class="v">${p.no_timecard}</div><div class="l">Scheduled, no time card</div></div>
+          <div class="stat ${p.unmatched_lines ? 'bad' : ''}"><div class="v">${p.unmatched_lines}</div><div class="l">Lines not matched</div></div>
+        </div>
+        ${p.replaces ? `<div class="alert warn-box">${p.replaces} time card lines already imported for these dates will be replaced.</div>` : ''}
+        ${p.unmatched.length ? `<div class="alert">Not in the app yet (these lines are kept and can be linked later):<ul>${p.unmatched.map((u) => `<li>${[u.employee && `Employee ${esc(u.employee)}`, u.job && `Job ${esc(u.job)}`].filter(Boolean).join(' · ')}</li>`).join('')}</ul></div>` : ''}
+        ${p.errors.length ? `<div class="alert bad">${p.errors.length} line(s) couldn't be read and will be skipped:<ul>${p.errors.slice(0, 10).map((x) => `<li>Row ${x.line}: ${esc(x.reason)}</li>`).join('')}</ul></div>` : ''}`;
+      go.disabled = false; go.textContent = `Import ${p.lines} lines`;
+    } catch (err) { errorBox(m.el, err.message); go.disabled = true; }
+  };
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const res = await api('POST', '/timecards/import', { rows, filename, commit: true });
+      m.close();
+      toast(`Imported ${res.preview.lines} lines: ${res.result.matched} match, ${res.result.variances} differ, ${res.result.unscheduled} not scheduled`);
+      S.verifyWeek = res.preview.period.from; S.verifyFilter = 'all';
+      renderVerify(page);
+    } catch (e) { errorBox(m.el, e.message); go.disabled = false; }
+  };
 }
 
 // A no-show needs a reason; it is kept on the employee's attendance history.
@@ -1731,6 +1853,7 @@ async function adminSettings(el) {
   el.innerHTML = `<div class="card"><div class="grid2" id="set-f">
       <label>Company / app name<input name="company_name" value="${esc(s.company_name)}"></label>
       <label>Default hours per day<input type="number" step="0.5" name="default_hours" value="${esc(s.default_hours)}"></label>
+      <label>Payroll week starts on<select name="payroll_week_start">${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => opt(i, d, s.payroll_week_start)).join('')}</select></label>
       <label>Warn when a person is over (hours / day)<input type="number" step="0.5" min="1" max="24" name="warn_daily_hours" value="${esc(s.warn_daily_hours)}"></label>
       <label>OT after (hours / week)<input type="number" name="ot_threshold_hours" value="${esc(s.ot_threshold_hours)}"></label>
       <label>OT multiplier<input type="number" step="0.1" name="ot_multiplier" value="${esc(s.ot_multiplier)}"></label>

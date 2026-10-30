@@ -3,7 +3,7 @@ const path = require('node:path');
 const express = require('express');
 const { tx, getSettings } = require('./db');
 const auth = require('./auth');
-const { isDate, addDays, weekStart, weekDates, daysBetween } = require('./dates');
+const { isDate, addDays, weekStart, periodStart, weekDates, daysBetween } = require('./dates');
 const { costAssignments, rateLookup, sumInto, round2 } = require('./payroll');
 
 class HttpError extends Error {
@@ -872,18 +872,42 @@ function createApp(db, opts = {}) {
   });
 
   // ---- hour verification -----------------------------------------------------------
+  // Verify Hours works on the payroll week (settings.payroll_week_start, e.g. Wed–Tue).
+  const payrollStart = (d) => periodStart(d || new Date().toISOString().slice(0, 10), Number(getSettings(db).payroll_week_start ?? 1));
+
   api.get('/verification', canSchedule, (req, res) => {
-    const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
+    const start = payrollStart(date(req.query.start, 'start'));
     const end = addDays(start, 6);
     const projectId = int(req.query.project_id);
     const rows = db.prepare(`${assignmentSelect} LEFT JOIN users v ON v.id = a.verified_by
       WHERE a.work_date BETWEEN ? AND ? AND a.approval_status = 'approved' ${projectId ? 'AND a.project_id = ?' : ''}
-      ORDER BY p.job_number, a.work_date, e.last_name`).all(...[start, end, ...(projectId ? [projectId] : [])]);
+      ORDER BY a.work_date, p.job_number, e.last_name`).all(...[start, end, ...(projectId ? [projectId] : [])]);
     const verifierNames = new Map(db.prepare('SELECT id, name FROM users').all().map((u) => [u.id, u.name]));
-    const summary = { planned: 0, actual: 0, verified_count: 0, pending_count: 0, no_show_count: 0, variance: 0 };
+    // Time card lines (cost codes) behind each person/day/job.
+    const lines = db.prepare(`SELECT * FROM timecard_entries WHERE work_date BETWEEN ? AND ? ORDER BY work_date, id`).all(start, end);
+    const byKey = new Map();
+    for (const l of lines) {
+      if (!l.employee_id || !l.project_id) continue;
+      const k = `${l.employee_id}|${l.project_id}|${l.work_date}`;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push({ cost_code: l.cost_code, cost_code_name: l.cost_code_name, description: l.description, hours: l.hours, time_type: l.time_type });
+    }
+    const hasImport = lines.length > 0;
+    const summary = { planned: 0, actual: 0, timecard: 0, verified_count: 0, pending_count: 0, no_show_count: 0, variance: 0,
+      matched: 0, variances: 0, unscheduled: 0, no_timecard: 0, unmatched: 0 };
     for (const r of rows) {
       r.verified_by_name = verifierNames.get(r.verified_by) || null;
+      r.timecard_lines = byKey.get(`${r.employee_id}|${r.project_id}|${r.work_date}`) || [];
+      // How this row compares with the time card.
+      r.recon = r.source === 'timecard' ? 'unscheduled'
+        : r.timecard_hours === null ? (hasImport ? 'no_timecard' : 'not_imported')
+          : r.timecard_hours === r.planned_hours ? 'matched' : 'variance';
+      if (r.recon === 'matched') summary.matched += 1;
+      if (r.recon === 'variance') summary.variances += 1;
+      if (r.recon === 'unscheduled') summary.unscheduled += 1;
+      if (r.recon === 'no_timecard') summary.no_timecard += 1;
       summary.planned += r.planned_hours;
+      summary.timecard += r.timecard_hours ?? 0;
       if (r.status === 'scheduled') summary.pending_count += 1;
       else {
         summary.verified_count += 1;
@@ -891,9 +915,162 @@ function createApp(db, opts = {}) {
         summary.actual += r.status === 'no_show' ? 0 : r.actual_hours ?? 0;
       }
     }
-    const verifiedPlanned = rows.filter((r) => r.status !== 'scheduled').reduce((s, r) => s + r.planned_hours, 0);
+    const unmatched = lines.filter((l) => !l.employee_id || !l.project_id).map((l) => ({
+      ...l, reason: [!l.employee_id && `Employee #${l.employee_no || '?'} ${l.employee_name || ''} is not in Employees`, !l.project_id && `Job ${l.job_number || '?'} is not in Projects`].filter(Boolean).join('; '),
+    }));
+    summary.unmatched = unmatched.length;
+    summary.timecard = round2(summary.timecard + 0);
+    const verifiedPlanned = rows.filter((r) => r.status !== 'scheduled').reduce((x, r) => x + r.planned_hours, 0);
     summary.variance = round2(summary.actual - verifiedPlanned);
-    res.json({ start, end, rows, summary });
+    const imports = db.prepare(`SELECT i.*, u.name AS imported_by_name FROM timecard_imports i LEFT JOIN users u ON u.id = i.imported_by
+      WHERE i.period_end >= ? AND i.period_start <= ? ORDER BY i.id DESC`).all(start, end);
+    res.json({ start, end, rows, summary, unmatched, imports });
+  });
+
+  // ---- time card import (Procore "timecards" CSV, parsed in the browser) ----------
+  const TC_FIELDS = {
+    work_date: ['date', 'workdate'], employee_name: ['employeename', 'employee', 'name'], employee_no: ['employeeid', 'employeeno', 'employeenumber', 'empid'],
+    project_name: ['projectname'], job_number: ['projectnumber', 'jobnumber', 'job'], description: ['description', 'notes'],
+    cost_code: ['costcodelongnumber', 'costcode', 'costcodenumber'], cost_code_name: ['costcodename'], cost_code_long: ['costcodelongname'],
+    billable: ['billable'], hours: ['hours', 'totalhours'], time_type: ['formattedtimetype', 'timetype', 'type'],
+  };
+  const tcField = (() => {
+    const m = new Map();
+    for (const [f, aliases] of Object.entries(TC_FIELDS)) for (const a of aliases) m.set(a, f);
+    return (h) => m.get(String(h).toLowerCase().replace(/[^a-z0-9]/g, '')) || null;
+  })();
+  const empByNo = db.prepare('SELECT id FROM employees WHERE employee_no = ? COLLATE NOCASE');
+  const empByFullName = db.prepare("SELECT id FROM employees WHERE (first_name || ' ' || last_name) = ? COLLATE NOCASE");
+  const projByJob = db.prepare('SELECT id FROM projects WHERE job_number = ? COLLATE NOCASE');
+  const matchEmployee = (no, name) => (no && empByNo.get(no)?.id) || (name && empByFullName.get(name)?.id) || null;
+  const matchProject = (job) => (job && projByJob.get(job)?.id) || null;
+
+  // Write time card totals onto the schedule for a date range: scheduled days get
+  // their actual hours; days worked but not scheduled get an "unscheduled" entry.
+  function reconcileTimecards(req, from, to) {
+    const groups = db.prepare(`SELECT employee_id, project_id, work_date, SUM(hours) AS hours FROM timecard_entries
+      WHERE work_date BETWEEN ? AND ? AND employee_id IS NOT NULL AND project_id IS NOT NULL GROUP BY 1, 2, 3`).all(from, to);
+    const key = (g) => `${g.employee_id}|${g.project_id}|${g.work_date}`;
+    const totals = new Map(groups.map((g) => [key(g), round2(g.hours)]));
+    const existing = db.prepare('SELECT * FROM assignments WHERE work_date BETWEEN ? AND ?').all(from, to);
+    const seen = new Set(); const out = { matched: 0, variances: 0, unscheduled: 0, cleared: 0 };
+    const upd = db.prepare(`UPDATE assignments SET timecard_hours = ?, actual_hours = ?, status = ?, verified_by = ?, verified_at = datetime('now'),
+      verify_note = ?, approval_status = 'approved', updated_at = datetime('now') WHERE id = ?`);
+    for (const a of existing) {
+      const k = key(a); const tc = totals.get(k);
+      if (tc !== undefined) {
+        seen.add(k);
+        const st = a.source === 'timecard' ? 'adjusted' : tc === a.planned_hours ? 'verified' : 'adjusted';
+        upd.run(tc, tc, st, req.user.id, 'From time card', a.id);
+        if (a.source === 'timecard') out.unscheduled += 1; else if (tc === a.planned_hours) out.matched += 1; else out.variances += 1;
+      } else if (a.source === 'timecard') {
+        db.prepare('DELETE FROM assignments WHERE id = ?').run(a.id); out.cleared += 1;
+      } else if (a.timecard_hours !== null) {
+        // Was on an earlier import of this range but not on this one: back to unverified.
+        db.prepare(`UPDATE assignments SET timecard_hours = NULL, actual_hours = NULL, status = 'scheduled', verified_by = NULL, verified_at = NULL,
+          verify_note = NULL WHERE id = ? AND verify_note = 'From time card'`).run(a.id);
+        db.prepare('UPDATE assignments SET timecard_hours = NULL WHERE id = ?').run(a.id);
+        out.cleared += 1;
+      }
+    }
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, actual_hours, timecard_hours, status, source,
+      approval_status, approved_by, approved_at, verified_by, verified_at, verify_note, created_by)
+      VALUES (?, ?, ?, 0, ?, ?, 'adjusted', 'timecard', 'approved', ?, datetime('now'), ?, datetime('now'), 'Not scheduled – from time card', ?)`);
+    for (const g of groups) {
+      if (seen.has(key(g)) || !(g.hours > 0)) continue;
+      ins.run(g.employee_id, g.project_id, g.work_date, round2(g.hours), round2(g.hours), req.user.id, req.user.id, req.user.id);
+      out.unscheduled += 1;
+    }
+    return out;
+  }
+
+  api.post('/timecards/import', adminOnly, (req, res) => {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+    if (!rows.length) throw bad('The file has no rows.');
+    if (rows.length > 20000) throw bad('That file is too large (over 20,000 lines).');
+    const commit = req.body.commit === true;
+    const lines = []; const errors = [];
+    rows.forEach((raw, idx) => {
+      const r = {};
+      for (const [k, v] of Object.entries(raw || {})) { const f = tcField(k); if (f && r[f] === undefined) r[f] = v; }
+      try {
+        const d = importDate(r.work_date);
+        if (!d) throw new Error('Missing date');
+        const h = importHours(r.hours, 'Hours');
+        if (h === null) throw new Error('Missing hours');
+        if (h < 0 || h > 24) throw new Error(`Hours ${h} must be between 0 and 24`);
+        const no = str(r.employee_no, 50); const name = str(r.employee_name, 200); const job = str(r.job_number, 50);
+        const longName = str(r.cost_code_long, 200);
+        lines.push({
+          work_date: d, employee_no: no, employee_name: name, employee_id: matchEmployee(no, name),
+          job_number: job, project_name: str(r.project_name, 200), project_id: matchProject(job),
+          cost_code: str(r.cost_code, 50) || (longName ? longName.split(' - ')[0] : null), cost_code_name: str(r.cost_code_name, 200) || longName,
+          description: str(r.description, 1000), time_type: str(r.time_type, 50), billable: str(r.billable, 20), hours: h,
+        });
+      } catch (e) { errors.push({ line: idx + 2, reason: e.message }); }
+    });
+    if (!lines.length) throw bad('No time card lines could be read.', { errors });
+    const from = lines.reduce((m, l) => (l.work_date < m ? l.work_date : m), lines[0].work_date);
+    const to = lines.reduce((m, l) => (l.work_date > m ? l.work_date : m), lines[0].work_date);
+    // Preview: compare totals with the approved schedule.
+    const totals = new Map();
+    for (const l of lines) {
+      if (!l.employee_id || !l.project_id) continue;
+      const k = `${l.employee_id}|${l.project_id}|${l.work_date}`;
+      totals.set(k, round2((totals.get(k) || 0) + l.hours));
+    }
+    const sched = db.prepare(`SELECT employee_id, project_id, work_date, planned_hours FROM assignments
+      WHERE work_date BETWEEN ? AND ? AND source = 'schedule' AND approval_status <> 'rejected'`).all(from, to);
+    const schedMap = new Map(sched.map((a) => [`${a.employee_id}|${a.project_id}|${a.work_date}`, a.planned_hours]));
+    let matched = 0, variances = 0, unscheduled = 0;
+    for (const [k, h] of totals) {
+      if (!schedMap.has(k)) { if (h > 0) unscheduled += 1; } else if (schedMap.get(k) === h) matched += 1; else variances += 1;
+    }
+    const noTimecard = [...schedMap.keys()].filter((k) => !totals.has(k)).length;
+    const unmatched = lines.filter((l) => !l.employee_id || !l.project_id);
+    const preview = {
+      period: { from, to }, lines: lines.length, total_hours: round2(lines.reduce((x, l) => x + l.hours, 0)),
+      people: new Set(lines.map((l) => l.employee_no || l.employee_name)).size,
+      matched, variances, unscheduled, no_timecard: noTimecard, errors,
+      unmatched: [...new Map(unmatched.map((l) => [`${l.employee_id ? '' : l.employee_no}|${l.project_id ? '' : l.job_number}`,
+        { employee: l.employee_id ? null : `#${l.employee_no || '?'} ${l.employee_name || ''}`.trim(), job: l.project_id ? null : `${l.job_number || '?'} ${l.project_name || ''}`.trim() }])).values()],
+      unmatched_lines: unmatched.length,
+      replaces: db.prepare('SELECT COUNT(*) AS n FROM timecard_entries WHERE work_date BETWEEN ? AND ?').get(from, to).n,
+    };
+    if (!commit) return res.json({ committed: false, preview });
+    const result = tx(db, () => {
+      // Re-importing a period replaces the time card lines for those dates.
+      db.prepare('DELETE FROM timecard_entries WHERE work_date BETWEEN ? AND ?').run(from, to);
+      const imp = Number(db.prepare('INSERT INTO timecard_imports (filename, period_start, period_end, line_count, total_hours, imported_by) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(str(req.body.filename, 200), from, to, lines.length, preview.total_hours, req.user.id).lastInsertRowid);
+      const ins = db.prepare(`INSERT INTO timecard_entries (import_id, work_date, employee_id, employee_no, employee_name, project_id, job_number, project_name,
+        cost_code, cost_code_name, description, time_type, billable, hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const l of lines) ins.run(imp, l.work_date, l.employee_id, l.employee_no, l.employee_name, l.project_id, l.job_number, l.project_name,
+        l.cost_code, l.cost_code_name, l.description, l.time_type, l.billable, l.hours);
+      return reconcileTimecards(req, from, to);
+    });
+    audit(req, 'import', 'timecards', null, { from, to, lines: lines.length, ...result });
+    res.json({ committed: true, preview, result });
+  });
+
+  // After adding a missing employee or job, link the leftover time card lines.
+  api.post('/timecards/rematch', adminOnly, (req, res) => {
+    const from = date(req.body.from, 'From', true); const to = date(req.body.to, 'To', true);
+    const left = db.prepare('SELECT * FROM timecard_entries WHERE work_date BETWEEN ? AND ? AND (employee_id IS NULL OR project_id IS NULL)').all(from, to);
+    let linked = 0;
+    const result = tx(db, () => {
+      for (const l of left) {
+        const eid = l.employee_id || matchEmployee(l.employee_no, l.employee_name);
+        const pid = l.project_id || matchProject(l.job_number);
+        if (eid !== l.employee_id || pid !== l.project_id) {
+          db.prepare('UPDATE timecard_entries SET employee_id = ?, project_id = ? WHERE id = ?').run(eid, pid, l.id);
+          if (eid && pid) linked += 1;
+        }
+      }
+      return reconcileTimecards(req, from, to);
+    });
+    audit(req, 'rematch', 'timecards', null, { from, to, linked });
+    res.json({ linked, still_unmatched: left.length - linked, result });
   });
 
   function applyVerify(req, id, b) {
@@ -910,9 +1087,11 @@ function createApp(db, opts = {}) {
       if (!str(b.note)) throw bad('Give a reason for the no-show (e.g. Sick – excused).');
     }
     const reset = status === 'scheduled';
+    // A hand-entered number differs from an imported time card total: say so.
+    const note = str(b.note, 500) || (status === 'verified' && cur.timecard_hours !== null && actual !== cur.timecard_hours ? `Adjusted by hand (time card ${cur.timecard_hours} h)` : null);
     db.prepare(`UPDATE assignments SET actual_hours = ?, status = ?, verified_by = ?, verified_at = ${reset ? 'NULL' : "datetime('now')"},
       verify_note = ?, updated_at = datetime('now') WHERE id = ?`)
-      .run(actual, finalStatus, reset ? null : req.user.id, str(b.note, 500), id);
+      .run(actual, finalStatus, reset ? null : req.user.id, note, id);
     return { id, status: finalStatus, actual_hours: actual };
   }
 
@@ -1016,7 +1195,9 @@ function createApp(db, opts = {}) {
   });
 
   api.get('/payroll/forecast', auth.requirePayroll, (req, res) => {
-    const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
+    const settings0 = getSettings(db);
+    const payDow = Number(settings0.payroll_week_start ?? 1);
+    const start = periodStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10), payDow);
     const weeks = Math.min(Math.max(int(req.query.weeks) || 4, 1), 26);
     const end = addDays(start, weeks * 7 - 1);
     const settings = getSettings(db);
@@ -1029,7 +1210,7 @@ function createApp(db, opts = {}) {
     const grand = sumInto(new Map(), 'all', {}, { hours: 0, reg_hours: 0, ot_hours: 0, wages: 0, burden: 0, fringe: 0, total: 0 });
     const missing = new Set();
     for (const c of costed) {
-      const wk = weekStart(c.work_date);
+      const wk = periodStart(c.work_date, payDow);
       sumInto(byWeek, wk, { week: wk }, c);
       sumInto(byProject, c.project_id, { project_id: c.project_id, job_number: c.job_number, project_name: c.project_name }, c);
       sumInto(byEmployee, c.employee_id, { employee_id: c.employee_id, name: `${c.last_name}, ${c.first_name}`, trade: c.trade }, c);
@@ -1041,7 +1222,7 @@ function createApp(db, opts = {}) {
     const weeksList = Array.from({ length: weeks }, (_, i) => addDays(start, i * 7));
     res.json({
       start, end, weeks: weeksList,
-      settings: { ot_threshold_hours: Number(settings.ot_threshold_hours), ot_multiplier: Number(settings.ot_multiplier), default_burden_pct: Number(settings.default_burden_pct) },
+      settings: { ot_threshold_hours: Number(settings.ot_threshold_hours), ot_multiplier: Number(settings.ot_multiplier), default_burden_pct: Number(settings.default_burden_pct), payroll_week_start: payDow },
       totals: grand,
       by_week: weeksList.map((w) => byWeek.get(w) || { week: w, hours: 0, reg_hours: 0, ot_hours: 0, wages: 0, burden: 0, fringe: 0, total: 0 }),
       by_project: [...byProject.values()].sort((a, b) => b.total - a.total),
@@ -1101,7 +1282,7 @@ function createApp(db, opts = {}) {
 
   api.get('/settings', adminOnly, (_req, res) => res.json(getSettings(db)));
   api.put('/settings', adminOnly, (req, res) => {
-    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours'];
+    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours', 'payroll_week_start'];
     const up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     for (const k of allowed) if (req.body[k] !== undefined && req.body[k] !== null && String(req.body[k]).trim() !== '') up.run(String(req.body[k]).trim().slice(0, 200), k);
     audit(req, 'update', 'settings', null, req.body);
