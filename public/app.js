@@ -1118,6 +1118,7 @@ async function renderEmployees(page) {
   page.innerHTML = `
     <div class="toolbar"><h1 style="margin:0">Employees</h1><span class="spacer"></span>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show inactive</label>
+      ${isAdmin() ? '<button data-act="import">Import from spreadsheet…</button>' : ''}
       ${canSchedule() ? '<button data-act="skills">Manage skills</button><button class="primary" data-act="new">+ New employee</button>' : ''}</div>
     <div class="toolbar">
       <input type="search" data-f="q" placeholder="Search name, phone, local…" style="flex:1;min-width:180px">
@@ -1149,6 +1150,7 @@ async function renderEmployees(page) {
   if (canSchedule()) {
     $('[data-act=new]', page).onclick = () => employeeModal({ active: 1, skills: [] }, skills);
     $('[data-act=skills]', page).onclick = () => skillsModal(skills);
+    const imp = $('[data-act=import]', page); if (imp) imp.onclick = importEmployeesModal;
   }
   draw();
 }
@@ -1206,6 +1208,97 @@ function employeeModal(e, skills) {
     if (!S.sched || S.sched.start !== S.week) S.sched = await api('GET', `/schedule?start=${S.week}`);
     if (!S.crew) await loadLookups();
     timeOffModal({ employee_id: e.id });
+  };
+}
+
+// Minimal CSV parser (quoted fields, embedded commas/quotes/newlines, BOM).
+function parseCsv(text) {
+  const rows = []; let row = []; let field = ''; let q = false;
+  text = text.replace(/^\uFEFF/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; } else if (c === '"') q = false; else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.some((x) => x.trim() !== '')) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.some((x) => x.trim() !== '')) rows.push(row);
+  if (!rows.length) return [];
+  const head = rows[0].map((h) => h.trim());
+  return rows.slice(1).map((r) => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? '').trim()])));
+}
+
+const IMPORT_TEMPLATE = 'Employee #,First Name,Last Name,Phone,Email,Trade,Union Local,Classification,Hire Date,Active,Skills,Notes\r\n'
+  + '2570,Alan,Pierce,(618)790-4668,,Carpenter,Zone 3 Carpenters,Carpenter Foreman,6/22/2026,Yes,OSHA 30; Forklift,\r\n';
+
+// Admin: import employees from a CSV. Preview first, then import.
+function importEmployeesModal() {
+  let rows = [];
+  const m = modal({
+    title: 'Import employees from a spreadsheet',
+    wide: true,
+    body: `<div class="small muted">Save your list as a <b>CSV</b> file (in Excel: File → Save As → CSV). Columns can be in any order; recognized headings are
+        Employee #, First Name, Last Name, Phone, Email, Trade, Union Local, Classification, Hire Date, Active, Skills (separate with ;) and Notes.
+        People are matched by Employee #, so importing an updated list later updates them instead of adding duplicates. Blank cells never erase what's already saved.
+        <button class="link" data-act="template">Download a template</button></div>
+      <div class="grid2">
+        <label>CSV file<input type="file" accept=".csv,text/csv" data-act="file"></label>
+        <label>Skip rows whose trade or classification is (comma separated)<input data-act="skip" value="Clerical, CLER"></label>
+      </div>
+      <div class="small muted">Never include Social Security numbers, pay rates or home addresses in this file. Pay rates go in Payroll → Pay rates.</div>
+      <div id="imp-out"></div>`,
+    footer: '<button data-close>Cancel</button><button class="primary" data-act="go" disabled>Import</button>',
+  });
+  const skipList = () => $('[data-act=skip]', m.el).value.split(',').map((x) => x.trim()).filter(Boolean);
+  const out = $('#imp-out', m.el); const go = $('[data-act=go]', m.el);
+  const show = (r) => {
+    const s = r.summary;
+    const label = { create: 'New', update: 'Update', skip: 'Skipped', error: 'Error' };
+    out.innerHTML = `<div class="stats" style="margin:8px 0">
+        <div class="stat ok"><div class="v">${s.create}</div><div class="l">New employees</div></div>
+        <div class="stat"><div class="v">${s.update}</div><div class="l">Updates to existing</div></div>
+        <div class="stat"><div class="v">${s.skip}</div><div class="l">Skipped (excluded)</div></div>
+        <div class="stat ${s.error ? 'bad' : ''}"><div class="v">${s.error}</div><div class="l">Rows with errors</div></div></div>
+      ${s.error ? '<div class="alert bad">Fix the rows marked Error in your file and choose it again. Nothing is imported while errors remain.</div>' : ''}
+      <div class="table-wrap" style="max-height:320px"><table class="list"><thead><tr><th>Row</th><th>Result</th><th>Name</th><th>Emp #</th><th>Classification / trade</th><th>Note</th></tr></thead>
+      <tbody>${r.results.map((x) => `<tr><td>${x.line}</td>
+        <td><span class="pill ${x.action === 'error' ? 'bad' : x.action === 'create' ? 'ok' : x.action === 'skip' ? '' : 'job'}">${label[x.action]}</span></td>
+        <td>${esc(x.name || '')}</td><td>${esc(x.employee_no || '')}</td><td>${esc([x.classification, x.trade].filter(Boolean).join(' · '))}</td>
+        <td class="small">${esc(x.reason || '')}</td></tr>`).join('')}</tbody></table></div>`;
+    go.disabled = !!s.error || !(s.create + s.update);
+    go.textContent = `Import ${s.create + s.update} employee${s.create + s.update === 1 ? '' : 's'}`;
+  };
+  const preview = async () => {
+    if (!rows.length) return;
+    try { show(await api('POST', '/employees/import', { rows, skip: skipList() })); } catch (e) { errorBox(m.el, e.message); }
+  };
+  $('[data-act=template]', m.el).onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([IMPORT_TEMPLATE], { type: 'text/csv' }));
+    a.download = 'employee-import-template.csv'; a.click();
+  };
+  $('[data-act=file]', m.el).onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    errorBox(m.el, '');
+    rows = parseCsv(await f.text());
+    if (!rows.length) { out.innerHTML = ''; go.disabled = true; return errorBox(m.el, 'That file has no rows under the heading row.'); }
+    preview();
+  };
+  $('[data-act=skip]', m.el).onchange = preview;
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const r = await api('POST', '/employees/import', { rows, skip: skipList(), commit: true });
+      m.close(); toast(`Imported: ${r.summary.create} new, ${r.summary.update} updated, ${r.summary.skip} skipped`);
+      renderEmployees($('#page'));
+    } catch (e) { errorBox(m.el, e.message); if (e.data?.results) show(e.data); }
   };
 }
 

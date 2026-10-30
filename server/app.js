@@ -202,6 +202,117 @@ function createApp(db, opts = {}) {
     res.json({ id });
   });
 
+  // ---- employee import (CSV rows parsed in the browser) ---------------------------
+  // Rows are matched to existing employees by employee # (then by first + last
+  // name), so re-importing an updated list updates people instead of duplicating
+  // them. Blank cells never erase existing data. Rows whose trade or
+  // classification is in `skip` (e.g. Clerical) are left out.
+  const IMPORT_FIELDS = {
+    employee_no: ['employeeno', 'employee', 'empno', 'employeenumber', 'empid', 'id'],
+    first_name: ['firstname', 'first'],
+    last_name: ['lastname', 'last'],
+    phone: ['phone', 'cellphone', 'cell', 'mobile', 'phoneno'],
+    email: ['email', 'emailaddress'],
+    trade: ['trade', 'uniontrade', 'craft'],
+    union_local: ['unionlocal', 'union', 'local', 'uniondescription'],
+    classification: ['classification', 'class', 'tradedescription', 'position', 'title'],
+    hire_date: ['hiredate', 'hired', 'startdate'],
+    active: ['active', 'status'],
+    skills: ['skills', 'certifications', 'certs', 'skillscertifications'],
+    notes: ['notes', 'note', 'comments'],
+  };
+  const fieldFor = (() => {
+    const m = new Map();
+    for (const [f, aliases] of Object.entries(IMPORT_FIELDS)) for (const a of aliases) m.set(a, f);
+    return (h) => m.get(String(h).toLowerCase().replace(/[^a-z0-9]/g, '')) || null;
+  })();
+  function importDate(v) {
+    const t = str(v, 20);
+    if (!t) return null;
+    if (isDate(t)) return t;
+    const mdy = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+    if (mdy) {
+      const y = mdy[3].length === 2 ? `20${mdy[3]}` : mdy[3];
+      const iso = `${y}-${mdy[1].padStart(2, '0')}-${mdy[2].padStart(2, '0')}`;
+      if (isDate(iso)) return iso;
+    }
+    throw new Error(`"${t}" is not a date (use M/D/YYYY or YYYY-MM-DD)`);
+  }
+  function importActive(v) {
+    const t = String(v ?? '').trim().toLowerCase();
+    if (!t) return null;
+    if (['yes', 'y', 'true', '1', 'active', 'full'].includes(t)) return 1;
+    if (['no', 'n', 'false', '0', 'inactive', 'terminated', 'laid off'].includes(t)) return 0;
+    throw new Error(`"${v}" is not Yes/No for Active`);
+  }
+
+  api.post('/employees/import', adminOnly, (req, res) => {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+    if (!rows.length) throw bad('The file has no rows.');
+    if (rows.length > 5000) throw bad('Import at most 5,000 rows at a time.');
+    const skip = (Array.isArray(req.body.skip) ? req.body.skip : []).map((x) => String(x).trim().toLowerCase()).filter(Boolean);
+    const commit = req.body.commit === true;
+
+    const byNo = db.prepare('SELECT * FROM employees WHERE employee_no = ? COLLATE NOCASE');
+    const byName = db.prepare('SELECT * FROM employees WHERE first_name = ? COLLATE NOCASE AND last_name = ? COLLATE NOCASE');
+    const results = []; const seen = new Set();
+    rows.forEach((raw, idx) => {
+      const line = idx + 2; // header is line 1
+      const r = {};
+      for (const [k, v] of Object.entries(raw || {})) { const f = fieldFor(k); if (f && r[f] === undefined) r[f] = v; }
+      try {
+        const rec = {
+          employee_no: str(r.employee_no, 50), first_name: str(r.first_name, 100), last_name: str(r.last_name, 100),
+          phone: str(r.phone, 50), email: str(r.email, 200), trade: str(r.trade, 100), union_local: str(r.union_local, 100),
+          classification: str(r.classification, 100), hire_date: importDate(r.hire_date), active: importActive(r.active),
+          notes: str(r.notes, 2000),
+          skills: String(r.skills ?? '').split(/[;|]/).map((x) => x.trim()).filter(Boolean).slice(0, 50),
+        };
+        const name = `${rec.first_name || ''} ${rec.last_name || ''}`.trim();
+        if (skip.length && [rec.trade, rec.classification].some((v) => v && skip.includes(v.toLowerCase()))) {
+          return results.push({ line, action: 'skip', name, reason: `${rec.classification || rec.trade} is excluded` });
+        }
+        if (!rec.first_name || !rec.last_name) throw new Error('First and last name are required');
+        const key = (rec.employee_no || name).toLowerCase();
+        if (seen.has(key)) throw new Error(`Duplicate of an earlier row (${rec.employee_no || name})`);
+        seen.add(key);
+        const existing = (rec.employee_no && byNo.get(rec.employee_no)) || byName.get(rec.first_name, rec.last_name);
+        results.push({ line, action: existing ? 'update' : 'create', name, employee_no: rec.employee_no, existing_id: existing?.id, rec,
+          classification: rec.classification, trade: rec.trade });
+      } catch (e) {
+        results.push({ line, action: 'error', name: `${r.first_name || ''} ${r.last_name || ''}`.trim(), reason: e.message });
+      }
+    });
+
+    const summary = { create: 0, update: 0, skip: 0, error: 0 };
+    for (const x of results) summary[x.action] += 1;
+    if (commit) {
+      if (summary.error) throw bad(`Fix the ${summary.error} row(s) with errors first.`, { results: results.map(({ rec, ...x }) => x), summary });
+      const cols = ['employee_no', 'first_name', 'last_name', 'phone', 'email', 'trade', 'union_local', 'classification', 'hire_date', 'notes'];
+      const addSkill = db.prepare('INSERT OR IGNORE INTO skills (name) VALUES (?)');
+      const skillId = db.prepare('SELECT id FROM skills WHERE name = ?');
+      const link = db.prepare('INSERT OR IGNORE INTO employee_skills (employee_id, skill_id) VALUES (?, ?)');
+      tx(db, () => {
+        for (const x of results) {
+          if (x.action !== 'create' && x.action !== 'update') continue;
+          const rec = x.rec; let id = x.existing_id;
+          if (x.action === 'create') {
+            id = Number(db.prepare(`INSERT INTO employees (${cols.join(', ')}, active) VALUES (${cols.map(() => '?').join(', ')}, ?)`)
+              .run(...cols.map((c) => rec[c]), rec.active ?? 1).lastInsertRowid);
+          } else {
+            const sets = cols.filter((c) => rec[c] !== null);
+            const vals = sets.map((c) => rec[c]);
+            if (rec.active !== null) { sets.push('active'); vals.push(rec.active); }
+            if (sets.length) db.prepare(`UPDATE employees SET ${sets.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...vals, id);
+          }
+          for (const sk of rec.skills) { addSkill.run(sk); link.run(id, skillId.get(sk).id); }
+        }
+      });
+      audit(req, 'import', 'employee', null, summary);
+    }
+    res.json({ committed: commit, summary, results: results.map(({ rec, existing_id, ...x }) => x) });
+  });
+
   api.delete('/employees/:id', adminOnly, (req, res) => {
     const id = int(req.params.id);
     const used = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE employee_id = ?').get(id).n;
