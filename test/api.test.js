@@ -344,7 +344,7 @@ test('superintendents request crew on their own jobs; the manager approves or re
 
 test('app files are revalidated on every load so new deploys show immediately', async () => {
   const origin = base.replace(/\/api$/, '');
-  for (const path of ['/', '/app.js', '/styles.css', '/#/schedule']) {
+  for (const path of ['/', '/app.js', '/styles.css', '/#/schedule', '/help.html', '/help/help.js']) {
     const r = await fetch(origin + path);
     assert.equal(r.status, 200);
     assert.equal(r.headers.get('cache-control'), 'no-cache', path);

@@ -22,6 +22,10 @@ A web app for scheduling field staff by project. It works in any browser on a co
 | **My Schedule** | Field staff with a linked login | A phone-friendly list of upcoming days, job, start time and task. |
 | **Admin** | Workforce Manager | Users and roles, payroll access, company settings, activity log (who changed what) and a one-click database backup. |
 
+## Help & user guide
+
+The **? Help** button in the app's top bar opens the built-in user guide (`public/help.html`) at the section for the current page. It covers every screen with screenshots, a quick start for each role, the weekly workflow, a symbols glossary, troubleshooting and an FAQ. Screenshots live in `public/help/img/` and use demo data only.
+
 ## Roles
 
 - **Workforce Manager (admin):** builds the schedule (entries are approved immediately), approves or rejects superintendents' requests, and has full access including users, settings, backups and payroll.

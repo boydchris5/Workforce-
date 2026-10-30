@@ -154,6 +154,10 @@ function currentRoute() {
   return ROUTES.find((r) => r.path === p && (!r.show || r.show())) || ROUTES[0];
 }
 
+// The user guide opens at the section for the page you're on.
+const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', admin: 'admin' };
+const helpLink = (path) => `/help.html#${HELP_SECTIONS[path] || 'welcome'}`;
+
 function shell() {
   const r = currentRoute();
   const roleName = { admin: 'Workforce Manager', super: 'Superintendent', viewer: 'Field' }[S.user.role];
@@ -161,7 +165,8 @@ function shell() {
     <header class="top">
       <button class="menu-btn" aria-label="Menu">☰</button>
       <a class="brand" href="#/schedule" title="${esc(S.settings.company_name || '')}"><img src="/logo.jpg" alt="Fager-McGee Commercial Construction"></a>
-      <nav>${ROUTES.filter((x) => !x.show || x.show()).map((x) => `<a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a>`).join('')}<a href="#" class="nav-account">My account</a></nav>
+      <nav>${ROUTES.filter((x) => !x.show || x.show()).map((x) => `<a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a>`).join('')}<a href="${helpLink(r.path)}" target="_blank" rel="noopener" class="nav-account">? Help &amp; user guide</a><a href="#" class="nav-account" data-act="account">My account</a></nav>
+      <a class="help-link" href="${helpLink(r.path)}" target="_blank" rel="noopener" title="Open the user guide for this page">? Help</a>
       <div class="who" title="Account">${esc(S.user.name)} · ${roleName} ▾</div>
     </header>
     <main id="page"></main>
@@ -169,7 +174,7 @@ function shell() {
   $('.menu-btn').onclick = () => $('header.top nav').classList.toggle('open');
   $$('header.top nav a').forEach((a) => a.addEventListener('click', () => $('header.top nav').classList.remove('open')));
   $('.who').onclick = accountMenu;
-  $('.nav-account').onclick = (e) => { e.preventDefault(); accountMenu(); };
+  $('[data-act=account]').onclick = (e) => { e.preventDefault(); accountMenu(); };
   r.render($('#page'));
 }
 
@@ -198,7 +203,8 @@ function renderLogin() {
       <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
       <div id="login-err"></div>
       <button class="primary" type="submit" style="justify-content:center">Sign in</button>
-    </form></div></div><footer class="site">${FOOTER}</footer>`;
+    </form>
+    <div class="small muted" style="text-align:center;margin-top:14px">Trouble signing in? Ask your Workforce Manager. · <a href="/help.html#signing-in" target="_blank" rel="noopener">User guide</a></div></div></div><footer class="site">${FOOTER}</footer>`;
   $('#login-form').onsubmit = async (e) => {
     e.preventDefault();
     try { await api('POST', '/login', formData(e.target)); await boot(); } catch (err) {
