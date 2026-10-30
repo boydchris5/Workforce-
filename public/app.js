@@ -199,7 +199,8 @@ async function boot() {
     shell();
   } catch { if (!S.user) renderLogin(); }
 }
-window.addEventListener('hashchange', () => S.user && shell());
+// Close any open dialog when the page changes (e.g. phone Back button).
+window.addEventListener('hashchange', () => { $('#modal-root').innerHTML = ''; if (S.user) shell(); });
 let wasMobile = mobile();
 window.addEventListener('resize', () => {
   if (mobile() !== wasMobile && S.user && currentRoute().path === 'schedule') { wasMobile = mobile(); renderSchedule($('#page')); }
@@ -585,15 +586,20 @@ function timeOffModal(pre) {
 async function renderMy(page) {
   const r = await api('GET', '/my-schedule');
   const today = todayStr();
-  page.innerHTML = `<h1>My Schedule</h1>
-    ${!r.linked ? '<div class="card muted">Your login is not linked to an employee record. Ask the workforce manager.</div>' : ''}
-    ${r.assignments.length ? r.assignments.map((a) => `<div class="pcard" style="${a.work_date === today ? 'border-color:var(--orange);border-width:2px' : ''}${a.work_date < today ? ';opacity:.6' : ''}">
+  const card = (a) => `<div class="pcard" style="${a.work_date === today ? 'border-color:var(--orange);border-width:2px' : ''}${a.work_date < today ? ';opacity:.6' : ''}">
       <div class="ph"><div><b>${dayLabel(a.work_date, { weekday: 'long', month: 'short', day: 'numeric' })}</b>${a.work_date === today ? ' <span class="pill warn">Today</span>' : ''}
         <div class="proj-name" style="margin-top:4px"><span class="proj-swatch" style="background:${esc(a.color || '#F15A22')}"></span>${esc(a.job_number)} – ${esc(a.project_name)}</div>
         ${a.task ? `<div class="small muted">${esc(a.task)}</div>` : ''}</div>
         <div class="right nowrap">${a.start_time ? `<b>${esc(a.start_time)}</b><br>` : ''}<span class="small muted">${fmtH(a.planned_hours)} hrs</span></div></div>
-    </div>`).join('') : r.linked ? '<div class="card muted">Nothing scheduled yet.</div>' : ''}
-    ${r.time_off?.length ? `<h2>Time off</h2>${r.time_off.map((o) => `<div class="chip off">${dayLabel(o.off_date)} ${esc(o.reason || '')}</div>`).join('')}` : ''}`;
+    </div>`;
+  // Today and upcoming first; past days collapsed underneath.
+  const upcoming = r.assignments.filter((a) => a.work_date >= today);
+  const past = r.assignments.filter((a) => a.work_date < today).reverse();
+  page.innerHTML = `<h1>My Schedule</h1>
+    ${!r.linked ? '<div class="card muted">Your login is not linked to an employee record. Ask the workforce manager.</div>' : ''}
+    ${r.linked ? (upcoming.map(card).join('') || '<div class="card muted">Nothing scheduled yet. Check back after the schedule is posted.</div>') : ''}
+    ${r.time_off?.length ? `<h2>Time off</h2>${r.time_off.map((o) => `<div class="chip off">${dayLabel(o.off_date)} ${esc(o.reason || '')}</div>`).join('')}` : ''}
+    ${past.length ? `<details class="past"><summary>Earlier days (${past.length})</summary>${past.map(card).join('')}</details>` : ''}`;
 }
 
 // ---------------------------------------------------------------------------

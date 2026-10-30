@@ -219,7 +219,10 @@ table.list tfoot td { font-weight: 700; background: var(--charcoal); color: #fff
 
 .private-banner { background: var(--charcoal); color: #fff; border-left: 5px solid var(--orange); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
 
-footer.site { text-align: center; color: var(--soft); font-size: 12px; padding: 18px 12px 28px; }
+details.past { margin-top: 16px; }
+details.past summary { cursor: pointer; font-weight: 700; color: var(--soft); padding: 8px 0; }
+details.past summary:hover { color: var(--orange); }
+footer.site { display: flex; flex-wrap: wrap; justify-content: center; row-gap: 4px; color: var(--soft); font-size: 12px; padding: 18px 12px 28px; }
 footer.site span { white-space: nowrap; }
 footer.site .dot { color: var(--orange); margin: 0 6px; }
 .print-head { display: none; }

@@ -4,6 +4,7 @@ services:
     name: workforce-scheduler
     runtime: docker
     plan: starter
+    region: ohio   # closest Render region to southern Illinois; cannot be changed after creation
     healthCheckPath: /api/health
     envVars:
       - key: ADMIN_USERNAME
