@@ -363,9 +363,10 @@ function chip(a, label = shortName(a)) {
 }
 
 function projectSub(p) {
-  const pct = p.budget_hours ? Math.round((p.hours_through_week / p.budget_hours) * 100) : null;
+  const budget = p.total_budget_hours ?? p.budget_hours;
+  const pct = budget ? Math.round((p.hours_through_week / budget) * 100) : null;
   return `<div class="small muted">Supt: ${esc(p.superintendent_name || '—')} · PM: ${esc(p.project_manager_name || '—')}</div>
-    ${pct !== null ? `<div class="small muted">${fmtH(p.hours_through_week)} / ${fmtH(p.budget_hours)} budget hrs (${pct}%)</div>
+    ${pct !== null ? `<div class="small muted">${fmtH(p.hours_through_week)} / ${fmtH(budget)} budget hrs (${pct}%)</div>
       <div class="bar ${pct > 100 ? 'over' : pct > 85 ? 'near' : ''}"><span style="width:${Math.min(pct, 100)}%"></span></div>` : ''}`;
 }
 
@@ -901,20 +902,26 @@ function copyWeekModal() {
 
 function timeOffModal(pre) {
   const d = S.sched;
+  const first = d.days.includes(todayStr()) ? todayStr() : d.days[0];
   const m = modal({
     title: 'Mark time off',
     body: `<label>Employee<select name="employee_id">${S.crew.map((e) => opt(e.id, `${e.last_name}, ${e.first_name}`, pre.employee_id)).join('')}</select></label>
-      <div class="days-pick">${d.days.map((day, i) => `<label><input type="checkbox" name="dates" data-multi="1" value="${day}">${DOW[i]} ${day.slice(5).replace('-', '/')}</label>`).join('')}</div>
-      <label>Reason<input name="reason" placeholder="Vacation, sick, training, union meeting…"></label>`,
+      <div class="grid2"><label>From<input type="date" name="from" value="${first}"></label><label>To<input type="date" name="to" value="${first}"></label></div>
+      <div class="grid2">
+        <label>Reason<select name="reason">${['Vacation', 'Sick / medical', 'Personal', 'Family leave', 'Jury duty', 'Union business', 'Training', 'Bereavement', 'Laid off', 'Other'].map((x) => opt(x, x)).join('')}</select></label>
+        <label>Note (optional)<input name="note" maxlength="150"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="weekdays_only" checked> Weekdays only</label>
+      <div class="small muted">Any future dates work – e.g. three weeks next spring. It also appears on the employee's record.</div>`,
     footer: `<button data-close>Cancel</button><button class="primary" data-act="go">Save</button>`,
   });
   $('[data-act=go]', m.el).onclick = async () => {
     const f = formData(m.el);
-    if (!f.dates.length) return errorBox(m.el, 'Pick at least one day.');
+    const body = { employee_id: f.employee_id, from: f.from, to: f.to, weekdays_only: f.weekdays_only, reason: [f.reason, f.note.trim()].filter(Boolean).join(' – ') };
     try {
-      const r = await api('POST', '/time-off', f);
-      if (r.conflicts.length) errorBox(m.el, `Saved ${r.added}. Not saved:`, r.conflicts);
-      else { m.close(); toast('Time off saved'); }
+      const r = await api('POST', '/time-off', body);
+      if (r.conflicts.length) errorBox(m.el, `Saved ${r.added} day(s). Not saved – already scheduled:`, r.conflicts);
+      else { m.close(); toast(`Time off saved (${r.added} day${r.added === 1 ? '' : 's'})`); }
       renderSchedule($('#page'));
     } catch (e) { errorBox(m.el, e.message); }
   };
@@ -980,7 +987,7 @@ async function renderVerify(page) {
           <td class="right">${fmtH(x.planned_hours)}</td>
           <td><input type="number" step="0.25" min="0" max="24" value="${x.status === 'scheduled' ? x.planned_hours : x.actual_hours ?? 0}" data-actual></td>
           <td>${x.status === 'scheduled' ? `<span class="pill ${day <= today ? 'warn' : ''}">${day <= today ? 'Pending' : 'Upcoming'}</span>`
-            : x.status === 'no_show' ? '<span class="pill bad">No-show</span>'
+            : x.status === 'no_show' ? `<span class="pill bad">No-show</span>${x.verify_note ? `<div class="small">${esc(x.verify_note)}</div>` : ''}`
             : `<span class="pill ok">${x.status === 'adjusted' ? 'Adjusted' : 'Verified'}</span>`}
             ${x.verified_by_name ? `<div class="small muted">${esc(x.verified_by_name)}</div>` : ''}</td>
           <td class="nowrap"><button class="ok" data-v="verified" title="Confirm hours">✓</button> <button class="danger" data-v="no_show" title="No-show">✗</button>
@@ -1000,11 +1007,32 @@ async function renderVerify(page) {
   };
   $$('tr[data-id] [data-v]', page).forEach((b) => (b.onclick = async () => {
     const tr = b.closest('tr');
+    if (b.dataset.v === 'no_show') return noShowModal(r.rows.find((x) => x.id === Number(tr.dataset.id)), () => renderVerify(page));
     try {
       await api('POST', `/assignments/${tr.dataset.id}/verify`, { status: b.dataset.v, actual_hours: $('[data-actual]', tr).value });
       renderVerify(page);
     } catch (e) { toast(e.message, true); }
   }));
+}
+
+// A no-show needs a reason; it is kept on the employee's attendance history.
+function noShowModal(a, after) {
+  const m = modal({
+    title: `No-show – ${fullName(a)}, ${dayLabel(a.work_date, { weekday: 'long', month: 'short', day: 'numeric' })}`,
+    body: `<div class="small muted">${esc(a.job_number)} ${esc(a.project_name)} · ${fmtH(a.planned_hours)} h scheduled</div>
+      <div class="grid2">
+        <label>Reason<select name="reason">${['Sick', 'Family emergency', 'No call / no show', 'Weather', 'Transportation', 'Injury', 'Personal', 'Other'].map((x) => opt(x, x)).join('')}</select></label>
+        <label>Excused?<select name="excused"><option value="Excused">Excused</option><option value="Unexcused">Unexcused</option></select></label>
+      </div>
+      <label>Details<input name="detail" maxlength="300" placeholder="e.g. Called the super at 6:15am"></label>
+      <div class="small muted">This is saved on ${esc(a.first_name)}'s attendance history (Employees → their record).</div>`,
+    footer: '<button data-close>Cancel</button><button class="danger" data-act="go">Mark no-show</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    const f = formData(m.el);
+    const note = `${f.reason} – ${f.excused.toLowerCase()}${f.detail ? `: ${f.detail}` : ''}`;
+    try { await api('POST', `/assignments/${a.id}/verify`, { status: 'no_show', note }); m.close(); toast('Marked no-show'); after(); } catch (e) { errorBox(m.el, e.message); }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,7 +1051,7 @@ async function renderProjects(page) {
     ['status', 'Status'], ['start_date', 'Dates'], ['hours_to_date', 'Hours to date', 'right'], ['verified_hours', 'Verified', 'right'], ['budget_pct', 'Budget'],
   ];
   const rows = projects
-    .map((p) => ({ ...p, budget_pct: p.budget_hours ? p.hours_to_date / p.budget_hours : null }))
+    .map((p) => ({ ...p, budget_pct: p.total_budget_hours ? p.hours_to_date / p.total_budget_hours : null }))
     .filter((p) => !filterPm || String(p.project_manager_employee_id) === filterPm)
     .sort((a, b) => {
       const x = a[sort.key]; const y = b[sort.key];
@@ -1035,6 +1063,7 @@ async function renderProjects(page) {
     <div class="toolbar"><h1 style="margin:0">Projects</h1><span class="spacer"></span>
       <select data-act="pm"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, filterPm)).join('')}</select>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show completed</label>
+      ${isAdmin() ? '<button data-act="import">Import from spreadsheet…</button>' : ''}
       ${canSchedule() ? '<button class="primary" data-act="new">+ New project</button>' : ''}</div>
     <div class="table-wrap"><table class="list sortable">
       <thead><tr>${cols.map(([k, l, cls]) => `<th class="${cls || ''}"><button class="sort-h ${sort.key === k ? 'on' : ''}" data-sort="${k}" aria-label="Sort by ${esc(l)}">${esc(l)}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`).join('')}</tr></thead>
@@ -1047,7 +1076,7 @@ async function renderProjects(page) {
           <td>${esc(p.superintendent_name || '')}</td><td>${statusPill(p.status)}</td>
           <td class="small nowrap">${esc(p.start_date || '')}${p.end_date ? ' → ' + esc(p.end_date) : ''}</td>
           <td class="right">${fmtH(p.hours_to_date)}</td><td class="right">${fmtH(p.verified_hours)}</td>
-          <td>${pct !== null ? `<div class="small">${fmtH(p.budget_hours)} h · ${pct}%</div><div class="bar ${pct > 100 ? 'over' : pct > 85 ? 'near' : ''}"><span style="width:${Math.min(pct, 100)}%"></span></div>` : '<span class="small muted">—</span>'}</td>
+          <td title="${esc(`Budget ${fmtH(p.budget_hours || 0)} h + change orders ${fmtH(p.co_hours || 0)} h = ${fmtH(p.total_budget_hours || 0)} h`)}">${pct !== null ? `<div class="small">${fmtH(p.total_budget_hours)} h${p.co_hours ? ` <span class="muted">(incl. ${p.co_hours > 0 ? '+' : ''}${fmtH(p.co_hours)} CO)</span>` : ''} · ${pct}%</div><div class="bar ${pct > 100 ? 'over' : pct > 85 ? 'near' : ''}"><span style="width:${Math.min(pct, 100)}%"></span></div>` : '<span class="small muted">—</span>'}</td>
         </tr>`;
       }).join('') || `<tr><td colspan="${cols.length}" class="muted">No projects${filterPm ? ' for this project manager' : ' yet'}.</td></tr>`}</tbody>
     </table></div>`;
@@ -1058,6 +1087,7 @@ async function renderProjects(page) {
     S.projSort = { key: k, dir: sort.key === k ? -sort.dir : 1 };
     renderProjects(page);
   }));
+  const imp = $('[data-act=import]', page); if (imp) imp.onclick = importProjectsModal;
   if (canSchedule()) {
     $('[data-act=new]', page).onclick = () => projectModal({ status: 'active' });
     $$('tr[data-id]', page).forEach((tr) => (tr.onclick = () => projectModal(projects.find((p) => p.id === Number(tr.dataset.id)))));
@@ -1086,24 +1116,52 @@ function projectModal(p) {
         <label>Project manager<select name="project_manager_employee_id"><option value="">—</option>${pms.map((e) => opt(e.id, label(e), p.project_manager_employee_id)).join('')}</select></label>
         <label>Superintendent / foreman<select name="superintendent_employee_id"><option value="">—</option>${supers.map((e) => opt(e.id, label(e), p.superintendent_employee_id)).join('')}</select></label>
         <label>Status<select name="status">${['planned', 'active', 'on_hold', 'complete'].map((s) => opt(s, s.replace('_', ' '), p.status)).join('')}</select></label>
-        <label>Budgeted labor hours<input type="number" name="budget_hours" min="0" value="${esc(p.budget_hours ?? '')}"></label>
+        <label>Original budget (labor hours)<input type="number" name="budget_hours" min="0" value="${esc(p.budget_hours ?? '')}"></label>
+        <label title="Hours already used before this job was set up in the app">Starting hours (already used)<input type="number" name="starting_hours" min="0" step="0.5" value="${esc(p.starting_hours ?? 0)}"></label>
         <label>Start date<input type="date" name="start_date" value="${esc(p.start_date || '')}"></label>
         <label>End date<input type="date" name="end_date" value="${esc(p.end_date || '')}"></label>
         <label>Board color<input type="color" name="color" value="${esc(p.color || '#F15A22')}"></label>
       </div>
       ${!supers.length || !pms.length ? `<div class="small muted">The lists come from Employees: superintendents and foremen by their classification, project managers by "Project Manager". ${!pms.length ? 'No one is classified Project Manager yet.' : ''}</div>` : ''}
       <label>Site address<input name="address" value="${esc(p.address || '')}"></label>
-      <label>Notes<textarea name="notes">${esc(p.notes || '')}</textarea></label>`,
+      <label>Notes<textarea name="notes">${esc(p.notes || '')}</textarea></label>
+      ${p.id ? '<div id="co-box" class="co-box"><div class="small muted">Loading change orders…</div></div>' : '<div class="small muted">Save the project first, then add change orders.</div>'}`,
     footer: `${p.id && isAdmin() ? '<button class="danger" data-act="del">Delete</button>' : ''}<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
   });
   $('[data-act=save]', m.el).onclick = async () => {
     try { await api(p.id ? 'PUT' : 'POST', p.id ? `/projects/${p.id}` : '/projects', formData(m.el)); m.close(); toast('Saved'); renderProjects($('#page')); } catch (e) { errorBox(m.el, e.message); }
   };
+  if (p.id) drawChangeOrders(p, $('#co-box', m.el));
   const del = $('[data-act=del]', m.el);
   if (del) del.onclick = async () => {
     if (!confirm(`Delete ${p.job_number}?`)) return;
     try { await api('DELETE', `/projects/${p.id}`); m.close(); toast('Deleted'); renderProjects($('#page')); } catch (e) { errorBox(m.el, e.message); }
   };
+}
+
+// Change order log on a project: each CO adds (or deducts) labor hours to the budget.
+async function drawChangeOrders(p, box) {
+  const list = await api('GET', `/projects/${p.id}/change-orders`);
+  const coTotal = list.reduce((sum, c) => sum + c.hours, 0);
+  const budget = (p.budget_hours || 0) + coTotal;
+  const editable = canEditProject(p.id);
+  box.innerHTML = `<div class="co-head"><b>Change orders</b>
+      <span class="small">Original ${fmtH(p.budget_hours || 0)} h ${coTotal >= 0 ? '+' : '−'} change orders ${fmtH(Math.abs(coTotal))} h = <b>${fmtH(budget)} h total budget</b>
+      · ${fmtH(p.hours_to_date || 0)} h used (incl. ${fmtH(p.starting_hours || 0)} starting)</span></div>
+    ${list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>CO #</th><th>Description</th><th>Date</th><th class="right">Hours</th><th></th></tr></thead>
+      <tbody>${list.map((c) => `<tr><td>${esc(c.co_number || '')}</td><td>${esc(c.description || '')}</td><td class="nowrap">${esc(c.co_date || c.created_at.slice(0, 10))}</td>
+        <td class="right">${c.hours > 0 ? '+' : ''}${fmtH(c.hours)}</td><td>${editable ? `<button class="link" data-del-co="${c.id}">remove</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">No change orders yet.</div>'}
+    ${editable ? `<div class="co-add"><input name="co_number" placeholder="CO #" aria-label="Change order number"><input name="description" placeholder="Description" aria-label="Description">
+      <input type="date" name="co_date" aria-label="Date"><input type="number" step="0.5" name="hours" placeholder="Hours (− for deduct)" aria-label="Hours"><button data-act="add-co">Add change order</button></div>` : ''}`;
+  const add = $('[data-act=add-co]', box);
+  if (add) add.onclick = async () => {
+    const f = Object.fromEntries($$('.co-add [name]', box).map((x) => [x.name, x.value]));
+    try { await api('POST', `/projects/${p.id}/change-orders`, f); toast('Change order added'); drawChangeOrders(p, box); renderProjects($('#page')); } catch (e) { toast(e.message, true); }
+  };
+  $$('[data-del-co]', box).forEach((b) => (b.onclick = async () => {
+    if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'click again to remove'; return; }
+    await api('DELETE', `/change-orders/${b.dataset.delCo}`); drawChangeOrders(p, box); renderProjects($('#page'));
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,12 +1239,16 @@ function employeeModal(e, skills) {
           <input type="date" data-exp="${esc(s.name)}" value="${esc(have.get(s.name) || '')}" style="width:150px" ${dis}></div>`).join('')}</div>
         ${ro ? '' : '<input placeholder="Add new skills, comma separated (e.g. OSHA 30, Forklift)" data-newskills style="margin-top:8px">'}</div>
       <label>Notes<textarea name="notes" ${dis}>${esc(e.notes || '')}</textarea></label>
-      ${e.id ? `<label class="check"><input type="checkbox" name="active" ${e.active ? 'checked' : ''} ${dis}> Active</label><div id="emp-hist" class="small muted">Loading history…</div>` : ''}`,
+      ${e.id ? `<label class="check"><input type="checkbox" name="active" ${e.active ? 'checked' : ''} ${dis}> Active</label>
+        <div id="emp-off" class="co-box"></div><div id="emp-ns"></div><div id="emp-hist" class="small muted">Loading history…</div>` : ''}`,
     footer: ro ? '<button data-close>Close</button>' : `${e.id && isAdmin() ? '<button class="danger" data-act="del">Delete</button>' : ''}<span class="spacer"></span>
-      ${e.id ? '<button data-act="off">Time off…</button>' : ''}<button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
+<button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
   });
   if (e.id) api('GET', `/employees/${e.id}`).then((full) => {
     const h = $('#emp-hist', m.el); if (!h) return;
+    drawTimeOff(e, full.time_off, $('#emp-off', m.el));
+    $('#emp-ns', m.el).innerHTML = full.no_shows.length ? `<b class="small">No-shows (${full.no_shows.length})</b><div class="table-wrap" style="max-height:160px;margin-top:4px"><table class="list"><tbody>${full.no_shows.map((n) => `<tr>
+      <td class="nowrap">${esc(n.work_date)}</td><td>${esc(n.job_number)}</td><td>${esc(n.verify_note || '')}</td><td class="small muted">${esc(n.verified_by_name || '')}</td></tr>`).join('')}</tbody></table></div>` : '';
     const total = full.recent.reduce((s, r) => s + (r.actual_hours ?? r.planned_hours), 0);
     h.innerHTML = full.recent.length ? `<b>Recent work</b> (${full.recent.length} days, ${fmtH(total)} h)<div class="table-wrap" style="max-height:200px;margin-top:4px"><table class="list"><tbody>${full.recent.map((r) => `<tr><td>${esc(r.work_date)}</td><td>${esc(r.job_number)} ${esc(r.project_name)}</td><td class="right">${fmtH(r.actual_hours ?? r.planned_hours)} h</td><td>${esc(r.status)}</td></tr>`).join('')}</tbody></table></div>` : 'No work history yet.';
   });
@@ -1203,12 +1265,47 @@ function employeeModal(e, skills) {
     if (!confirm(`Delete ${fullName(e)}? (Employees with history are deactivated instead.)`)) return;
     const r = await api('DELETE', `/employees/${e.id}`); m.close(); toast(r.deactivated ? 'Has history – marked inactive' : 'Deleted'); renderEmployees($('#page'));
   };
-  const off = $('[data-act=off]', m.el);
-  if (off) off.onclick = async () => {
-    if (!S.sched || S.sched.start !== S.week) S.sched = await api('GET', `/schedule?start=${S.week}`);
-    if (!S.crew) await loadLookups();
-    timeOffModal({ employee_id: e.id });
+}
+
+// Time off on the employee record: any future date range, with a reason.
+// It shows on the schedule when that week comes up, and blocks scheduling.
+function drawTimeOff(e, list, box) {
+  const today = todayStr();
+  const upcoming = list.filter((t) => t.off_date >= today);
+  // Group consecutive entries with the same reason into ranges for display.
+  const ranges = [];
+  for (const t of upcoming) {
+    const last = ranges[ranges.length - 1];
+    if (last && last.reason === (t.reason || '') && addDays(last.to, 1) <= t.off_date && t.off_date <= addDays(last.to, 3)) { last.to = t.off_date; last.ids.push(t.id); last.days += 1; }
+    else ranges.push({ from: t.off_date, to: t.off_date, reason: t.reason || '', ids: [t.id], days: 1 });
+  }
+  const can = canSchedule();
+  box.innerHTML = `<div class="co-head"><b>Time off</b><span class="small muted">Enter time off for any future dates. It shows on the schedule when that week comes up, and they can't be scheduled those days.</span></div>
+    ${ranges.length ? `<div class="table-wrap"><table class="list"><tbody>${ranges.map((r, i) => `<tr><td class="nowrap">${esc(dayLabel(r.from, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))}${r.to !== r.from ? ` – ${esc(dayLabel(r.to, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}</td>
+      <td>${esc(r.reason)}</td><td class="small muted">${r.days} day${r.days > 1 ? 's' : ''}</td><td>${can ? `<button class="link" data-del-off="${i}">remove</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">No upcoming time off.</div>'}
+    ${can ? `<div class="co-add off-add"><input type="date" name="from" aria-label="From" value="${today}"><input type="date" name="to" aria-label="To" value="${today}">
+      <select name="reason" aria-label="Reason">${['Vacation', 'Sick / medical', 'Personal', 'Family leave', 'Jury duty', 'Union business', 'Training', 'Bereavement', 'Laid off', 'Other'].map((x) => opt(x, x)).join('')}</select>
+      <input name="note" placeholder="Note (optional)" aria-label="Note"><label class="check"><input type="checkbox" name="weekdays_only" checked> Weekdays only</label>
+      <button data-act="add-off">Add time off</button></div><div class="off-msg"></div>` : ''}`;
+  const add = $('[data-act=add-off]', box);
+  if (add) add.onclick = async () => {
+    const g = (n) => $(`.off-add [name=${n}]`, box);
+    const reason = [g('reason').value, g('note').value.trim()].filter(Boolean).join(' – ');
+    try {
+      const r = await api('POST', '/time-off', { employee_id: e.id, from: g('from').value, to: g('to').value, weekdays_only: g('weekdays_only').checked, reason });
+      toast(`Added ${r.added} day${r.added === 1 ? '' : 's'} off`);
+      const full = await api('GET', `/employees/${e.id}`);
+      drawTimeOff(e, full.time_off, box);
+      if (r.conflicts.length) $('.off-msg', box).innerHTML = `<div class="alert warn-box">Not added – already scheduled:<ul>${r.conflicts.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>Remove those days from the schedule first, then add the time off again.</div>`;
+    } catch (err) { toast(err.message, true); }
   };
+  $$('[data-del-off]', box).forEach((b) => (b.onclick = async () => {
+    const r = ranges[Number(b.dataset.delOff)];
+    if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = `remove ${r.days} day${r.days > 1 ? 's' : ''}?`; return; }
+    for (const id of r.ids) await api('DELETE', `/time-off/${id}`);
+    const full = await api('GET', `/employees/${e.id}`);
+    drawTimeOff(e, full.time_off, box);
+  }));
 }
 
 // Minimal CSV parser (quoted fields, embedded commas/quotes/newlines, BOM).
@@ -1235,54 +1332,51 @@ function parseCsv(text) {
   return rows.slice(1).map((r) => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? '').trim()])));
 }
 
-const IMPORT_TEMPLATE = 'Employee #,First Name,Last Name,Phone,Email,Trade,Union Local,Classification,Hire Date,Active,Skills,Notes\r\n'
-  + '2570,Alan,Pierce,(618)790-4668,,Carpenter,Zone 3 Carpenters,Carpenter Foreman,6/22/2026,Yes,OSHA 30; Forklift,\r\n';
-
-// Admin: import employees from a CSV. Preview first, then import.
-function importEmployeesModal() {
+// Shared spreadsheet import: choose a CSV, preview new / update / skipped / error
+// rows from the server, then import. Used for employees and projects.
+function importModal(cfg) {
   let rows = [];
   const m = modal({
-    title: 'Import employees from a spreadsheet',
+    title: cfg.title,
     wide: true,
-    body: `<div class="small muted">Save your list as a <b>CSV</b> file (in Excel: File → Save As → CSV). Columns can be in any order; recognized headings are
-        Employee #, First Name, Last Name, Phone, Email, Trade, Union Local, Classification, Hire Date, Active, Skills (separate with ;) and Notes.
-        People are matched by Employee #, so importing an updated list later updates them instead of adding duplicates. Blank cells never erase what's already saved.
-        <button class="link" data-act="template">Download a template</button></div>
+    body: `<div class="small muted">Save your list as a <b>CSV</b> file (in Excel: File → Save As → CSV). Columns can be in any order; recognized headings are ${cfg.headings}.
+        ${cfg.matchNote} Blank cells never erase what's already saved. <button class="link" data-act="template">Download a template</button></div>
       <div class="grid2">
         <label>CSV file<input type="file" accept=".csv,text/csv" data-act="file"></label>
-        <label>Skip rows whose trade or classification is (comma separated)<input data-act="skip" value="Clerical, CLER"></label>
+        ${cfg.skipDefault !== undefined ? `<label>Skip rows whose trade or classification is (comma separated)<input data-act="skip" value="${esc(cfg.skipDefault)}"></label>` : ''}
       </div>
-      <div class="small muted">Never include Social Security numbers, pay rates or home addresses in this file. Pay rates go in Payroll → Pay rates.</div>
+      ${cfg.warning ? `<div class="small muted">${cfg.warning}</div>` : ''}
       <div id="imp-out"></div>`,
     footer: '<button data-close>Cancel</button><button class="primary" data-act="go" disabled>Import</button>',
   });
-  const skipList = () => $('[data-act=skip]', m.el).value.split(',').map((x) => x.trim()).filter(Boolean);
+  const skipBox = $('[data-act=skip]', m.el);
+  const skipList = () => (skipBox ? skipBox.value.split(',').map((x) => x.trim()).filter(Boolean) : []);
   const out = $('#imp-out', m.el); const go = $('[data-act=go]', m.el);
   const show = (r) => {
-    const s = r.summary;
+    const s2 = r.summary;
     const label = { create: 'New', update: 'Update', skip: 'Skipped', error: 'Error' };
     out.innerHTML = `<div class="stats" style="margin:8px 0">
-        <div class="stat ok"><div class="v">${s.create}</div><div class="l">New employees</div></div>
-        <div class="stat"><div class="v">${s.update}</div><div class="l">Updates to existing</div></div>
-        <div class="stat"><div class="v">${s.skip}</div><div class="l">Skipped (excluded)</div></div>
-        <div class="stat ${s.error ? 'bad' : ''}"><div class="v">${s.error}</div><div class="l">Rows with errors</div></div></div>
-      ${s.error ? '<div class="alert bad">Fix the rows marked Error in your file and choose it again. Nothing is imported while errors remain.</div>' : ''}
-      <div class="table-wrap" style="max-height:320px"><table class="list"><thead><tr><th>Row</th><th>Result</th><th>Name</th><th>Emp #</th><th>Classification / trade</th><th>Note</th></tr></thead>
+        <div class="stat ok"><div class="v">${s2.create}</div><div class="l">New ${cfg.noun}s</div></div>
+        <div class="stat"><div class="v">${s2.update}</div><div class="l">Updates to existing</div></div>
+        ${skipBox ? `<div class="stat"><div class="v">${s2.skip}</div><div class="l">Skipped (excluded)</div></div>` : ''}
+        <div class="stat ${s2.error ? 'bad' : ''}"><div class="v">${s2.error}</div><div class="l">Rows with errors</div></div></div>
+      ${s2.error ? '<div class="alert bad">Fix the rows marked Error in your file and choose it again. Nothing is imported while errors remain.</div>' : ''}
+      <div class="table-wrap" style="max-height:320px"><table class="list"><thead><tr><th>Row</th><th>Result</th>${cfg.cols.map((c) => `<th>${esc(c[0])}</th>`).join('')}<th>Note</th></tr></thead>
       <tbody>${r.results.map((x) => `<tr><td>${x.line}</td>
         <td><span class="pill ${x.action === 'error' ? 'bad' : x.action === 'create' ? 'ok' : x.action === 'skip' ? '' : 'job'}">${label[x.action]}</span></td>
-        <td>${esc(x.name || '')}</td><td>${esc(x.employee_no || '')}</td><td>${esc([x.classification, x.trade].filter(Boolean).join(' · '))}</td>
+        ${cfg.cols.map((c) => `<td>${esc(c[1](x) || '')}</td>`).join('')}
         <td class="small">${esc(x.reason || '')}</td></tr>`).join('')}</tbody></table></div>`;
-    go.disabled = !!s.error || !(s.create + s.update);
-    go.textContent = `Import ${s.create + s.update} employee${s.create + s.update === 1 ? '' : 's'}`;
+    go.disabled = !!s2.error || !(s2.create + s2.update);
+    go.textContent = `Import ${s2.create + s2.update} ${cfg.noun}${s2.create + s2.update === 1 ? '' : 's'}`;
   };
   const preview = async () => {
     if (!rows.length) return;
-    try { show(await api('POST', '/employees/import', { rows, skip: skipList() })); } catch (e) { errorBox(m.el, e.message); }
+    try { show(await api('POST', cfg.endpoint, { rows, skip: skipList() })); } catch (e) { errorBox(m.el, e.message); }
   };
   $('[data-act=template]', m.el).onclick = () => {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([IMPORT_TEMPLATE], { type: 'text/csv' }));
-    a.download = 'employee-import-template.csv'; a.click();
+    a.href = URL.createObjectURL(new Blob([cfg.template], { type: 'text/csv' }));
+    a.download = cfg.templateName; a.click();
   };
   $('[data-act=file]', m.el).onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -1291,16 +1385,40 @@ function importEmployeesModal() {
     if (!rows.length) { out.innerHTML = ''; go.disabled = true; return errorBox(m.el, 'That file has no rows under the heading row.'); }
     preview();
   };
-  $('[data-act=skip]', m.el).onchange = preview;
+  if (skipBox) skipBox.onchange = preview;
   go.onclick = async () => {
     go.disabled = true;
     try {
-      const r = await api('POST', '/employees/import', { rows, skip: skipList(), commit: true });
-      m.close(); toast(`Imported: ${r.summary.create} new, ${r.summary.update} updated, ${r.summary.skip} skipped`);
-      renderEmployees($('#page'));
+      const r = await api('POST', cfg.endpoint, { rows, skip: skipList(), commit: true });
+      m.close(); toast(`Imported: ${r.summary.create} new, ${r.summary.update} updated${skipBox ? `, ${r.summary.skip} skipped` : ''}`);
+      cfg.onDone();
     } catch (e) { errorBox(m.el, e.message); if (e.data?.results) show(e.data); }
   };
 }
+
+const importEmployeesModal = () => importModal({
+  title: 'Import employees from a spreadsheet', endpoint: '/employees/import', noun: 'employee',
+  headings: 'Employee #, First Name, Last Name, Phone, Email, Trade, Union Local, Classification, Hire Date, Active, Skills (separate with ;) and Notes',
+  matchNote: 'People are matched by Employee #, so importing an updated list later updates them instead of adding duplicates.',
+  skipDefault: 'Clerical, CLER',
+  warning: 'Never include Social Security numbers, pay rates or home addresses in this file. Pay rates go in Payroll → Pay rates.',
+  template: 'Employee #,First Name,Last Name,Phone,Email,Trade,Union Local,Classification,Hire Date,Active,Skills,Notes\r\n'
+    + '9001,Sam,Example,(555)010-0001,,Carpenter,Zone 3 Carpenters,Carpenter Foreman,6/22/2026,Yes,OSHA 30; Forklift,Example row – replace with your own\r\n',
+  templateName: 'employee-import-template.csv',
+  cols: [['Name', (x) => x.name], ['Emp #', (x) => x.employee_no], ['Classification / trade', (x) => [x.classification, x.trade].filter(Boolean).join(' · ')]],
+  onDone: () => renderEmployees($('#page')),
+});
+
+const importProjectsModal = () => importModal({
+  title: 'Import projects from a spreadsheet', endpoint: '/projects/import', noun: 'project',
+  headings: 'Job Number, Project Name, Customer, Address, City, State, ZIP, Status (or Stage), Start Date, End Date, Budget Hours, Starting Hours, Change Order Hours, Superintendent, Project Manager and Notes',
+  matchNote: 'Projects are matched by job number, so importing an updated list later updates them. Superintendent and Project Manager are matched to employees by name (e.g. "Sam Example"). Stages like "Course of Construction" become Active; "Pre-Construction" and "Bidding" become Planned.',
+  template: 'Job Number,Project Name,Customer,Address,City,State,ZIP,Status,Start Date,End Date,Budget Hours,Starting Hours,Change Order Hours,Superintendent,Project Manager,Notes\r\n'
+    + '9999,Example Office Renovation,Example Owner,100 Main Street,Murphysboro,Illinois,62966,Course of Construction,3/2/2026,,6500,1200,140,Sam Example,Pat Planner,Example row – replace with your own\r\n',
+  templateName: 'project-import-template.csv',
+  cols: [['Job #', (x) => x.job_number], ['Project', (x) => x.name], ['Status', (x) => (x.status || '').replace('_', ' ')]],
+  onDone: () => renderProjects($('#page')),
+});
 
 function skillsModal(skills) {
   const m = modal({
