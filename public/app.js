@@ -1403,7 +1403,7 @@ const importEmployeesModal = () => importModal({
   skipDefault: 'Clerical, CLER',
   warning: 'Never include Social Security numbers, pay rates or home addresses in this file. Pay rates go in Payroll → Pay rates.',
   template: 'Employee #,First Name,Last Name,Phone,Email,Trade,Union Local,Classification,Hire Date,Active,Skills,Notes\r\n'
-    + '2570,Alan,Pierce,(618)790-4668,,Carpenter,Zone 3 Carpenters,Carpenter Foreman,6/22/2026,Yes,OSHA 30; Forklift,\r\n',
+    + '9001,Sam,Example,(555)010-0001,,Carpenter,Zone 3 Carpenters,Carpenter Foreman,6/22/2026,Yes,OSHA 30; Forklift,Example row – replace with your own\r\n',
   templateName: 'employee-import-template.csv',
   cols: [['Name', (x) => x.name], ['Emp #', (x) => x.employee_no], ['Classification / trade', (x) => [x.classification, x.trade].filter(Boolean).join(' · ')]],
   onDone: () => renderEmployees($('#page')),
@@ -1412,9 +1412,9 @@ const importEmployeesModal = () => importModal({
 const importProjectsModal = () => importModal({
   title: 'Import projects from a spreadsheet', endpoint: '/projects/import', noun: 'project',
   headings: 'Job Number, Project Name, Customer, Address, City, State, ZIP, Status (or Stage), Start Date, End Date, Budget Hours, Starting Hours, Change Order Hours, Superintendent, Project Manager and Notes',
-  matchNote: 'Projects are matched by job number, so importing an updated list later updates them. Superintendent and Project Manager are matched to employees by name (e.g. "Robert Boudet"). Stages like "Course of Construction" become Active; "Pre-Construction" and "Bidding" become Planned.',
+  matchNote: 'Projects are matched by job number, so importing an updated list later updates them. Superintendent and Project Manager are matched to employees by name (e.g. "Sam Example"). Stages like "Course of Construction" become Active; "Pre-Construction" and "Bidding" become Planned.',
   template: 'Job Number,Project Name,Customer,Address,City,State,ZIP,Status,Start Date,End Date,Budget Hours,Starting Hours,Change Order Hours,Superintendent,Project Manager,Notes\r\n'
-    + '4430,Jim Hayes Stadium Club,SIU,1490 Douglas Drive,Carbondale,Illinois,62901,Course of Construction,3/2/2026,,6500,1200,140,Robert Boudet,Patrick Budzynski,\r\n',
+    + '9999,Example Office Renovation,Example Owner,100 Main Street,Murphysboro,Illinois,62966,Course of Construction,3/2/2026,,6500,1200,140,Sam Example,Pat Planner,Example row – replace with your own\r\n',
   templateName: 'project-import-template.csv',
   cols: [['Job #', (x) => x.job_number], ['Project', (x) => x.name], ['Status', (x) => (x.status || '').replace('_', ' ')]],
   onDone: () => renderProjects($('#page')),
