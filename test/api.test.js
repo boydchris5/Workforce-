@@ -336,3 +336,18 @@ test('superintendents request crew on their own jobs; the manager approves or re
   await boss('POST', '/assignments/approve', { ids: [ofE1] });
   assert.equal((await boss('PUT', `/assignments/${ofE1}`, { planned_hours: 7 })).body.approval_status, 'approved');
 });
+
+test('app files are revalidated on every load so new deploys show immediately', async () => {
+  const origin = base.replace(/\/api$/, '');
+  for (const path of ['/', '/app.js', '/styles.css', '/#/schedule']) {
+    const r = await fetch(origin + path);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('cache-control'), 'no-cache', path);
+  }
+  // Plain http request: fetch() adds its own Cache-Control to conditional requests.
+  const etag = (await fetch(origin + '/app.js')).headers.get('etag');
+  const status = await new Promise((resolve, reject) => {
+    require('node:http').get(origin + '/app.js', { headers: { 'If-None-Match': etag } }, (r) => { r.resume(); resolve(r.statusCode); }).on('error', reject);
+  });
+  assert.equal(status, 304); // unchanged files are not re-downloaded
+});
