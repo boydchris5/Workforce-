@@ -108,6 +108,8 @@ const opt = (v, label, sel) => `<option value="${esc(v)}" ${String(sel ?? '') ==
 // ---------------------------------------------------------------------------
 // State + routing
 // ---------------------------------------------------------------------------
+const FOOTER = '<span>Fager-McGee Commercial Construction</span><span class="dot">•</span><span>347 S. Williams St., Murphysboro, IL 62966</span><span class="dot">•</span><span><a href="tel:6186873900">618-687-3900</a></span><span class="dot">•</span><span><a href="https://www.fager-mcgee.com" target="_blank" rel="noopener">www.fager-mcgee.com</a></span>';
+
 const S = {
   user: null,
   settings: {},
@@ -143,11 +145,12 @@ function shell() {
   $('#app').innerHTML = `
     <header class="top">
       <button class="menu-btn" aria-label="Menu">☰</button>
-      <div class="brand"><img src="/icon.svg" alt="">${esc(S.settings.company_name || 'Workforce')}</div>
+      <a class="brand" href="#/schedule" title="${esc(S.settings.company_name || '')}"><img src="/logo.jpg" alt="Fager-McGee Commercial Construction"></a>
       <nav>${ROUTES.filter((x) => !x.show || x.show()).map((x) => `<a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a>`).join('')}<a href="#" class="nav-account">My account</a></nav>
       <div class="who" title="Account">${esc(S.user.name)} · ${roleName} ▾</div>
     </header>
-    <main id="page"></main>`;
+    <main id="page"></main>
+    <footer class="site">${FOOTER}</footer>`;
   $('.menu-btn').onclick = () => $('header.top nav').classList.toggle('open');
   $$('header.top nav a').forEach((a) => a.addEventListener('click', () => $('header.top nav').classList.remove('open')));
   $('.who').onclick = accountMenu;
@@ -173,13 +176,14 @@ function accountMenu() {
 function renderLogin() {
   $('#modal-root').innerHTML = '';
   $('#app').innerHTML = `<div class="login"><div class="card">
-    <h1>Workforce Scheduler</h1>
+    <img class="logo" src="/logo.jpg" alt="Fager-McGee Commercial Construction">
+    <div class="sub">Field Workforce Scheduling</div>
     <form id="login-form" style="display:grid;gap:12px">
       <label>Username<input name="username" autocomplete="username" autocapitalize="none" required></label>
       <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
       <div id="login-err"></div>
       <button class="primary" type="submit" style="justify-content:center">Sign in</button>
-    </form></div></div>`;
+    </form></div></div><footer class="site">${FOOTER}</footer>`;
   $('#login-form').onsubmit = async (e) => {
     e.preventDefault();
     try { await api('POST', '/login', formData(e.target)); await boot(); } catch (err) {
@@ -252,6 +256,7 @@ async function renderSchedule(page) {
       ${todayCount !== null ? `<div class="stat"><div class="v">${todayCount}</div><div class="l">On site today</div></div>` : ''}
       ${(() => { const o = Object.values(t.by_employee).filter((h) => h > 40).length; return `<div class="stat ${o ? 'warn' : ''}"><div class="v">${o}</div><div class="l">Over 40 hrs (OT)</div></div>`; })()}
     </div>
+    <div class="print-head"><img src="/logo.jpg" alt="Fager-McGee"><div>Weekly Crew Schedule  •  ${weekLabel(data.start)}</div></div>
     <div id="board"></div>`;
 
   const go = (w) => { S.week = weekStart(w); renderSchedule(page); };
@@ -288,7 +293,7 @@ function chip(a, label = shortName(a)) {
   const hrs = a.planned_hours !== 8 ? `<span class="hr">${fmtH(a.planned_hours)}h</span>` : '';
   const st = a.status === 'scheduled' ? '' : a.status === 'no_show' ? 'no_show' : 'verified';
   const title = `${fullName(a)} – ${a.trade || ''} ${a.classification || ''}\n${a.job_number} ${a.project_name}\n${fmtH(a.planned_hours)} hrs${a.start_time ? ' @ ' + a.start_time : ''}${a.task ? '\n' + a.task : ''}${a.status !== 'scheduled' ? '\nVerified: ' + fmtH(a.actual_hours) + ' hrs' : ''}`;
-  return `<div class="chip ${st} ${canSchedule() ? 'can' : ''}" data-aid="${a.id}" title="${esc(title)}" style="border-left-color:${esc(a.color || '#2c5282')}">
+  return `<div class="chip ${st} ${canSchedule() ? 'can' : ''}" data-aid="${a.id}" title="${esc(title)}" style="border-left-color:${esc(a.color || '#F15A22')}">
     <span class="nm">${esc(label)}</span>${hrs}${st === 'verified' ? '✓' : ''}</div>`;
 }
 
@@ -316,7 +321,7 @@ function projectBoard() {
     <tbody>${projects.map((p) => {
       const pt = t.by_project[p.id] || { hours: 0, headcount: 0, days: {} };
       return `<tr>
-        <th class="proj"><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#2c5282')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>${projectSub(p)}</th>
+        <th class="proj"><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>${projectSub(p)}</th>
         ${d.days.map((day, i) => {
           const list = byCell[`${p.id}|${day}`] || [];
           const ct = pt.days[day];
@@ -351,7 +356,7 @@ function projectMobile() {
   return `${dayTabs()}
     <div class="muted small" style="margin-bottom:8px">${dayLabel(day, { weekday: 'long', month: 'long', day: 'numeric' })} · ${d.totals.by_day[day].headcount} people · ${fmtH(d.totals.by_day[day].hours)} hrs</div>
     ${list.map(({ p, a }) => `<div class="pcard">
-      <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#2c5282')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
+      <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
         ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
         <div class="right nowrap"><b>${a.length}</b> ppl<br><span class="small muted">${fmtH(a.reduce((s, x) => s + x.planned_hours, 0))} h</span></div></div>
       <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade, x.start_time].filter(Boolean).join(' · '))).join('') || '<div class="small muted">Nobody scheduled</div>'}
@@ -402,7 +407,7 @@ function personMobile() {
     const a = map[e.id]; const o = off[e.id];
     return `<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #eef1f4" ${!a && !o ? `data-emp="${e.id}|${day}" class="person-cell ${canSchedule() ? 'can' : ''}"` : ''}>
       <div><b>${esc(fullName(e))}</b><div class="small muted">${esc(e.trade || '')}</div></div>
-      <div class="right" style="max-width:60%">${a ? `<span class="pill navy" data-aid="${a.id}">${esc(a.job_number)} ${esc(a.project_name)}</span>` : o ? `<span class="pill" style="background:#f3f0ff">Off</span>` : '<span class="avail">available</span>'}</div>
+      <div class="right" style="max-width:60%">${a ? `<span class="pill job" data-aid="${a.id}">${esc(a.job_number)} ${esc(a.project_name)}</span>` : o ? `<span class="pill off">Off</span>` : '<span class="avail">available</span>'}</div>
     </div>`;
   }).join('')}</div></div>`;
 }
@@ -582,9 +587,9 @@ async function renderMy(page) {
   const today = todayStr();
   page.innerHTML = `<h1>My Schedule</h1>
     ${!r.linked ? '<div class="card muted">Your login is not linked to an employee record. Ask the workforce manager.</div>' : ''}
-    ${r.assignments.length ? r.assignments.map((a) => `<div class="pcard" style="${a.work_date === today ? 'border-color:var(--gold);border-width:2px' : ''}${a.work_date < today ? ';opacity:.6' : ''}">
+    ${r.assignments.length ? r.assignments.map((a) => `<div class="pcard" style="${a.work_date === today ? 'border-color:var(--orange);border-width:2px' : ''}${a.work_date < today ? ';opacity:.6' : ''}">
       <div class="ph"><div><b>${dayLabel(a.work_date, { weekday: 'long', month: 'short', day: 'numeric' })}</b>${a.work_date === today ? ' <span class="pill warn">Today</span>' : ''}
-        <div class="proj-name" style="margin-top:4px"><span class="proj-swatch" style="background:${esc(a.color || '#2c5282')}"></span>${esc(a.job_number)} – ${esc(a.project_name)}</div>
+        <div class="proj-name" style="margin-top:4px"><span class="proj-swatch" style="background:${esc(a.color || '#F15A22')}"></span>${esc(a.job_number)} – ${esc(a.project_name)}</div>
         ${a.task ? `<div class="small muted">${esc(a.task)}</div>` : ''}</div>
         <div class="right nowrap">${a.start_time ? `<b>${esc(a.start_time)}</b><br>` : ''}<span class="small muted">${fmtH(a.planned_hours)} hrs</span></div></div>
     </div>`).join('') : r.linked ? '<div class="card muted">Nothing scheduled yet.</div>' : ''}
@@ -663,7 +668,7 @@ async function renderProjects(page) {
   const showAll = store('wf_proj_all') === '1';
   const [projects, users] = await Promise.all([api('GET', `/projects${showAll ? '?all=1' : ''}`), canSchedule() ? api('GET', '/users') : []]);
   S.projectUsers = users;
-  const statusPill = (s) => `<span class="pill ${s === 'active' ? 'ok' : s === 'on_hold' ? 'warn' : s === 'complete' ? '' : 'navy'}">${esc(s.replace('_', ' '))}</span>`;
+  const statusPill = (s) => `<span class="pill ${s === 'active' ? 'ok' : s === 'on_hold' ? 'warn' : s === 'complete' ? '' : 'job'}">${esc(s.replace('_', ' '))}</span>`;
   page.innerHTML = `
     <div class="toolbar"><h1 style="margin:0">Projects</h1><span class="spacer"></span>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show completed</label>
@@ -673,7 +678,7 @@ async function renderProjects(page) {
       <tbody>${projects.map((p) => {
         const pct = p.budget_hours ? Math.round((p.hours_to_date / p.budget_hours) * 100) : null;
         return `<tr class="${canSchedule() ? 'click' : ''}" data-id="${p.id}">
-          <td class="nowrap"><span class="proj-swatch" style="background:${esc(p.color || '#2c5282')}"></span><b>${esc(p.job_number)}</b></td>
+          <td class="nowrap"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span><b>${esc(p.job_number)}</b></td>
           <td>${esc(p.name)}<div class="small muted">${esc([p.customer, p.address].filter(Boolean).join(' · '))}</div></td>
           <td>${esc(p.superintendent_name || '')}</td><td>${statusPill(p.status)}</td>
           <td class="small nowrap">${esc(p.start_date || '')}${p.end_date ? ' → ' + esc(p.end_date) : ''}</td>
@@ -702,7 +707,7 @@ function projectModal(p) {
         <label>Budgeted labor hours<input type="number" name="budget_hours" min="0" value="${esc(p.budget_hours ?? '')}"></label>
         <label>Start date<input type="date" name="start_date" value="${esc(p.start_date || '')}"></label>
         <label>End date<input type="date" name="end_date" value="${esc(p.end_date || '')}"></label>
-        <label>Board color<input type="color" name="color" value="${esc(p.color || '#2c5282')}"></label>
+        <label>Board color<input type="color" name="color" value="${esc(p.color || '#F15A22')}"></label>
       </div>
       <label>Site address<input name="address" value="${esc(p.address || '')}"></label>
       <label>Notes<textarea name="notes">${esc(p.notes || '')}</textarea></label>`,

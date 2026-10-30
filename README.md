@@ -1,4 +1,4 @@
-# Workforce Scheduler
+# Fager-McGee Workforce Scheduler
 
 A web app for scheduling field staff by project. It works in any browser on a computer or phone, and phones can add it to the home screen like an app.
 
@@ -44,7 +44,7 @@ Go to **Admin → Settings → Download database backup**. It downloads one file
 
 ## Running locally
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.13 or newer. Branding (logo, orange #F15A22 / charcoal #2D2D2D palette, contact footer) follows the Fager-McGee brand standard; the logo files are in `public/`.
 
 ```bash
 npm install

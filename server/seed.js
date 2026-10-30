@@ -26,10 +26,10 @@ db.tx(conn, () => {
   const s2 = user('tgarcia', 'Tony Garcia', 'super');
 
   const projects = [
-    ['24-101', 'Riverside Elementary Addition', 'USD 259', '1200 River Rd', s1, 6500, '#2c5282'],
-    ['24-115', 'Hwy 54 Bridge Rehab', 'KDOT', 'US-54 & K-96', s2, 9200, '#c05621'],
-    ['25-007', 'Medical Office Building', 'Ascension', '8800 E 21st St N', s1, 4800, '#2f855a'],
-    ['25-012', 'Water Treatment Plant Clarifier', 'City', '2201 N Hydraulic', s2, 7200, '#6b46c1'],
+    ['24-101', 'Riverside Elementary Addition', 'USD 259', '1200 River Rd', s1, 6500, '#F15A22'],
+    ['24-115', 'Hwy 54 Bridge Rehab', 'KDOT', 'US-54 & K-96', s2, 9200, '#2D2D2D'],
+    ['25-007', 'Medical Office Building', 'Ascension', '8800 E 21st St N', s1, 4800, '#F7935F'],
+    ['25-012', 'Water Treatment Plant Clarifier', 'City', '2201 N Hydraulic', s2, 7200, '#6B6B6B'],
   ];
   const pid = projects.map((p) => Number(conn.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_user_id, status, budget_hours, color, start_date)
     VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(...p.slice(0, 5), p[5], p[6], addDays(weekStart(new Date().toISOString().slice(0, 10)), -56)).lastInsertRowid));

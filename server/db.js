@@ -125,7 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 `;
 
 const DEFAULT_SETTINGS = {
-  company_name: 'Workforce Scheduler',
+  company_name: 'Fager-McGee Commercial Construction',
   ot_threshold_hours: '40',
   ot_multiplier: '1.5',
   default_burden_pct: '25',
