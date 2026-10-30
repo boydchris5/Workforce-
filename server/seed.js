@@ -55,7 +55,12 @@ db.tx(conn, () => {
   const eid = people.map(([f, l, trade, local, cls, base, fringe, sk], i) => {
     const id = Number(conn.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, trade, union_local, classification, active)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(String(1001 + i), f, l, `316-555-${String(1100 + i * 7)}`, trade, local, cls).lastInsertRowid);
-    conn.prepare('INSERT INTO employee_pay (employee_id, base_rate, fringe_rate) VALUES (?, ?, ?)').run(id, base, fringe);
+    // Current rate plus last year's rate, to show rate history.
+    const juneFirst = `${new Date().getFullYear()}-06-01`;
+    conn.prepare('INSERT INTO employee_pay_rates (employee_id, effective_date, base_rate, fringe_rate, note) VALUES (?, ?, ?, ?, ?)')
+      .run(id, `${new Date().getFullYear() - 1}-06-01`, Math.round(base * 0.96 * 100) / 100, Math.round(fringe * 0.95 * 100) / 100, 'Prior agreement');
+    conn.prepare('INSERT INTO employee_pay_rates (employee_id, effective_date, base_rate, fringe_rate, note) VALUES (?, ?, ?, ?, ?)')
+      .run(id, juneFirst, base, fringe, 'June 1 union increase');
     for (const s of sk) conn.prepare('INSERT INTO employee_skills (employee_id, skill_id) VALUES (?, ?)').run(id, skillId(s));
     return id;
   });
@@ -75,6 +80,13 @@ db.tx(conn, () => {
       }));
     }
   }
+
+  // Split-day example: next Wednesday the millwright works the morning at the
+  // plant and the afternoon at the medical office building.
+  const splitDay = addDays(thisWeek, 9);
+  conn.prepare("UPDATE assignments SET planned_hours = 4, task = 'Clarifier drive alignment' WHERE employee_id = ? AND work_date = ?").run(eid[11], splitDay);
+  conn.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task)
+    VALUES (?, ?, ?, 4, '11:30', 'Set rooftop unit curbs')`).run(eid[11], pid[2], splitDay);
 });
 
 console.log(`Demo data loaded into ${DB_FILE}`);
