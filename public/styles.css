@@ -40,6 +40,9 @@ header.top nav a.active { color: var(--orange); border-bottom-color: var(--orang
 header.top nav a.private { color: var(--soft); }
 header.top nav a.private.active, header.top nav a.private:hover { color: var(--orange); }
 header.top nav a.nav-account { display: none; }
+header.top .help-link { font-size: 13px; font-weight: 700; color: var(--charcoal); text-decoration: none; border: 1px solid var(--light); border-radius: 999px; padding: 4px 10px; white-space: nowrap; }
+header.top .help-link:hover { border-color: var(--orange); color: var(--orange-dk); }
+@media (max-width: 860px) { header.top .help-link { display: none; } }
 header.top .who { font-size: 13px; color: var(--soft); white-space: nowrap; cursor: pointer; }
 .menu-btn { display: none; background: none; border: 0; color: var(--charcoal); font-size: 26px; cursor: pointer; min-height: 0; padding: 0 4px; }
 main { padding: 16px; max-width: 1500px; margin: 0 auto; }

@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#F15A22">
+  <title>Help &amp; User Guide – Fager-McGee Workforce</title>
+  <link rel="icon" href="/icon-192.png" type="image/png">
+  <style>
+    :root {
+      --orange: #F15A22; --orange-dk: #C9461A; --orange-tint: #FDE9E0;
+      --charcoal: #2D2D2D; --mid: #4A4A4A; --soft: #6B6B6B; --light: #D0D0D0; --tint: #F2F2F2;
+      font-family: Calibri, Carlito, Arial, "Helvetica Neue", sans-serif; color: var(--charcoal);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 76px; }
+    body { margin: 0; background: #fff; font-size: 17px; line-height: 1.55; }
+    a { color: var(--orange-dk); }
+    header.top { position: sticky; top: 0; z-index: 10; background: #fff; border-bottom: 4px solid var(--orange); display: flex; align-items: center; gap: 14px; padding: 8px 16px; flex-wrap: wrap; }
+    header.top img { height: 30px; display: block; }
+    header.top .title { font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--orange); font-size: 14px; }
+    header.top .spacer { flex: 1; }
+    header.top input { font: inherit; font-size: 15px; padding: 7px 10px; border: 1px solid var(--light); border-radius: 6px; width: min(340px, 100%); }
+    header.top input:focus { outline: 2px solid var(--orange); border-color: var(--orange); }
+    header.top .back { font-size: 14px; font-weight: 700; text-decoration: none; border: 1px solid var(--light); padding: 6px 10px; border-radius: 6px; color: var(--charcoal); white-space: nowrap; }
+    header.top .back:hover { border-color: var(--orange); color: var(--orange-dk); }
+    .wrap { display: grid; grid-template-columns: 270px minmax(0, 1fr); max-width: 1240px; margin: 0 auto; }
+    nav.toc { position: sticky; top: 62px; align-self: start; max-height: calc(100vh - 62px); overflow-y: auto; padding: 18px 12px 30px 16px; border-right: 1px solid var(--tint); font-size: 15px; }
+    nav.toc b { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); margin: 14px 0 4px; }
+    nav.toc a { display: block; padding: 3px 6px; border-radius: 4px; color: var(--charcoal); text-decoration: none; }
+    nav.toc a:hover, nav.toc a.on { background: var(--orange-tint); color: var(--orange-dk); }
+    nav.toc a.sub { padding-left: 18px; font-size: 14px; color: var(--mid); }
+    main { padding: 22px 28px 60px; min-width: 0; }
+    h1 { font-size: 34px; line-height: 1.15; margin: 4px 0 6px; }
+    h1 span { color: var(--orange); }
+    h2 { font-size: 26px; margin: 46px 0 10px; padding-top: 10px; border-top: 3px solid var(--orange); }
+    h3 { font-size: 20px; margin: 28px 0 8px; color: var(--charcoal); border-left: 4px solid var(--orange); padding-left: 10px; }
+    h4 { font-size: 17px; margin: 18px 0 6px; }
+    p, li { max-width: 78ch; }
+    .lede { font-size: 19px; color: var(--mid); max-width: 70ch; }
+    ol.steps { counter-reset: s; list-style: none; padding: 0; }
+    ol.steps > li { counter-increment: s; position: relative; padding: 2px 0 10px 44px; }
+    ol.steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 30px; height: 30px; border-radius: 6px; background: var(--orange); color: #fff; font-weight: 700; display: grid; place-items: center; }
+    .ui { font-weight: 700; background: var(--tint); border: 1px solid var(--light); border-radius: 4px; padding: 0 5px; white-space: nowrap; font-size: .95em; }
+    .tip, .note, .warn { border-left: 5px solid var(--orange); background: var(--tint); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 14px 0; max-width: 82ch; }
+    .tip::before { content: "Tip: "; font-weight: 700; color: var(--orange-dk); }
+    .note::before { content: "Good to know: "; font-weight: 700; }
+    .warn { background: var(--orange-tint); }
+    .warn::before { content: "Careful: "; font-weight: 700; color: var(--orange-dk); }
+    figure { margin: 14px 0 22px; max-width: 980px; }
+    figure img { width: 100%; height: auto; border: 1px solid var(--light); border-radius: 6px; box-shadow: 0 4px 16px rgba(45,45,45,.08); display: block; cursor: zoom-in; }
+    figure.phone img { max-width: 300px; border-radius: 18px; border: 5px solid var(--charcoal); }
+    figure.half img { max-width: 640px; }
+    figcaption { font-size: 14px; color: var(--soft); margin-top: 6px; }
+    .phones { display: flex; flex-wrap: wrap; gap: 20px; }
+    table { border-collapse: collapse; width: 100%; max-width: 900px; margin: 10px 0 18px; font-size: 15.5px; }
+    th, td { border-bottom: 1px solid var(--light); padding: 7px 10px; text-align: left; vertical-align: top; }
+    th { background: var(--mid); color: #fff; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+    tr:nth-child(even) td { background: #FAFAFA; }
+    .roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 14px 0; }
+    .roles div { border: 1px solid var(--light); border-top: 4px solid var(--orange); border-radius: 6px; padding: 12px 14px; }
+    .roles h4 { margin: 0 0 6px; }
+    .roles ul { margin: 0; padding-left: 18px; font-size: 15.5px; }
+    .flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 14px 0; counter-reset: f; }
+    .flow div { background: var(--tint); border-radius: 6px; padding: 10px 12px; font-size: 15px; counter-increment: f; }
+    .flow div b { display: block; color: var(--orange-dk); }
+    .flow div b::before { content: counter(f) ". "; }
+    .chip { display: inline-block; font-size: 13px; padding: 1px 8px; border-radius: 5px; background: var(--tint); border-left: 3px solid var(--orange); white-space: nowrap; }
+    .chip.pend { background: #fff; outline: 1px dashed var(--orange); outline-offset: -1px; }
+    .chip.rej { color: #9A9A9A; text-decoration: line-through; border-left-color: var(--light); background: transparent; }
+    .chip.off { background: repeating-linear-gradient(45deg, #fff, #fff 4px, var(--tint) 4px, var(--tint) 8px); border-left-color: var(--soft); color: var(--soft); }
+    details { border: 1px solid var(--light); border-radius: 6px; margin: 8px 0; max-width: 900px; }
+    details summary { cursor: pointer; padding: 10px 14px; font-weight: 700; list-style: none; position: relative; padding-right: 36px; }
+    details summary::-webkit-details-marker { display: none; }
+    details summary::after { content: "+"; position: absolute; right: 14px; top: 8px; font-size: 20px; color: var(--orange); }
+    details[open] summary::after { content: "–"; }
+    details[open] summary { border-bottom: 1px solid var(--tint); }
+    details > div { padding: 6px 14px 12px; }
+    .faq-group { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); margin: 22px 0 4px; font-weight: 700; }
+    .hidden { display: none !important; }
+    mark { background: #FFE2D3; color: inherit; padding: 0 1px; }
+    #no-results { display: none; padding: 20px; background: var(--tint); border-radius: 6px; }
+    .totop { position: fixed; right: 18px; bottom: 18px; background: var(--charcoal); color: #fff; text-decoration: none; padding: 8px 12px; border-radius: 6px; font-size: 14px; font-weight: 700; }
+    .zoom { position: fixed; inset: 0; background: rgba(30,30,30,.86); z-index: 50; display: grid; place-items: center; padding: 20px; cursor: zoom-out; }
+    .zoom img { max-width: 96vw; max-height: 92vh; border-radius: 6px; }
+    footer { text-align: center; color: var(--soft); font-size: 13px; padding: 20px 16px 40px; border-top: 1px solid var(--tint); }
+    @media (max-width: 900px) {
+      .wrap { grid-template-columns: 1fr; }
+      nav.toc { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--tint); }
+      main { padding: 16px; }
+      h1 { font-size: 28px; }
+    }
+    @media print {
+      header.top input, header.top .back, nav.toc, .totop { display: none !important; }
+      .wrap { display: block; }
+      details { break-inside: avoid; }
+      details > div { display: block !important; }
+      h2 { break-before: page; }
+      figure img { box-shadow: none; max-width: 80%; }
+    }
+  </style>
+</head>
+<body>
+<header class="top">
+  <img src="/logo.jpg" alt="Fager-McGee Commercial Construction">
+  <span class="title">Help &amp; User Guide</span>
+  <span class="spacer"></span>
+  <input type="search" id="q" placeholder="Search the guide… (e.g. time off, change order)" aria-label="Search the guide">
+  <a class="back" href="/">← Back to the app</a>
+</header>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <b>Start here</b>
+  <a href="#welcome">Welcome</a>
+  <a href="#roles">Your role &amp; what you can do</a>
+  <a href="#quick-start">Quick start by role</a>
+  <a href="#weekly-workflow">The weekly workflow</a>
+  <b>Basics</b>
+  <a href="#signing-in">Signing in &amp; your account</a>
+  <a href="#getting-around">Getting around</a>
+  <a href="#phone">Using it on a phone</a>
+  <b>Scheduling</b>
+  <a href="#schedule">The Schedule page</a>
+  <a class="sub" href="#schedule-views">The three views</a>
+  <a class="sub" href="#scheduling-crew">Scheduling a crew</a>
+  <a class="sub" href="#editing-entries">Changing or removing an entry</a>
+  <a class="sub" href="#split-days">Split days</a>
+  <a class="sub" href="#double-booking">Double booking &amp; hour limits</a>
+  <a class="sub" href="#all-jobs">All Jobs (drag &amp; drop)</a>
+  <a class="sub" href="#copy-week">Copy last week</a>
+  <a class="sub" href="#schedule-filters">Filters, sorting &amp; printing</a>
+  <a href="#approvals">Crew requests &amp; approvals</a>
+  <a href="#time-off">Time off</a>
+  <a href="#my-schedule">My Schedule (field staff)</a>
+  <b>Hours &amp; payroll</b>
+  <a href="#verify">Verify Hours</a>
+  <a class="sub" href="#timecards">Importing Procore time cards</a>
+  <a class="sub" href="#reviewing">Reviewing &amp; adjusting hours</a>
+  <a class="sub" href="#no-shows">No-shows</a>
+  <a class="sub" href="#unmatched">Lines that didn't match</a>
+  <a href="#payroll">Payroll (private)</a>
+  <b>Information</b>
+  <a href="#projects">Projects</a>
+  <a class="sub" href="#change-orders">Budget, starting hours &amp; change orders</a>
+  <a href="#employees">Employees</a>
+  <a href="#importing">Importing from spreadsheets</a>
+  <a href="#records">Records &amp; Excel export</a>
+  <b>Administration</b>
+  <a href="#admin">Admin: users, settings, backup</a>
+  <b>Reference</b>
+  <a href="#symbols">Symbols &amp; colors</a>
+  <a href="#glossary">Glossary</a>
+  <a href="#faq">FAQ</a>
+  <a href="#troubleshooting">Troubleshooting</a>
+</nav>
+
+<main id="content">
+<div id="no-results">No sections match your search. Try a shorter word, like “off”, “import” or “hours”.</div>
+
+<section id="welcome" data-s>
+  <h1>Fager-McGee <span>Workforce</span> – User Guide</h1>
+  <p class="lede">This guide walks you through everything the Workforce app does: building the weekly crew schedule, requesting and approving crew, seeing where everyone is working, checking hours against Procore time cards, and (for those with access) forecasting payroll.</p>
+  <p>You don't need to read it front to back. Use the <b>contents</b> on the left, the <b>search box</b> at the top, or jump to <a href="#quick-start">Quick start</a> for your role. Every screenshot uses made-up example names.</p>
+  <div class="tip">You can open this guide any time from the <span class="ui">? Help</span> button at the top of the app. It opens to the section for the page you're on.</div>
+  <h3>What the app does, in one minute</h3>
+  <ul>
+    <li><b>Schedule</b> – who is working on which job, each day. Organized by project, with running totals of people and hours.</li>
+    <li><b>No double booking</b> – the app won't let you put someone in two places at once, on the same job twice, over the daily hour limit, or on a day they're off.</li>
+    <li><b>Requests &amp; approvals</b> – superintendents request crew for their jobs; the Workforce Manager approves or rejects with a reason.</li>
+    <li><b>Verify Hours</b> – each payroll week, import the Procore time cards and compare what was <i>scheduled</i> with what was <i>worked</i>.</li>
+    <li><b>Projects &amp; Employees</b> – job details, budgets, change orders, the employee list with trades, union locals, skills and time off.</li>
+    <li><b>Payroll</b> (private) – pay rates with history and a labor-cost forecast with overtime.</li>
+  </ul>
+</section>
+
+<section id="roles" data-s>
+  <h2>Your role &amp; what you can do</h2>
+  <p>Everyone signs in with their own username. What you see depends on your role, which the Workforce Manager sets.</p>
+  <div class="roles">
+    <div><h4>Workforce Manager (admin)</h4><ul>
+      <li>Builds the schedule – entries are approved right away</li>
+      <li>Approves or rejects superintendents' requests</li>
+      <li>Imports time cards, employees and projects</li>
+      <li>Manages users, settings and backups</li>
+      <li>Sees Payroll</li></ul></div>
+    <div><h4>Superintendent</h4><ul>
+      <li>Requests crew on the jobs where they're the listed superintendent (needs approval)</li>
+      <li>Marks time off, verifies hours, records no-shows</li>
+      <li>Adds change orders on their own jobs</li>
+      <li>Can add or edit employees and projects</li>
+      <li>No Payroll unless given access</li></ul></div>
+    <div><h4>Field staff</h4><ul>
+      <li>Sees the approved schedule – who's where</li>
+      <li>Sees <b>My Schedule</b> (their own days) if their login is linked to their employee record</li>
+      <li>Can look at Projects, Employees and Records</li>
+      <li>Can't change anything</li></ul></div>
+    <div><h4>Payroll access (add-on)</h4><ul>
+      <li>A checkbox on any user, given by the manager</li>
+      <li>Shows the 🔒 <b>Payroll</b> tab: pay rates and the labor-cost forecast</li>
+      <li>Pay rates never appear anywhere else in the app</li></ul></div>
+  </div>
+</section>
+
+<section id="quick-start" data-s>
+  <h2>Quick start by role</h2>
+  <h3>Workforce Manager – first-time setup</h3>
+  <ol class="steps">
+    <li>Sign in with the admin login. Click your name (top right) → change your password.</li>
+    <li><span class="ui">Admin → Settings</span>: check the payroll week (Wednesday), overtime rule (40 h at 1.5×), daily warning (8 h) and hard limit (12 h). See <a href="#admin">Admin</a>.</li>
+    <li><span class="ui">Employees → Import from spreadsheet…</span>: load your field employees. See <a href="#importing">Importing</a>.</li>
+    <li><span class="ui">Projects → Import from spreadsheet…</span>: load your active jobs.</li>
+    <li>Open each job and set the <b>Project manager</b>, <b>Superintendent</b>, budget hours and starting hours.</li>
+    <li><span class="ui">Admin → Users</span>: create a login for each superintendent and link it to their employee record. Do the same for field staff who should see My Schedule.</li>
+    <li>🔒 <span class="ui">Payroll → Pay rates</span>: enter rates with an effective date (optional, only for payroll forecasting).</li>
+    <li>Build next week on the <span class="ui">Schedule</span> page.</li>
+  </ol>
+  <h3>Workforce Manager – every week</h3>
+  <ol class="steps">
+    <li>Check <span class="ui">Requests</span> on the Schedule page and approve or reject.</li>
+    <li>Build or adjust next week's schedule (the <a href="#all-jobs">All Jobs</a> board is the fastest way).</li>
+    <li>After the payroll week closes, import the Procore time cards in <span class="ui">Verify Hours</span> and work through anything that <i>Differs</i>, was <i>Not scheduled</i>, or has <i>No time card</i>.</li>
+  </ol>
+  <h3>Superintendent</h3>
+  <ol class="steps">
+    <li>Sign in. Make sure your jobs show “Supt: <i>your name</i>” on the Schedule page – if not, ask the Workforce Manager.</li>
+    <li>Click <span class="ui">+ Request crew</span> (or the <b>+</b> in a day on your job) to request people. Requests show as <span class="chip pend">Pending</span> until approved.</li>
+    <li>Check <span class="ui">My requests</span> for anything rejected and the reason.</li>
+    <li>Enter time off for your crew when you hear about it – even months ahead.</li>
+    <li>In <span class="ui">Verify Hours</span>, confirm hours and record no-shows with a reason.</li>
+  </ol>
+  <h3>Field staff</h3>
+  <ol class="steps">
+    <li>Open the link on your phone and sign in with the username and password you were given.</li>
+    <li>Add it to your home screen (see <a href="#phone">Using it on a phone</a>).</li>
+    <li>Tap <span class="ui">My Schedule</span> to see today and the coming days: job and hours.</li>
+  </ol>
+</section>
+
+<section id="weekly-workflow" data-s>
+  <h2>The weekly workflow</h2>
+  <p>This is how a normal week runs. The payroll week is <b>Wednesday to Tuesday</b>; the schedule week on screen is Monday to Sunday.</p>
+  <div class="flow">
+    <div><b>Superintendents request</b>Request crew for next week on their jobs.</div>
+    <div><b>Manager approves &amp; builds</b>Approves or rejects requests and fills in the rest of the schedule.</div>
+    <div><b>Crews check</b>Field staff see their approved days in My Schedule.</div>
+    <div><b>Changes during the week</b>Time off, moves between jobs, split days – the schedule is updated as things change.</div>
+    <div><b>Payroll week closes</b>Run the Procore time card report (Wed–Tue) and export it as CSV.</div>
+    <div><b>Import &amp; review</b>Import in Verify Hours. Review differences, unscheduled work and missing time cards.</div>
+    <div><b>Adjust &amp; finish</b>Fix any numbers, record no-shows, and the hours flow into job totals and payroll.</div>
+  </div>
+</section>
+
+<section id="signing-in" data-s>
+  <h2>Signing in &amp; your account</h2>
+  <figure class="half"><img src="help/img/login.jpg" alt="Sign-in page" loading="lazy"><figcaption>The sign-in page.</figcaption></figure>
+  <ol class="steps">
+    <li>Open the app's web address (your manager will send it).</li>
+    <li>Type your <b>username</b> and <b>password</b>, then click <span class="ui">Sign in</span>.</li>
+    <li>You stay signed in on that device for 30 days unless you sign out.</li>
+  </ol>
+  <h3>Changing your password</h3>
+  <p>Click your name in the top-right corner (on a phone: tap <b>☰</b> → <span class="ui">My account</span>). Enter your current password and a new one of at least 8 characters, then click <span class="ui">Update password</span>. You also sign out from this window.</p>
+  <div class="note">After 8 wrong passwords in a row, sign-in is paused for 5 minutes. If you've forgotten your password, ask the Workforce Manager to reset it.</div>
+</section>
+
+<section id="getting-around" data-s>
+  <h2>Getting around</h2>
+  <p>The orange-underlined bar at the top has a tab for each area. You only see the tabs your role can use.</p>
+  <table>
+    <tr><th>Tab</th><th>What it's for</th><th>Who sees it</th></tr>
+    <tr><td>Schedule</td><td>The weekly crew schedule (three views), requests, time off</td><td>Everyone</td></tr>
+    <tr><td>My Schedule</td><td>Your own upcoming days</td><td>Users linked to an employee record</td></tr>
+    <tr><td>Verify Hours</td><td>Payroll week review: time card import, actual hours, no-shows</td><td>Manager, superintendents</td></tr>
+    <tr><td>Projects</td><td>Jobs, PM/superintendent, budgets, change orders</td><td>Everyone (editing: manager, superintendents)</td></tr>
+    <tr><td>Employees</td><td>People, trades, union locals, skills, time off, attendance</td><td>Everyone (editing: manager, superintendents)</td></tr>
+    <tr><td>Records</td><td>Search past work and export to Excel</td><td>Everyone</td></tr>
+    <tr><td>🔒 Payroll</td><td>Pay rates and labor-cost forecast</td><td>Users with payroll access</td></tr>
+    <tr><td>Admin</td><td>Users, settings, activity log, backup</td><td>Workforce Manager</td></tr>
+  </table>
+  <p>Most lists open a window when you click a row. Windows close with <span class="ui">Cancel</span>, the <b>×</b>, the Esc key, or by clicking outside them.</p>
+</section>
+
+<section id="phone" data-s>
+  <h2>Using it on a phone</h2>
+  <p>The app works in any phone browser. On a phone, the schedule shows <b>one day at a time</b> – tap the day buttons (Mon–Sun) to switch days. Tap <b>☰</b> (top left) to open the menu.</p>
+  <div class="phones">
+    <figure class="phone"><img src="help/img/phone-schedule.jpg" alt="Schedule on a phone" loading="lazy"><figcaption>Schedule by project, one day at a time.</figcaption></figure>
+    <figure class="phone"><img src="help/img/phone-my.jpg" alt="My Schedule on a phone" loading="lazy"><figcaption>My Schedule – today first.</figcaption></figure>
+  </div>
+  <h3>Add it to your home screen (works like an app)</h3>
+  <ul>
+    <li><b>iPhone:</b> open the link in <b>Safari</b> → tap the Share button (square with an arrow) → <b>Add to Home Screen</b>.</li>
+    <li><b>Android:</b> open the link in <b>Chrome</b> → tap <b>⋮</b> → <b>Add to Home screen</b>.</li>
+  </ul>
+  <div class="note">The <b>All Jobs</b> drag-and-drop board is only on computers and tablets in landscape – it needs a wide screen.</div>
+</section>
+
+<section id="schedule" data-s>
+  <h2>The Schedule page</h2>
+  <figure><img src="help/img/schedule-project.jpg" alt="Schedule by project" loading="lazy"><figcaption>The Schedule page in the <b>By Project</b> view.</figcaption></figure>
+  <h3>The top of the page</h3>
+  <ul>
+    <li><b>Week buttons</b> – <span class="ui">‹</span> and <span class="ui">›</span> move a week; <span class="ui">This week</span> jumps back; the date box jumps to any week.</li>
+    <li><b>Tiles</b> – scheduled hours, how many employees are scheduled, projects staffed, people on site today, people over 40 hours (overtime), days over 8 hours, and requests awaiting approval.</li>
+    <li><b>Legend</b> – what the markers on each entry mean (see <a href="#symbols">Symbols &amp; colors</a>).</li>
+    <li><b>Over 8 hours banner</b> – lists anyone scheduled more than 8 hours in a day.</li>
+  </ul>
+  <h3 id="schedule-views">The three views</h3>
+  <table>
+    <tr><th>View</th><th>Shows</th><th>Best for</th></tr>
+    <tr><td><b>By Project</b></td><td>One row per job, one column per day, with each crew member as a name chip. Totals per day, per job and per week. Under each job: superintendent, PM and hours used vs budget.</td><td>Seeing each job's crew and labor hours</td></tr>
+    <tr><td><b>Who's Where</b></td><td>One row per person, showing their job each day and weekly hours.</td><td>Finding where someone is; spotting open people</td></tr>
+    <tr><td><b>All Jobs</b> (computer)</td><td>One day: every job side by side, and available crew on the left. Drag and drop to schedule.</td><td>Building the schedule fast</td></tr>
+  </table>
+  <figure><img src="help/img/whos-where.jpg" alt="Who's Where view" loading="lazy"><figcaption><b>Who's Where</b>: one row per person. Days showing “available” are open. Weekly hours over 40 show in orange.</figcaption></figure>
+</section>
+
+<section id="scheduling-crew" data-s>
+  <h3>Scheduling a crew</h3>
+  <ol class="steps">
+    <li>Click <span class="ui">+ Schedule crew</span> (superintendents: <span class="ui">+ Request crew</span>). Shortcut: click the <b>+</b> in a job's day, or an “available” box in Who's Where – that job, day or person is filled in for you.</li>
+    <li>Pick the <b>Project</b> and the <b>Total hours scheduled per day</b> (usually 8).</li>
+    <li>Tick the <b>days</b>. <span class="ui">Mon–Fri</span> ticks the work week; <span class="ui">clear</span> unticks all.</li>
+    <li>Optionally type a <b>Task / scope</b> (e.g. “Level 2 framing”).</li>
+    <li>Tick the <b>people</b>. Use the search box and the <b>trade</b> or <b>skill</b> filters to narrow the list (for example, everyone with OSHA 30).</li>
+    <li>Click <span class="ui">Schedule</span> (or <span class="ui">Send request</span>).</li>
+  </ol>
+  <figure><img src="help/img/schedule-crew.jpg" alt="Schedule crew window" loading="lazy"><figcaption>The Schedule crew window. Tags show anyone already on a job that day; “already on this job” or OFF means they can't be added.</figcaption></figure>
+  <ul>
+    <li><b>Open only</b> (ticked) hides people who are already booked on the chosen days. Untick it to add someone for a <a href="#split-days">split day</a>.</li>
+    <li>An orange tag like <span class="chip">Mon: 24-101 8h → ⚠ 11 h</span> means adding them would put them over 8 hours that day – allowed, but flagged.</li>
+    <li>If anything couldn't be saved (for example, someone is off), the window lists who was skipped and why, and saves everyone else.</li>
+  </ul>
+
+  <h3 id="editing-entries">Changing or removing an entry</h3>
+  <p>Click a name chip on the schedule. You can change the <b>project</b>, <b>date</b>, <b>hours</b> or <b>task</b> and click <span class="ui">Save</span>, or click <span class="ui">Remove</span>. Superintendents can only change entries on their own jobs; other entries open read-only.</p>
+  <div class="note">If a superintendent changes an entry the manager already approved, it goes back to <b>Pending</b> for approval.</div>
+
+  <h3 id="split-days">Split days (two jobs in one day)</h3>
+  <p>A person can work more than one job in a day – for example 4 hours at the plant in the morning and 4 at the medical office in the afternoon.</p>
+  <ol class="steps">
+    <li>First shorten the hours on their existing entry (click it, change 8 to 4, Save).</li>
+    <li>In <b>Who's Where</b>, hover over their day and click <span class="ui">+ split</span> (or use Schedule crew with <b>Open only</b> unticked).</li>
+    <li>Pick the second job and the hours, then save. Both jobs show in that day.</li>
+  </ol>
+
+  <h3 id="double-booking">Double booking &amp; hour limits</h3>
+  <table>
+    <tr><th>Situation</th><th>What happens</th></tr>
+    <tr><td>Same person on the <b>same job twice</b> in one day</td><td>Blocked</td></tr>
+    <tr><td>Person is <b>off</b> that day (time off)</td><td>Blocked</td></tr>
+    <tr><td>Day total would go over the <b>hard limit</b> (12 h by default)</td><td>Blocked</td></tr>
+    <tr><td>Day total goes over <b>8 hours</b></td><td>Saved, with an ⚠ warning</td></tr>
+    <tr><td>Week total over <b>40 hours</b></td><td>Saved; counted in the “Over 40 hrs (OT)” tile and shown in orange</td></tr>
+    <tr><td>Two jobs in one day within the limits</td><td>Allowed (split day)</td></tr>
+  </table>
+  <p>The manager can change the 8-hour warning and 12-hour limit in <a href="#admin">Admin → Settings</a>.</p>
+</section>
+
+<section id="all-jobs" data-s>
+  <h3>All Jobs – drag &amp; drop (computer)</h3>
+  <figure><img src="help/img/all-jobs.jpg" alt="All Jobs board" loading="lazy"><figcaption><b>All Jobs</b>: available crew on the left (grouped by trade), every job as a column.</figcaption></figure>
+  <ol class="steps">
+    <li>Click <span class="ui">All Jobs</span>, then pick a day with the day buttons.</li>
+    <li><b>Drag</b> a person from <b>Available</b> onto a job to schedule them (superintendents: to request them). They get the hours shown in <b>Hours when dropped</b>.</li>
+    <li>Drag a person <b>from one job to another</b> to move them.</li>
+    <li>Drag a person <b>back to Available</b> to take them off the job.</li>
+    <li>Click any card to open it. Click an available person to open Schedule crew with them filled in.</li>
+  </ol>
+  <ul>
+    <li>Managers see <span class="ui">✓ Approve N</span> on a job with pending requests.</li>
+    <li>Superintendents can only drop onto their own jobs – other columns are locked.</li>
+    <li>With <b>Only jobs with hours</b> ticked, empty jobs are hidden. Untick it to drop someone onto a job that has nobody yet.</li>
+  </ul>
+</section>
+
+<section id="copy-week" data-s>
+  <h3>Copy last week</h3>
+  <p>Rolls crews forward so you don't rebuild a steady week from scratch.</p>
+  <ol class="steps">
+    <li>Go to the week you want to fill, then click <span class="ui">Copy last week →</span>.</li>
+    <li>Check the <b>From</b> and <b>Into</b> weeks, and pick one project or all projects.</li>
+    <li>Click <span class="ui">Copy</span>. Anyone who's off or would be double booked is skipped and listed.</li>
+  </ol>
+  <div class="note">Superintendents can copy only their own jobs, and the copied days come in as Pending for approval.</div>
+</section>
+
+<section id="schedule-filters" data-s>
+  <h3>Filters, sorting &amp; printing</h3>
+  <ul>
+    <li><b>Only jobs with hours</b> – hides jobs with nobody scheduled that week (or that day on phone/All Jobs). A note says how many are hidden, with a <span class="ui">Show all jobs</span> link. Your choice is remembered on each device.</li>
+    <li><b>All project managers / All superintendents</b> – show only one PM's or superintendent's jobs.</li>
+    <li><b>Sort</b> – by job number, project manager or superintendent.</li>
+    <li><b>All trades</b> (Who's Where) – show only carpenters, laborers, etc.</li>
+    <li><span class="ui">Print</span> (computer) – prints the week with the company logo, for the job trailer.</li>
+  </ul>
+</section>
+
+<section id="approvals" data-s>
+  <h2>Crew requests &amp; approvals</h2>
+  <p>Superintendents <b>request</b> crew for their jobs. The Workforce Manager <b>approves</b> or <b>rejects</b> them. The manager's own scheduling is approved right away.</p>
+  <h3>For superintendents</h3>
+  <ul>
+    <li>You can request crew only on jobs where you are the listed superintendent, and your login must be linked to your employee record. If <span class="ui">+ Request crew</span> says you have no projects, ask the manager.</li>
+    <li>Requests show with a dashed orange outline and <span class="chip pend">Pending</span>.</li>
+    <li><span class="ui">My requests</span> lists your pending requests and anything rejected in the last two weeks, with the reason.</li>
+    <li>To ask again after a rejection, click the struck-through entry, adjust it and click <span class="ui">Resubmit</span> – or request someone else.</li>
+  </ul>
+  <figure><img src="help/img/super-schedule.jpg" alt="Superintendent's view of the schedule" loading="lazy"><figcaption>A superintendent's view: pending requests (dashed), a rejection notice, and + buttons only on their own jobs.</figcaption></figure>
+  <h3>For the Workforce Manager</h3>
+  <ol class="steps">
+    <li>Click <span class="ui">Requests (N)</span> on the Schedule page.</li>
+    <li>Tick requests and click <span class="ui">✓ Approve selected</span>, or <span class="ui">✓ Approve all</span>.</li>
+    <li>To reject, tick them, click <span class="ui">✕ Reject selected…</span> and type a <b>reason</b> (required) – the superintendent sees it.</li>
+  </ol>
+  <figure class="half"><img src="help/img/requests.jpg" alt="Requests window" loading="lazy"><figcaption>The approval queue.</figcaption></figure>
+  <p>You can also approve or reject from an entry itself (click its chip), or with <span class="ui">✓ Approve N</span> on a job in All Jobs.</p>
+  <figure class="half"><img src="help/img/edit-pending.jpg" alt="Pending entry with approve and reject buttons" loading="lazy"><figcaption>A pending entry: type a reason and click Reject, or click Approve.</figcaption></figure>
+  <div class="note">Pending and rejected entries are not shown to field staff and don't count in payroll or hour verification. A rejected person is freed up for other jobs that day.</div>
+</section>
+
+<section id="time-off" data-s>
+  <h2>Time off</h2>
+  <p>Enter vacations, medical leave, jury duty, union business and so on – <b>for any future dates</b>. When that week comes up on the schedule, the person already shows as <span class="chip off">Off</span> and can't be scheduled those days.</p>
+  <h3>From the employee's record (best for planned time off)</h3>
+  <ol class="steps">
+    <li><span class="ui">Employees</span> → click the person.</li>
+    <li>In <b>Time off</b>, choose <b>From</b> and <b>To</b> dates, a <b>reason</b>, and an optional note.</li>
+    <li>Leave <b>Weekdays only</b> ticked to skip Saturdays and Sundays. Click <span class="ui">Add time off</span>.</li>
+  </ol>
+  <figure><img src="help/img/employee-timeoff.jpg" alt="Time off on an employee record" loading="lazy"><figcaption>Two weeks of vacation entered months ahead.</figcaption></figure>
+  <h3>From the Schedule page</h3>
+  <p>Click <span class="ui">Time off</span>, pick the employee, dates and reason, and save. To remove a day, click the <span class="chip off">Off</span> box on the schedule, or use <b>remove</b> on the employee's record.</p>
+  <div class="note">Time off can't be added on a day the person is already scheduled. Remove that schedule entry first, then add the time off.</div>
+</section>
+
+<section id="my-schedule" data-s>
+  <h2>My Schedule (field staff)</h2>
+  <p>Shows your own upcoming days: the date, the job and the hours. <b>Today</b> is at the top with an orange outline. Past days are folded under <b>Earlier days</b>.</p>
+  <ul>
+    <li>Only <b>approved</b> days appear. If you expected to see something and don't, it may still be waiting for approval.</li>
+    <li>If you see “not linked to an employee record”, ask the Workforce Manager to link your login.</li>
+  </ul>
+</section>
+
+<section id="verify" data-s>
+  <h2>Verify Hours</h2>
+  <p>Verify Hours works on the <b>payroll week</b> (Wednesday–Tuesday unless changed in Settings). It's where you confirm what was actually worked.</p>
+  <figure><img src="help/img/verify.jpg" alt="Verify Hours after importing time cards" loading="lazy"><figcaption>Verify Hours after a time card import: Scheduled vs Time card vs Actual, with filters across the top.</figcaption></figure>
+  <h3>The top of the page</h3>
+  <ul>
+    <li><span class="ui">‹</span> / <span class="ui">›</span> move one payroll week.</li>
+    <li>A line shows which time card files were imported for this week, by whom and when.</li>
+    <li>Tiles: scheduled hours, time card hours, verified actual hours, actual vs scheduled, how many entries are verified, and no-shows.</li>
+    <li>Filter buttons: <b>All</b>, <b>Matches</b>, <b>Differs</b>, <b>Not scheduled</b>, <b>No time card</b>.</li>
+  </ul>
+
+  <h3 id="timecards">Importing Procore time cards (Workforce Manager)</h3>
+  <ol class="steps">
+    <li>In Procore, run the time card report for the payroll week and export it as <b>CSV</b>.</li>
+    <li>In Verify Hours, click <span class="ui">Import Procore time cards…</span> and choose the file.</li>
+    <li>Read the preview: dates, number of lines, people and hours, plus how many match the schedule, differ, weren't scheduled, have no time card, or didn't match an employee or job.</li>
+    <li>Click <span class="ui">Import N lines</span>. The page jumps to that payroll week.</li>
+  </ol>
+  <figure class="half"><img src="help/img/timecard-preview.jpg" alt="Time card import preview" loading="lazy"><figcaption>The preview before importing.</figcaption></figure>
+  <p><b>How lines are matched:</b> Procore's <b>Employee ID</b> must equal the employee's <b>Employee #</b> in the app, and Procore's <b>Project Number</b> must equal the job number. A person's hours for the same day and job are added together across cost codes (for example 6 h framing + 2 h clean-up = 8 h).</p>
+  <div class="warn">Importing the same dates again <b>replaces</b> the time card lines for those dates (nothing is doubled) – but it also replaces any hours you changed by hand on those days. Re-import first, then make your hand adjustments.</div>
+
+  <h3 id="reviewing">Reviewing &amp; adjusting hours</h3>
+  <table>
+    <tr><th>Status</th><th>Meaning</th><th>What to do</th></tr>
+    <tr><td><b>Matches schedule</b></td><td>Time card hours = scheduled hours</td><td>Nothing – already verified</td></tr>
+    <tr><td><b>Differs from schedule</b></td><td>Time card hours ≠ scheduled (row tinted orange)</td><td>Check the cost code notes; adjust if needed</td></tr>
+    <tr><td><b>Not scheduled – from time card</b></td><td>Someone worked a job/day that wasn't on the schedule. The app adds it so the hours count toward the job and payroll.</td><td>Keep it, or remove it with ✕ if it's wrong</td></tr>
+    <tr><td><b>No time card</b></td><td>Scheduled, but nothing on the time card</td><td>Mark a no-show (✗) with a reason, or confirm the hours (✓)</td></tr>
+  </table>
+  <ul>
+    <li><b>Change a number:</b> type in the <b>Actual</b> box and click <span class="ui">✓</span>. The time card number stays visible, and the row notes “Adjusted by hand (time card X h)”.</li>
+    <li>The <b>+/−</b> column shows actual minus scheduled.</li>
+    <li>Under the time card number you'll see each cost code line and its Procore description.</li>
+    <li><span class="ui">undo</span> clears a verification so the entry is back to unverified.</li>
+    <li><span class="ui">✓ Verify N remaining as scheduled</span> confirms every still-unverified entry up to today at its scheduled hours – handy when there's no time card file.</li>
+  </ul>
+
+  <h3 id="no-shows">No-shows</h3>
+  <p>Click <span class="ui">✗</span> on the row. Choose a <b>reason</b> (Sick, Family emergency, No call / no show, Weather, Transportation, Injury, Personal, Other), whether it was <b>excused</b>, and any details. A reason is required. It's saved on the employee's record under <b>No-shows</b>, so you can review attendance by person.</p>
+  <figure class="half"><img src="help/img/no-show.jpg" alt="No-show reason window" loading="lazy"><figcaption>Recording a no-show.</figcaption></figure>
+
+  <h3 id="unmatched">Time card lines that didn't match</h3>
+  <p>If the time card has someone who isn't in Employees, or a job that isn't in Projects, those lines are listed at the bottom of Verify Hours with the reason. Their hours don't count until they're linked.</p>
+  <figure><img src="help/img/verify-unmatched.jpg" alt="Unmatched time card lines" loading="lazy"><figcaption>An unmatched line (a new hire not yet in Employees).</figcaption></figure>
+  <ol class="steps">
+    <li>Click <span class="ui">Add employee</span> or <span class="ui">Add job</span> on the line. The short form is filled in from the time card – check it and click <span class="ui">Add and re-match</span>.</li>
+    <li>Or add/fix the person or job yourself (for example, correct an Employee # so it matches Procore), then click <span class="ui">Re-match time cards</span>.</li>
+  </ol>
+</section>
+
+<section id="payroll" data-s>
+  <h2>🔒 Payroll (private)</h2>
+  <p>Only people with payroll access see this tab. Pay rates never appear anywhere else.</p>
+  <h3>Pay rates (with history)</h3>
+  <figure><img src="help/img/pay-rates.jpg" alt="Pay rates" loading="lazy"><figcaption>Current rate, when it started, and any scheduled change for each person.</figcaption></figure>
+  <ul>
+    <li>Each rate has an <b>effective date</b>. Every day worked is costed at the rate in effect on that day – so past weeks keep the rate actually paid, and a raise only applies from its start date.</li>
+    <li><span class="ui">New rate</span> – base $/hr, union fringe $/hr, burden % (leave blank to use the company default) and a note.</li>
+    <li><span class="ui">History</span> – every rate with who entered it. Use <b>remove</b> only to fix a mistake.</li>
+    <li><span class="ui">Union increase for a trade…</span> – add the same raise (base and fringe) for everyone in a trade from a date, in one step.</li>
+  </ul>
+  <figure class="half"><img src="help/img/rate-history.jpg" alt="Rate history" loading="lazy"><figcaption>A person's rate history.</figcaption></figure>
+  <h3>Labor-cost forecast</h3>
+  <figure><img src="help/img/payroll.jpg" alt="Payroll forecast" loading="lazy"><figcaption>The forecast: totals, then cost by week, project × week, project, trade and employee.</figcaption></figure>
+  <ul>
+    <li>Pick the starting payroll week and how many weeks (1–26). Pick a past week to see what labor actually cost.</li>
+    <li>Uses <b>verified actual hours</b> where entered, otherwise <b>scheduled</b> hours. Only <b>approved</b> work is counted – the page tells you how many pending requests were left out.</li>
+    <li><b>Overtime</b>: hours over 40 in a payroll week are paid at 1.5× (both adjustable in Settings), charged to whichever job they were worked on.</li>
+    <li><b>Cost</b> = wages (regular + overtime) + burden (wages × burden %) + fringe (all hours × fringe rate).</li>
+    <li>If someone has no pay rate, they're listed in a warning and costed at $0 – click <b>Enter rates</b>.</li>
+  </ul>
+</section>
+
+<section id="projects" data-s>
+  <h2>Projects</h2>
+  <figure><img src="help/img/projects.jpg" alt="Projects list" loading="lazy"><figcaption>The projects list. Click any column heading to sort; click again to reverse.</figcaption></figure>
+  <ul>
+    <li><b>Show completed</b> includes finished jobs. <b>All project managers</b> shows one PM's jobs.</li>
+    <li><b>Hours to date</b> = starting hours + approved scheduled/verified hours. <b>Verified</b> = hours confirmed in Verify Hours.</li>
+    <li>The <b>Budget</b> bar fills as hours are used: grey normally, orange past 85%, dark orange over 100%.</li>
+  </ul>
+  <h3>Adding or editing a project</h3>
+  <p>Click <span class="ui">+ New project</span> or a row. Fields: job number and name (required), customer/GC, <b>project manager</b>, <b>superintendent / foreman</b>, status, original budget hours, starting hours, start and end dates, board color, site address (opens in maps on a phone) and notes.</p>
+  <ul>
+    <li><b>Status</b>: Planned, Active, On hold, Complete. Planned and Active jobs appear on the schedule; Complete jobs drop off but keep their history.</li>
+    <li>The <b>superintendent</b> list shows employees whose classification contains “Superintendent” or “Foreman”. The <b>project manager</b> list shows employees classified “Project Manager”. If someone is missing, fix their classification in Employees.</li>
+    <li>A project can only be deleted if it has no schedule history – otherwise mark it <b>Complete</b>.</li>
+  </ul>
+  <h3 id="change-orders">Budget, starting hours &amp; change orders</h3>
+  <figure><img src="help/img/project-edit.jpg" alt="Project window with change orders" loading="lazy"><figcaption>Original budget + change orders = total budget.</figcaption></figure>
+  <ul>
+    <li><b>Original budget</b> – labor hours from the estimate.</li>
+    <li><b>Starting hours</b> – hours already used before the job was set up in the app. They're added to hours to date.</li>
+    <li><b>Change orders</b> – at the bottom of the window (after the project is saved). Enter CO #, description, date and hours, then <span class="ui">Add change order</span>. Use a negative number for a deduct.</li>
+    <li><b>Total budget</b> = original + all change orders. It's what the budget bars on the Projects list and Schedule use.</li>
+  </ul>
+  <div class="note">The manager and the job's own superintendent can add or remove change orders.</div>
+</section>
+
+<section id="employees" data-s>
+  <h2>Employees</h2>
+  <figure><img src="help/img/employees.jpg" alt="Employees list" loading="lazy"><figcaption>The employee list with trade, union local, classification and skills.</figcaption></figure>
+  <ul>
+    <li>Search by name, phone, local or employee #. Filter by trade or skill. <b>Show inactive</b> includes former employees.</li>
+    <li>Tap a phone number on a phone to call.</li>
+    <li>Expired certifications show in solid orange.</li>
+  </ul>
+  <h3>Adding or editing an employee</h3>
+  <p>Click <span class="ui">+ New employee</span> or a row. Fields: first and last name (required), <b>Employee #</b> (must match Procore's Employee ID for time cards), phone, email, hire date, union trade, union local, classification, skills and notes.</p>
+  <table>
+    <tr><th>Classification contains…</th><th>Effect</th></tr>
+    <tr><td>Superintendent, Foreman (e.g. General Foreman)</td><td>Can be picked as a project's superintendent</td></tr>
+    <tr><td>Project Manager</td><td>Can be picked as a project's PM; left out of crew lists (office staff)</td></tr>
+  </table>
+  <ul>
+    <li><b>Skills &amp; certifications</b> – tick from the list, set an expiration date if there is one, or type new ones (comma separated). <span class="ui">Manage skills</span> adds to the master list.</li>
+    <li><b>Active</b> – untick when someone leaves. They disappear from scheduling but all their history stays. (Deleting someone with history also just marks them inactive.)</li>
+    <li>Also on the record: <a href="#time-off">Time off</a>, <b>No-shows</b> with reasons, and <b>Recent work</b>.</li>
+  </ul>
+</section>
+
+<section id="importing" data-s>
+  <h2>Importing from spreadsheets (Workforce Manager)</h2>
+  <p>Employees and Projects each have <span class="ui">Import from spreadsheet…</span>. It's the fastest way to load a list and to keep it up to date later.</p>
+  <figure class="half"><img src="help/img/import.jpg" alt="Import window" loading="lazy"><figcaption>The import window. Click “Download a template” for a ready-made file.</figcaption></figure>
+  <ol class="steps">
+    <li>Save your list as <b>CSV</b> (Excel: File → Save As → CSV UTF-8). Columns can be in any order.</li>
+    <li>Click <span class="ui">Import from spreadsheet…</span> and choose the file.</li>
+    <li>Check the preview: <b>New</b>, <b>Update</b>, <b>Skipped</b> and <b>Error</b> rows. Nothing is saved yet.</li>
+    <li>If there are errors, fix those rows in the file and choose it again. Then click <span class="ui">Import</span>.</li>
+  </ol>
+  <h3>Employee file columns</h3>
+  <p>Employee #, First Name, Last Name, Phone, Email, Trade, Union Local, Classification, Hire Date, Active (Yes/No), Skills (separate with ;), Notes. Rows whose trade or classification is <b>Clerical</b> or <b>CLER</b> are skipped (you can change that list).</p>
+  <h3>Project file columns</h3>
+  <p>Job Number, Project Name, Customer, Address, City, State, ZIP, Status (or Stage), Start Date, End Date, Budget Hours, Starting Hours, Change Order Hours, Superintendent, Project Manager, Notes. Procore stages are understood: <i>Course of Construction</i> and <i>Warranty</i> → Active; <i>Pre-Construction</i> and <i>Bidding</i> → Planned. Superintendent and Project Manager are matched to employees by name – import employees first.</p>
+  <div class="note">Re-importing an updated list <b>updates</b> people (by Employee #) and jobs (by job number) instead of adding duplicates. Blank cells never erase what's already saved.</div>
+  <div class="warn">Never put Social Security numbers, pay rates or home addresses in an import file.</div>
+</section>
+
+<section id="records" data-s>
+  <h2>Records &amp; Excel export</h2>
+  <figure><img src="help/img/records.jpg" alt="Records page" loading="lazy"><figcaption>Search history, with totals by project and by trade.</figcaption></figure>
+  <ol class="steps">
+    <li>Set the <b>From</b> and <b>To</b> dates (the last 30 days by default).</li>
+    <li>Optionally pick a project, employee, trade, status or approval.</li>
+    <li>Click <span class="ui">Search</span>. Totals by project and trade show where labor hours went.</li>
+    <li>Click <span class="ui">Export CSV (Excel)</span> to download every matching row (including no-show and rejection notes).</li>
+  </ol>
+</section>
+
+<section id="admin" data-s>
+  <h2>Admin: users, settings, backup (Workforce Manager)</h2>
+  <h3>Users</h3>
+  <figure><img src="help/img/admin-users.jpg" alt="Users list" loading="lazy"><figcaption>Users and their roles.</figcaption></figure>
+  <ol class="steps">
+    <li>Click <span class="ui">+ New user</span> (or a row to edit).</li>
+    <li>Enter full name, username and a password of 8+ characters. Choose the <b>role</b>: Workforce Manager, Superintendent or Field staff.</li>
+    <li><b>Linked employee</b> – pick their employee record. Superintendents need this to request crew; field staff need it for My Schedule.</li>
+    <li>Tick <b>🔒 Can view private payroll</b> only for people who should see pay.</li>
+    <li>To reset a forgotten password, open the user and type a new one. Untick <b>Account active</b> to turn off a login.</li>
+  </ol>
+  <figure class="half"><img src="help/img/user-edit.jpg" alt="Edit user window" loading="lazy"><figcaption>Editing a superintendent's login.</figcaption></figure>
+  <h3>Settings</h3>
+  <figure><img src="help/img/admin-settings.jpg" alt="Settings" loading="lazy"><figcaption>Company-wide settings and backup.</figcaption></figure>
+  <table>
+    <tr><th>Setting</th><th>Default</th><th>What it does</th></tr>
+    <tr><td>Default hours per day</td><td>8</td><td>Pre-fills hours when scheduling</td></tr>
+    <tr><td>OT after (hours / week)</td><td>40</td><td>Weekly overtime threshold for payroll</td></tr>
+    <tr><td>OT multiplier</td><td>1.5</td><td>Overtime pay rate</td></tr>
+    <tr><td>Default burden %</td><td>25</td><td>Payroll taxes, workers' comp, insurance – used when a person's rate has none</td></tr>
+    <tr><td>Hard limit (hours / day)</td><td>12</td><td>Scheduling above this is blocked</td></tr>
+    <tr><td>Payroll week starts on</td><td>Wednesday</td><td>Verify Hours week and payroll overtime week</td></tr>
+    <tr><td>Warn when over (hours / day)</td><td>8</td><td>Scheduling above this is saved with a warning</td></tr>
+  </table>
+  <h3>Backup</h3>
+  <p><span class="ui">Download database backup</span> saves one file with everything. Download one weekly and keep it somewhere secure – it contains pay rates.</p>
+  <h3>Activity log</h3>
+  <p>Shows who did what and when: scheduling, approvals, imports, rate changes and so on. Times are shown in UTC (world time): subtract 5 hours for Central time in summer, or 6 hours in winter.</p>
+</section>
+
+<section id="symbols" data-s>
+  <h2>Symbols &amp; colors</h2>
+  <table>
+    <tr><th>You see</th><th>It means</th></tr>
+    <tr><td><span class="chip">Kyle B. ✓</span></td><td>Approved schedule entry</td></tr>
+    <tr><td><span class="chip">Kyle B. ✓✓</span></td><td>Approved, and hours verified</td></tr>
+    <tr><td><span class="chip pend">Kyle B. PENDING</span></td><td>Requested by a superintendent, waiting for approval</td></tr>
+    <tr><td><span class="chip rej">Kyle B. ✕</span></td><td>Rejected (click to see the reason)</td></tr>
+    <tr><td><span class="chip off">Off – Vacation</span></td><td>Time off – can't be scheduled</td></tr>
+    <tr><td><span class="chip">Kyle B. 10h</span></td><td>Hours other than 8</td></tr>
+    <tr><td><span class="chip">⚠10</span> / orange outline</td><td>Scheduled over 8 hours that day (the number is the day's total)</td></tr>
+    <tr><td><span class="chip">6h TC</span></td><td>Worked but not scheduled – added from the time card</td></tr>
+    <tr><td>Orange weekly hours (Who's Where)</td><td>Over 40 hours this week (overtime)</td></tr>
+    <tr><td>Orange column header</td><td>Today</td></tr>
+    <tr><td>Budget bar grey / orange / dark orange</td><td>Under 85% / 85–100% / over budget</td></tr>
+    <tr><td>Solid orange skill tag</td><td>Expired certification</td></tr>
+  </table>
+</section>
+
+<section id="glossary" data-s>
+  <h2>Glossary</h2>
+  <table>
+    <tr><th>Term</th><th>Meaning</th></tr>
+    <tr><td>Entry / assignment</td><td>One person on one job on one day, with hours</td></tr>
+    <tr><td>Crew-day</td><td>One person working one day (used in Records totals)</td></tr>
+    <tr><td>Split day</td><td>A person on two or more jobs in the same day</td></tr>
+    <tr><td>Payroll week</td><td>The pay period – Wednesday to Tuesday by default</td></tr>
+    <tr><td>Scheduled hours</td><td>Hours planned on the schedule</td></tr>
+    <tr><td>Time card hours</td><td>Hours from the imported Procore time card</td></tr>
+    <tr><td>Actual hours</td><td>The hours that count – from the time card, or typed in by hand</td></tr>
+    <tr><td>Verified</td><td>Actual hours have been confirmed</td></tr>
+    <tr><td>Starting hours</td><td>Hours used on a job before it was set up in the app</td></tr>
+    <tr><td>Change order (CO)</td><td>Added (or deducted) labor hours on a job's budget</td></tr>
+    <tr><td>Total budget</td><td>Original budget + change orders</td></tr>
+    <tr><td>Burden</td><td>Payroll taxes, workers' comp and insurance as a % of wages</td></tr>
+    <tr><td>Fringe</td><td>Union benefits paid per hour</td></tr>
+    <tr><td>Effective date</td><td>The day a pay rate starts applying</td></tr>
+  </table>
+</section>
+
+<section id="faq" data-s>
+  <h2>Frequently asked questions</h2>
+
+  <div class="faq-group">Signing in</div>
+  <details><summary>I forgot my password.</summary><div>Ask the Workforce Manager to reset it (Admin → Users → open your name → type a new password). Then sign in and change it to one only you know.</div></details>
+  <details><summary>It says “Too many attempts”.</summary><div>After 8 wrong passwords, sign-in pauses for 5 minutes. Wait, then try again carefully (check Caps Lock).</div></details>
+  <details><summary>Can I use it on my phone?</summary><div>Yes. Open the link in Safari (iPhone) or Chrome (Android) and add it to your home screen. See <a href="#phone">Using it on a phone</a>.</div></details>
+  <details><summary>Why don't I see the Payroll, Verify Hours or Admin tabs?</summary><div>Tabs depend on your role. Payroll needs payroll access, Verify Hours is for the manager and superintendents, and Admin is for the Workforce Manager. See <a href="#roles">Your role</a>.</div></details>
+
+  <div class="faq-group">Scheduling</div>
+  <details><summary>Why is a person greyed out when I try to schedule them?</summary><div>They're either <b>off</b> that day or <b>already on the job you picked</b> that day. The red tag says which. If they're on a <i>different</i> job, they're not greyed out – you can add them for a split day.</div></details>
+  <details><summary>How do I put someone on two jobs in one day?</summary><div>Shorten their first entry's hours, then add the second job. See <a href="#split-days">Split days</a>.</div></details>
+  <details><summary>I got a “⚠ over 8 hours” warning. Did it save?</summary><div>Yes. Over 8 hours is allowed but flagged so it's a deliberate choice. Only the hard limit (12 h by default) blocks saving.</div></details>
+  <details><summary>It says “would have 14 hrs (daily limit 12)”.</summary><div>That's the hard limit. Reduce the hours on one of the person's jobs that day. The manager can change the limit in Settings.</div></details>
+  <details><summary>How do I schedule a Saturday?</summary><div>In Schedule crew, tick Sat. Or click the + in the Saturday column, or pick Saturday in All Jobs.</div></details>
+  <details><summary>My crew can't see the schedule I made.</summary><div>Field staff only see <b>approved</b> entries. If a superintendent made them, the manager needs to approve them. Also ask them to refresh the page.</div></details>
+  <details><summary>I'm a superintendent and it says I have no projects to request crew for.</summary><div>Two things must be set by the manager: your login is linked to your employee record (Admin → Users), and you are set as Superintendent on your jobs (Projects → open the job).</div></details>
+  <details><summary>My request was rejected. What now?</summary><div>Click <b>My requests</b> to see the reason. Click the struck-through entry, adjust it and click <b>Resubmit</b>, or request someone else.</div></details>
+  <details><summary>Why did my approved entry go back to Pending?</summary><div>When a superintendent changes an approved entry, it goes back to the manager for approval.</div></details>
+  <details><summary>The schedule list is too long.</summary><div>Tick <b>Only jobs with hours</b> to hide empty jobs, and use the PM or superintendent filters.</div></details>
+  <details><summary>How do I print the week for the job trailer?</summary><div>On a computer, click <b>Print</b> on the Schedule page.</div></details>
+  <details><summary>Where's the All Jobs view on my phone?</summary><div>It's only on wider screens (computer or tablet). On a phone, use By Project or Who's Where.</div></details>
+
+  <div class="faq-group">Time off &amp; attendance</div>
+  <details><summary>Someone told me they'll be off for three weeks next spring. Can I enter it now?</summary><div>Yes. Open the employee and use <b>Time off</b> with the From and To dates. It'll show automatically when those weeks come up. See <a href="#time-off">Time off</a>.</div></details>
+  <details><summary>I can't add time off – it says they're already scheduled.</summary><div>Remove their schedule entry on that day first, then add the time off.</div></details>
+  <details><summary>How do I mark a no-show?</summary><div>In Verify Hours, click ✗ on their row and choose a reason. See <a href="#no-shows">No-shows</a>.</div></details>
+  <details><summary>Where can I see someone's attendance history?</summary><div>Open the employee: <b>No-shows</b> lists each one with the reason and who recorded it.</div></details>
+
+  <div class="faq-group">Time cards &amp; hours</div>
+  <details><summary>What's the difference between Scheduled, Time card and Actual?</summary><div><b>Scheduled</b> is what was planned. <b>Time card</b> is what Procore says. <b>Actual</b> is what counts for job hours and payroll – it starts as the time card number and you can change it.</div></details>
+  <details><summary>The time card has someone we didn't schedule.</summary><div>The app adds it as “Not scheduled – from time card” so the hours count. Keep it, or remove it with ✕ if it's a mistake.</div></details>
+  <details><summary>A time card line didn't match anyone.</summary><div>The person's Employee # must equal Procore's Employee ID, and the job number must equal Procore's Project Number. Add or fix the person or job, then click <b>Re-match time cards</b>. See <a href="#unmatched">Lines that didn't match</a>.</div></details>
+  <details><summary>The time card says “Bobby” but our employee is “Robert”. Is that a problem?</summary><div>No. Matching uses the Employee ID, not the name.</div></details>
+  <details><summary>I re-imported time cards and my hand changes disappeared.</summary><div>Re-importing replaces the time card totals for those dates, including hand changes. Re-import first, then adjust.</div></details>
+  <details><summary>Can I import a partial week, or fix one day?</summary><div>Yes. Only the dates in the file are replaced; other days are left alone.</div></details>
+  <details><summary>We don't have a time card file this week. Can I still verify?</summary><div>Yes. Type actual hours and click ✓ row by row, or click <b>Verify N remaining as scheduled</b>.</div></details>
+  <details><summary>Why does Verify Hours start on Wednesday?</summary><div>It follows the payroll week. The manager can change it in Admin → Settings → Payroll week starts on.</div></details>
+
+  <div class="faq-group">Projects &amp; employees</div>
+  <details><summary>What are starting hours?</summary><div>Hours already used on a job before it was set up in the app. They're added to hours to date so the budget bar is right from day one.</div></details>
+  <details><summary>How do change orders affect the budget?</summary><div>Each change order adds (or, if negative, deducts) hours. Total budget = original + change orders. See <a href="#change-orders">Change orders</a>.</div></details>
+  <details><summary>Someone isn't in the Superintendent or Project Manager list.</summary><div>Those lists come from classification. Set the employee's classification to include “Superintendent” or “Foreman” (for superintendent) or “Project Manager” (for PM).</div></details>
+  <details><summary>An employee left the company.</summary><div>Open them and untick <b>Active</b>. They drop out of scheduling but their history stays for records and job costing.</div></details>
+  <details><summary>Can I delete a project?</summary><div>Only if it has no schedule history. Otherwise set its status to <b>Complete</b> – it drops off the schedule but keeps its history.</div></details>
+  <details><summary>How do I add a new hire?</summary><div>Employees → + New employee. Enter their Employee # exactly as in Procore so their time cards match.</div></details>
+
+  <div class="faq-group">Payroll</div>
+  <details><summary>Who can see pay rates?</summary><div>Only users with payroll access (and the Workforce Manager). Pay rates appear nowhere else in the app.</div></details>
+  <details><summary>Will a union raise change past payroll numbers?</summary><div>No. Rates have effective dates; days before the raise keep the old rate.</div></details>
+  <details><summary>Why doesn't the forecast include some hours?</summary><div>It counts approved work only (pending requests are listed separately). People with no pay rate are costed at $0 and listed in a warning.</div></details>
+  <details><summary>How is overtime calculated?</summary><div>Hours over 40 in a payroll week (Wed–Tue) are paid at 1.5×, charged to the job worked when they happened. Both numbers are in Settings.</div></details>
+
+  <div class="faq-group">Data &amp; other</div>
+  <details><summary>Can I get the data into Excel?</summary><div>Yes – Records → Export CSV (Excel).</div></details>
+  <details><summary>How do I back up the data?</summary><div>Admin → Settings → Download database backup. Keep it somewhere secure.</div></details>
+  <details><summary>I don't see the latest update to the app.</summary><div>Refresh the page. On a computer press Ctrl + Shift + R (Windows) or Cmd + Shift + R (Mac). On a phone, close the app and open it again.</div></details>
+  <details><summary>Can field staff change anything?</summary><div>No. Field staff can view the schedule, projects, employees and records, and see their own days. Only the manager and superintendents make changes.</div></details>
+</section>
+
+<section id="troubleshooting" data-s>
+  <h2>Troubleshooting</h2>
+  <table>
+    <tr><th>Problem</th><th>Try this</th></tr>
+    <tr><td>A page looks out of date</td><td>Refresh (Ctrl/Cmd + Shift + R). On a phone, close and reopen.</td></tr>
+    <tr><td>“Please sign in” appears</td><td>Your session ended. Sign in again.</td></tr>
+    <tr><td>A button does nothing</td><td>You may not have permission for that action, or a window is open behind – press Esc and try again.</td></tr>
+    <tr><td>Import says the file has no rows</td><td>Make sure it's saved as CSV with a heading row on line 1.</td></tr>
+    <tr><td>Import shows errors</td><td>Each error row says what's wrong (e.g. a date that isn't a date). Fix those rows in the file and choose it again.</td></tr>
+    <tr><td>Someone can't be scheduled</td><td>Check for time off, an existing entry on the same job, or the 12-hour limit.</td></tr>
+    <tr><td>Hours look wrong on a job</td><td>Check starting hours and change orders on the project, and Verify Hours for that week.</td></tr>
+  </table>
+  <h3>Still stuck?</h3>
+  <p>Contact your <b>Workforce Manager</b>. For account, password or permission questions, they can fix it in Admin → Users.</p>
+</section>
+</main>
+</div>
+
+<footer>Fager-McGee Commercial Construction · 347 S. Williams St., Murphysboro, IL 62966 · 618-687-3900 · www.fager-mcgee.com</footer>
+<a class="totop" href="#welcome">↑ Top</a>
+<script src="/help/help.js"></script>
+</body>
+</html>
