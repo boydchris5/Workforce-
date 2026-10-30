@@ -103,6 +103,15 @@ db.tx(conn, () => {
   conn.prepare("UPDATE assignments SET planned_hours = 4, task = 'Clarifier drive alignment' WHERE employee_id = ? AND work_date = ?").run(eid[11], splitDay);
   conn.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task)
     VALUES (?, ?, ?, 4, 'Set rooftop unit curbs')`).run(eid[11], pid[2], splitDay);
+
+  // Approval workflow examples: Mike Jones (superintendent on 24-101 and 25-007)
+  // requests a Saturday crew next week; the manager has rejected one of them.
+  const sat = addDays(thisWeek, 12);
+  const req = conn.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by, approval_status, reject_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const ei of [0, 2, 3]) req.run(eid[ei], pid[0], sat, 8, 'Saturday catch-up – gym roof framing', s1, 'pending', null);
+  req.run(eid[5], pid[0], sat, 8, 'Saturday catch-up – gym roof framing', s1, 'rejected', 'Ben is needed Monday on the bridge pour – no Saturday OT this week');
+  req.run(eid[7], pid[0], addDays(thisWeek, 10), 4, 'Finish stair landings after MOB shift', s1, 'pending', null);
 });
 
 console.log(`Demo data loaded into ${DB_FILE}`);

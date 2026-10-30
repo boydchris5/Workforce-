@@ -150,7 +150,7 @@ const DEFAULT_SETTINGS = {
   warn_daily_hours: '8',
 };
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -163,7 +163,8 @@ function migrate(db) {
     db.exec('PRAGMA foreign_keys = OFF;');
     tx(db, () => {
       db.exec(assignmentsDdl('assignments_v2'));
-      db.exec('INSERT INTO assignments_v2 SELECT id, employee_id, project_id, work_date, planned_hours, start_time, task, actual_hours, status, verified_by, verified_at, verify_note, created_by, created_at, updated_at FROM assignments;');
+      const cols = 'id, employee_id, project_id, work_date, planned_hours, start_time, task, actual_hours, status, verified_by, verified_at, verify_note, created_by, created_at, updated_at';
+      db.exec(`INSERT INTO assignments_v2 (${cols}) SELECT ${cols} FROM assignments;`);
       db.exec('DROP TABLE assignments; ALTER TABLE assignments_v2 RENAME TO assignments;');
       db.exec('CREATE INDEX IF NOT EXISTS idx_assign_date ON assignments(work_date); CREATE INDEX IF NOT EXISTS idx_assign_project ON assignments(project_id, work_date); CREATE INDEX IF NOT EXISTS idx_assign_emp ON assignments(employee_id, work_date);');
     });
@@ -187,6 +188,18 @@ function migrate(db) {
       // Carry over superintendents whose login is linked to an employee record.
       db.exec(`UPDATE projects SET superintendent_employee_id =
         (SELECT u.employee_id FROM users u WHERE u.id = projects.superintendent_user_id) WHERE superintendent_user_id IS NOT NULL;`);
+    });
+  }
+  // v4: superintendents request crew; the workforce manager approves or rejects.
+  // Everything scheduled before this version counts as approved.
+  const asgCols = db.prepare('PRAGMA table_info(assignments)').all().map((c) => c.name);
+  if (!asgCols.includes('approval_status')) {
+    tx(db, () => {
+      db.exec("ALTER TABLE assignments ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved';");
+      db.exec('ALTER TABLE assignments ADD COLUMN approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL;');
+      db.exec('ALTER TABLE assignments ADD COLUMN approved_at TEXT;');
+      db.exec('ALTER TABLE assignments ADD COLUMN reject_reason TEXT;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_assign_approval ON assignments(approval_status, work_date);');
     });
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);

@@ -125,6 +125,15 @@ const S = {
   filterTrade: '',
 };
 const canSchedule = () => S.user && ['admin', 'super'].includes(S.user.role);
+// Manager edits any job; a superintendent edits only jobs where they are the listed superintendent.
+const canEditProject = (pid) => {
+  if (!S.user) return false;
+  if (S.user.role === 'admin') return true;
+  if (S.user.role !== 'super' || !S.user.employee_id) return false;
+  const p = (S.projects || []).find((x) => x.id === Number(pid)) || (S.sched?.projects || []).find((x) => x.id === Number(pid));
+  return !!p && p.superintendent_employee_id === S.user.employee_id;
+};
+const myProjects = () => (S.projects || []).filter((p) => p.status !== 'complete' && canEditProject(p.id));
 const isAdmin = () => S.user && S.user.role === 'admin';
 const mobile = () => window.innerWidth < 760;
 
@@ -235,6 +244,8 @@ async function renderSchedule(page) {
   const pms = leadList('project_manager_employee_id', 'project_manager_name');
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
   const overDay = t.over_day || [];
+  const appr = t.approval || { pending: 0, rejected: 0 };
+  if (S.view === 'dispatch' && mobile()) S.view = 'project';
 
   const todayIdx = data.days.indexOf(today);
   const todayCount = todayIdx >= 0 ? t.by_day[today].headcount : null;
@@ -254,12 +265,15 @@ async function renderSchedule(page) {
       <div class="seg">
         <button data-view="project" class="${S.view === 'project' ? 'on' : ''}">By Project</button>
         <button data-view="person" class="${S.view === 'person' ? 'on' : ''}">Who's Where</button>
+        ${mobile() ? '' : `<button data-view="dispatch" class="${S.view === 'dispatch' ? 'on' : ''}" title="Every job and all available crew for one day – drag and drop to schedule">All Jobs</button>`}
       </div>
-      ${S.view === 'project' && pms.length ? `<select data-act="pm" title="Filter by project manager"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, S.filterPm)).join('')}</select>` : ''}
-      ${S.view === 'project' && supers.length ? `<select data-act="super" title="Filter by superintendent / foreman"><option value="">All superintendents</option>${supers.map(([id, n]) => opt(id, n, S.filterSuper)).join('')}</select>` : ''}
-      ${S.view === 'project' ? `<select data-act="sort" title="Sort projects">${[['job', 'Sort: Job #'], ['pm', 'Sort: Project manager'], ['super', 'Sort: Superintendent']].map(([v, l]) => opt(v, l, S.boardSort)).join('')}</select>` : ''}
+      ${S.view !== 'person' && pms.length ? `<select data-act="pm" title="Filter by project manager"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, S.filterPm)).join('')}</select>` : ''}
+      ${S.view !== 'person' && supers.length ? `<select data-act="super" title="Filter by superintendent / foreman"><option value="">All superintendents</option>${supers.map(([id, n]) => opt(id, n, S.filterSuper)).join('')}</select>` : ''}
+      ${S.view !== 'person' ? `<select data-act="sort" title="Sort projects">${[['job', 'Sort: Job #'], ['pm', 'Sort: Project manager'], ['super', 'Sort: Superintendent']].map(([v, l]) => opt(v, l, S.boardSort)).join('')}</select>` : ''}
       ${S.view === 'person' ? `<select data-act="trade"><option value="">All trades</option>${trades.map((x) => opt(x, x, S.filterTrade)).join('')}</select>` : ''}
-      ${canSchedule() ? `<button data-act="copy">Copy last week →</button><button data-act="timeoff">Time off</button><button class="primary" data-act="add">+ Schedule crew</button>` : ''}
+      ${canSchedule() ? `<button data-act="requests" class="${appr.pending ? 'attn' : ''}">${isAdmin() ? `Requests${appr.pending ? ` (${appr.pending})` : ''}` : `My requests${appr.pending || appr.rejected ? ` (${appr.pending + appr.rejected})` : ''}`}</button>
+        <button data-act="copy">Copy last week →</button><button data-act="timeoff">Time off</button>
+        <button class="primary" data-act="add">${isAdmin() ? '+ Schedule crew' : '+ Request crew'}</button>` : ''}
       <button data-act="print">Print</button>
     </div>
     <div class="stats">
@@ -269,7 +283,11 @@ async function renderSchedule(page) {
       ${todayCount !== null ? `<div class="stat"><div class="v">${todayCount}</div><div class="l">On site today</div></div>` : ''}
       ${(() => { const o = Object.values(t.by_employee).filter((h) => h > 40).length; return `<div class="stat ${o ? 'warn' : ''}"><div class="v">${o}</div><div class="l">Over 40 hrs (OT)</div></div>`; })()}
       <div class="stat ${overDay.length ? 'warn' : ''}"><div class="v">${overDay.length}</div><div class="l">Days over ${fmtH(t.warn_daily_hours || 8)} hrs</div></div>
+      ${canSchedule() ? `<div class="stat ${appr.pending ? 'warn' : ''}"><div class="v">${appr.pending}</div><div class="l">Awaiting approval</div></div>` : ''}
     </div>
+    ${canSchedule() ? `<div class="legend small"><span class="chip mini approved">✓ Approved</span><span class="chip mini pending">Pending approval</span><span class="chip mini rejected">✕ Rejected</span><span class="chip mini verified">✓✓ Hours verified</span>
+      ${S.user.role === 'super' ? '<span class="muted">You can request crew on the jobs where you are the superintendent. The workforce manager approves them.</span>' : ''}</div>` : ''}
+    ${S.user.role === 'super' && appr.rejected ? `<div class="alert warn-box"><b>${appr.rejected} request${appr.rejected > 1 ? 's were' : ' was'} rejected this week.</b> Click a struck-through name, or <button class="link" data-act="requests2">see the reasons</button>.</div>` : ''}
     ${overDay.length ? `<div class="alert warn-box"><b>⚠ Over ${fmtH(t.warn_daily_hours || 8)} hours in a day:</b> ${overDay.slice(0, 12).map((o) => {
       const e = S.employees.find((x) => x.id === o.employee_id);
       return `${esc(e ? fullName(e) : 'Employee')} ${esc(DOW[data.days.indexOf(o.work_date)])} (${fmtH(o.hours)} h)`;
@@ -289,6 +307,8 @@ async function renderSchedule(page) {
   const sortSel = $('[data-act=sort]', page); if (sortSel) sortSel.onchange = (e) => { S.boardSort = store('wf_sort', e.target.value); drawBoard(); };
   const tr = $('[data-act=trade]', page); if (tr) tr.onchange = (e) => { S.filterTrade = e.target.value; drawBoard(); };
   if (canSchedule()) {
+    $('[data-act=requests]', page).onclick = requestsModal;
+    const r2 = $('[data-act=requests2]', page); if (r2) r2.onclick = requestsModal;
     $('[data-act=add]', page).onclick = () => assignModal({});
     $('[data-act=copy]', page).onclick = copyWeekModal;
     $('[data-act=timeoff]', page).onclick = () => timeOffModal({});
@@ -299,6 +319,7 @@ async function renderSchedule(page) {
 function drawBoard() {
   const el = $('#board');
   if (!el) return;
+  if (S.view === 'dispatch' && !mobile()) { dispatchBoard(el); return; }
   if (S.view === 'person') el.innerHTML = mobile() ? personMobile() : personBoard();
   else el.innerHTML = mobile() ? projectMobile() : projectBoard();
   bindBoard(el);
@@ -330,9 +351,15 @@ function chip(a, label = shortName(a)) {
   const dayTotal = S.sched ? overDayMap()[`${a.employee_id}|${a.work_date}`] : null;
   const over = dayTotal ? `<span class="over-flag" title="Scheduled ${fmtH(dayTotal)} hrs this day">⚠${fmtH(dayTotal)}</span>` : '';
   const st = a.status === 'scheduled' ? '' : a.status === 'no_show' ? 'no_show' : 'verified';
-  const title = `${fullName(a)} – ${a.trade || ''} ${a.classification || ''}\n${a.job_number} ${a.project_name}\n${fmtH(a.planned_hours)} hrs${dayTotal ? ` (${fmtH(dayTotal)} hrs total this day)` : ''}${a.task ? '\n' + a.task : ''}${a.status !== 'scheduled' ? '\nVerified: ' + fmtH(a.actual_hours) + ' hrs' : ''}`;
-  return `<div class="chip ${st} ${over ? 'over' : ''} ${canSchedule() ? 'can' : ''}" data-aid="${a.id}" title="${esc(title)}" style="border-left-color:${esc(a.color || '#F15A22')}">
-    <span class="nm">${esc(label)}</span>${hrs}${over}${st === 'verified' ? '✓' : ''}</div>`;
+  const ap = a.approval_status || 'approved';
+  const apMark = ap === 'rejected' ? '<span class="ap-mark">✕</span>' : ap === 'pending' ? '<span class="ap-tag">Pending</span>' : st === 'verified' ? '<span class="ap-mark">✓✓</span>' : '<span class="ap-mark">✓</span>';
+  const apText = ap === 'pending' ? `\nPending approval – requested by ${a.requested_by_name || 'superintendent'}`
+    : ap === 'rejected' ? `\nRejected${a.approved_by_name ? ' by ' + a.approved_by_name : ''}: ${a.reject_reason || ''}`
+      : `\nApproved${a.approved_by_name ? ' by ' + a.approved_by_name : ''}`;
+  const title = `${fullName(a)} – ${a.trade || ''} ${a.classification || ''}\n${a.job_number} ${a.project_name}\n${fmtH(a.planned_hours)} hrs${dayTotal ? ` (${fmtH(dayTotal)} hrs total this day)` : ''}${a.task ? '\n' + a.task : ''}${a.status !== 'scheduled' ? '\nVerified: ' + fmtH(a.actual_hours) + ' hrs' : ''}${apText}`;
+  const clickable = canSchedule();
+  return `<div class="chip ${st} ap-${ap} ${over && ap !== 'rejected' ? 'over' : ''} ${clickable ? 'can' : ''}" data-aid="${a.id}" title="${esc(title)}" style="border-left-color:${esc(a.color || '#F15A22')}">
+    <span class="nm">${esc(label)}</span>${hrs}${ap !== 'rejected' ? over : ''}${apMark}</div>`;
 }
 
 function projectSub(p) {
@@ -366,7 +393,7 @@ function projectBoard() {
           return `<td class="${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''}">
             ${ct ? `<div class="cell-tot"><span>${ct.headcount} ppl</span><span>${fmtH(ct.hours)} h</span></div>` : ''}
             ${list.map((a) => chip(a)).join('')}
-            ${canSchedule() ? `<button class="add-btn" data-add="${p.id}|${day}">+</button>` : ''}
+            ${canEditProject(p.id) ? `<button class="add-btn" data-add="${p.id}|${day}">+</button>` : ''}
           </td>`;
         }).join('')}
         <td class="tot"><b>${fmtH(pt.hours)}</b> h<br><span class="small muted">${pt.headcount} ppl</span></td>
@@ -396,9 +423,9 @@ function projectMobile() {
     ${list.map(({ p, a }) => `<div class="pcard">
       <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
         ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
-        <div class="right nowrap"><b>${a.length}</b> ppl<br><span class="small muted">${fmtH(a.reduce((s, x) => s + x.planned_hours, 0))} h</span></div></div>
+        <div class="right nowrap"><b>${a.filter((x) => x.approval_status !== 'rejected').length}</b> ppl<br><span class="small muted">${fmtH(a.filter((x) => x.approval_status !== 'rejected').reduce((sum, x) => sum + x.planned_hours, 0))} h</span></div></div>
       <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade].filter(Boolean).join(' · '))).join('') || '<div class="small muted">Nobody scheduled</div>'}
-        ${canSchedule() ? `<button class="add-btn" style="margin-top:6px;min-height:36px" data-add="${p.id}|${day}">+ Add crew</button>` : ''}</div>
+        ${canEditProject(p.id) ? `<button class="add-btn" style="margin-top:6px;min-height:36px" data-add="${p.id}|${day}">${isAdmin() ? '+ Add crew' : '+ Request crew'}</button>` : ''}</div>
     </div>`).join('')}
     ${off.length ? `<div class="pcard"><div class="ph"><b>Off</b></div><div class="pb">${off.map((o) => `<div class="chip off">${esc(o.first_name)} ${esc(o.last_name)} <span class="hr">${esc(o.reason || '')}</span></div>`).join('')}</div></div>` : ''}`;
 }
@@ -457,6 +484,129 @@ function personMobile() {
   }).join('')}</div></div>`;
 }
 
+// All Jobs (desktop): one day, every job side by side with its crew, and the
+// crew still available on the left. Drag a person onto a job to schedule (or
+// request) them, between jobs to move them, or back to Available to remove.
+function dispatchBoard(el) {
+  const d = S.sched; const day = d.days[S.dayIdx]; const warnAt = d.totals.warn_daily_hours || 8;
+  const dayAsg = d.assignments.filter((a) => a.work_date === day);
+  const live = dayAsg.filter((a) => a.approval_status !== 'rejected');
+  const byPerson = {}; for (const a of live) (byPerson[a.employee_id] ||= []).push(a);
+  const personHours = (eid) => (byPerson[eid] || []).reduce((sum, a) => sum + a.planned_hours, 0);
+  const off = new Map(d.time_off.filter((o) => o.off_date === day).map((o) => [o.employee_id, o]));
+  const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
+  const trade = S.dispatchTrade || '';
+  const pool = S.crew.filter((e) => !byPerson[e.id] && !off.has(e.id) && (!trade || e.trade === trade));
+  const groups = {};
+  for (const e of pool) (groups[e.trade || 'No trade'] ||= []).push(e);
+  const projects = visibleProjects();
+  const dropHours = S.dropHours || S.settings.default_hours || 8;
+
+  const card = (a) => {
+    const ap = a.approval_status || 'approved';
+    const total = personHours(a.employee_id);
+    const drag = ap !== 'rejected' && canEditProject(a.project_id);
+    const mark = ap === 'rejected' ? '✕' : ap === 'pending' ? '' : a.status !== 'scheduled' ? '✓✓' : '✓';
+    return `<div class="dcard ap-${ap}" data-aid="${a.id}" ${drag ? `draggable="true" data-drag="asg:${a.id}"` : ''}
+      title="${esc(`${fullName(a)}${a.trade ? ' – ' + a.trade : ''}\n${fmtH(a.planned_hours)} hrs${ap === 'pending' ? '\nPending approval' : ap === 'rejected' ? '\nRejected: ' + (a.reject_reason || '') : ''}`)}">
+      <span class="nm">${esc(fullName(a))}<span class="small muted"> ${esc(a.trade || '')}</span></span>
+      <span class="hr">${fmtH(a.planned_hours)}h</span>
+      ${ap !== 'rejected' && total > warnAt ? `<span class="over-flag" title="${fmtH(total)} hrs this day">⚠${fmtH(total)}</span>` : ''}
+      ${ap === 'pending' ? '<span class="ap-tag">Pending</span>' : `<span class="ap-mark">${mark}</span>`}</div>`;
+  };
+
+  el.innerHTML = `
+    <div class="dispatch-head">
+      ${dayTabs()}
+      <div class="toolbar" style="margin:0">
+        <span class="small muted">${dayLabel(day, { weekday: 'long', month: 'long', day: 'numeric' })} · ${d.totals.by_day[day].headcount} on jobs · ${pool.length} available · ${off.size} off</span>
+        <span class="spacer"></span>
+        <label class="check">Hours when dropped <input type="number" step="0.5" min="0.5" max="24" data-act="drop-hours" value="${dropHours}" style="width:70px"></label>
+      </div>
+    </div>
+    <div class="dispatch">
+      <aside class="dpool" data-drop="pool">
+        <div class="dpool-h"><b>Available (${pool.length})</b>
+          <select data-act="dtrade" aria-label="Trade"><option value="">All trades</option>${trades.map((t) => opt(t, t, trade)).join('')}</select></div>
+        ${Object.keys(groups).sort().map((g) => `<div class="dgroup">${esc(g)} <span class="muted">(${groups[g].length})</span></div>
+          ${groups[g].map((e) => `<div class="dcard pool" ${canSchedule() ? `draggable="true" data-drag="emp:${e.id}" data-pick="${e.id}"` : ''} title="${esc(fullName(e))}${canSchedule() ? ' – drag onto a job, or click to choose' : ''}">
+            <span class="nm">${esc(fullName(e))}</span><span class="small muted">${esc(e.classification || '')}</span></div>`).join('')}`).join('') || '<div class="small muted" style="padding:8px">Everyone is on a job or off today.</div>'}
+        ${off.size ? `<div class="dgroup">Off <span class="muted">(${off.size})</span></div>${[...off.values()].map((o) => `<div class="dcard off-card"><span class="nm">${esc(o.first_name)} ${esc(o.last_name)}</span><span class="small muted">${esc(o.reason || '')}</span></div>`).join('')}` : ''}
+        ${canSchedule() ? '<div class="small muted dpool-tip">Drag a job card back here to take that person off the job.</div>' : ''}
+      </aside>
+      <div class="djobs">${projects.map((p) => {
+        const list = dayAsg.filter((a) => a.project_id === p.id);
+        const liveList = list.filter((a) => a.approval_status !== 'rejected');
+        const pending = list.filter((a) => a.approval_status === 'pending');
+        const editable = canEditProject(p.id);
+        return `<section class="djob ${editable ? '' : 'locked'}" data-drop="job:${p.id}" style="border-top-color:${esc(p.color || '#F15A22')}">
+          <header><div class="djob-title">${esc(p.job_number)} <span>${esc(p.name)}</span></div>
+            <div class="small muted">Supt: ${esc(p.superintendent_name || '—')} · PM: ${esc(p.project_manager_name || '—')}</div>
+            <div class="djob-tot"><b>${new Set(liveList.map((a) => a.employee_id)).size}</b> ppl · <b>${fmtH(liveList.reduce((sum, a) => sum + a.planned_hours, 0))}</b> h
+              ${isAdmin() && pending.length ? `<button class="ok mini-btn" data-approve-job="${p.id}">✓ Approve ${pending.length}</button>` : ''}</div></header>
+          <div class="djob-body">${list.map(card).join('') || `<div class="djob-empty">${editable ? 'Drop crew here' : 'No crew'}</div>`}</div>
+        </section>`;
+      }).join('') || '<div class="card muted">No projects match the filters.</div>'}</div>
+    </div>`;
+
+  // ---- interactions
+  $$('[data-day]', el).forEach((b) => (b.onclick = () => { S.dayIdx = Number(b.dataset.day); drawBoard(); }));
+  $('[data-act=dtrade]', el).onchange = (e) => { S.dispatchTrade = e.target.value; drawBoard(); };
+  $('[data-act=drop-hours]', el).onchange = (e) => { S.dropHours = Number(e.target.value) || 8; };
+  $$('.dcard[data-aid]', el).forEach((c) => (c.onclick = () => canSchedule() && editAssignmentModal(d.assignments.find((a) => a.id === Number(c.dataset.aid)))));
+  $$('[data-pick]', el).forEach((c) => (c.onclick = () => assignModal({ employee_ids: [Number(c.dataset.pick)], dates: [day] })));
+  $$('[data-approve-job]', el).forEach((b) => (b.onclick = async () => {
+    const ids = dayAsg.filter((a) => a.project_id === Number(b.dataset.approveJob) && a.approval_status === 'pending').map((a) => a.id);
+    const r = await api('POST', '/assignments/approve', { ids });
+    toast(r.conflicts.length ? `Approved ${r.approved}; ${r.conflicts.length} would double book` : `Approved ${r.approved}`, !!r.conflicts.length);
+    renderSchedule($('#page'));
+  }));
+
+  let dragging = null;
+  $$('[data-drag]', el).forEach((c) => {
+    c.addEventListener('dragstart', (e) => { dragging = c.dataset.drag; e.dataTransfer.setData('text/plain', dragging); e.dataTransfer.effectAllowed = 'move'; c.classList.add('dragging'); });
+    c.addEventListener('dragend', () => { c.classList.remove('dragging'); $$('.drop-ok', el).forEach((z) => z.classList.remove('drop-ok')); });
+  });
+  const allowed = (zone) => {
+    if (!dragging) return false;
+    const [kind, id] = dragging.split(':');
+    const target = zone.dataset.drop;
+    if (target === 'pool') return kind === 'asg';
+    const pid = Number(target.split(':')[1]);
+    if (!canEditProject(pid)) return false;
+    if (kind === 'asg') return d.assignments.find((a) => a.id === Number(id))?.project_id !== pid;
+    return true;
+  };
+  $$('[data-drop]', el).forEach((zone) => {
+    zone.addEventListener('dragover', (e) => { if (allowed(zone)) { e.preventDefault(); zone.classList.add('drop-ok'); } });
+    zone.addEventListener('dragleave', (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('drop-ok'); });
+    zone.addEventListener('drop', async (e) => {
+      e.preventDefault(); zone.classList.remove('drop-ok');
+      if (!allowed(zone)) return;
+      const [kind, id] = dragging.split(':'); dragging = null;
+      const target = zone.dataset.drop;
+      try {
+        let r;
+        if (target === 'pool') {
+          await api('DELETE', `/assignments/${id}`); toast('Taken off the job');
+        } else {
+          const pid = Number(target.split(':')[1]);
+          if (kind === 'emp') {
+            r = await api('POST', '/assignments', { project_id: pid, employee_ids: [Number(id)], dates: [day], planned_hours: S.dropHours || S.settings.default_hours || 8 });
+            if (r.conflicts.length) toast(r.conflicts[0].message, true);
+            else toast(r.approval_status === 'pending' ? 'Requested – waiting for approval' : 'Scheduled');
+          } else {
+            r = await api('PUT', `/assignments/${id}`, { project_id: pid });
+            toast(r.approval_status === 'pending' && !isAdmin() ? 'Moved – sent for approval' : 'Moved');
+          }
+          if (r?.warnings?.length) toast(`⚠ ${r.warnings[0].message}`, true);
+        }
+      } catch (err) { toast(err.message, true); }
+      renderSchedule($('#page'));
+    });
+  });
+}
+
 function bindBoard(el) {
   $$('[data-day]', el).forEach((b) => (b.onclick = () => { S.dayIdx = Number(b.dataset.day); drawBoard(); }));
   if (!canSchedule()) return;
@@ -479,7 +629,11 @@ function bindBoard(el) {
 // double booking can't even be attempted (the server enforces it regardless).
 function assignModal(pre) {
   const d = S.sched;
-  const projects = S.projects.filter((p) => p.status !== 'complete');
+  const projects = myProjects();
+  if (!projects.length) {
+    modal({ title: 'Request crew', body: `<div class="alert">${S.user.employee_id ? 'You are not the superintendent on any active project yet.' : 'Your login is not linked to your employee record.'} Ask the workforce manager to ${S.user.employee_id ? 'set you as superintendent on your projects' : 'link your login'} so you can request crew.</div>`, footer: '<button data-close>Close</button>' });
+    return;
+  }
   const preDates = new Set(pre.dates || [todayStr() >= d.start && todayStr() <= d.end ? todayStr() : d.days[0]]);
   const preEmp = new Set(pre.employee_ids || []);
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
@@ -497,7 +651,7 @@ function assignModal(pre) {
     To split a normal ${fmtH(warnAt)}-hour day between two jobs, reduce the hours on that job first (click it on the board), then add the second job here.</div>` : '';
 
   const m = modal({
-    title: pre.splitFor ? 'Split day – add another job' : 'Schedule crew',
+    title: pre.splitFor ? 'Split day – add another job' : isAdmin() ? 'Schedule crew' : 'Request crew',
     wide: true,
     body: `${splitNote}
       <div class="grid2">
@@ -515,7 +669,7 @@ function assignModal(pre) {
       </div>
       <div class="emp-pick" id="emp-pick"></div>
       <div class="small muted" id="pick-count"></div>`,
-    footer: `<button data-close>Cancel</button><button class="primary" data-act="save">Schedule</button>`,
+    footer: `${isAdmin() ? '' : '<span class="small muted" style="margin-right:auto">Requests go to the workforce manager for approval.</span>'}<button data-close>Cancel</button><button class="primary" data-act="save">${isAdmin() ? 'Schedule' : 'Send request'}</button>`,
   });
 
   // Per person per day: jobs already booked (a split day is allowed) or time off.
@@ -583,7 +737,7 @@ function assignModal(pre) {
         if (r.warnings?.length) showWarnings(m.el, r.warnings);
         $('[data-act=save]', m.el).textContent = 'Schedule more';
         renderSchedule($('#page'));
-      } else { m.close(); toast(`Scheduled ${r.created.length} crew-day(s)`); renderSchedule($('#page')); }
+      } else { m.close(); toast(r.approval_status === 'pending' ? `Requested ${r.created.length} crew-day(s) – waiting for approval` : `Scheduled ${r.created.length} crew-day(s)`); renderSchedule($('#page')); }
     } catch (e) { errorBox(m.el, e.message, e.data?.conflicts?.map((c) => c.message)); }
   };
 }
@@ -597,29 +751,130 @@ function showWarnings(el, warnings) {
 
 function editAssignmentModal(a) {
   if (!a) return;
+  const ap = a.approval_status || 'approved';
+  const editable = canEditProject(a.project_id);
+  const statusLine = ap === 'pending' ? `<div class="alert"><b>Pending approval</b> – requested by ${esc(a.requested_by_name || 'superintendent')}</div>`
+    : ap === 'rejected' ? `<div class="alert bad"><b>Rejected</b>${a.approved_by_name ? ` by ${esc(a.approved_by_name)}` : ''}: ${esc(a.reject_reason || '')}</div>`
+      : `<div class="small"><span class="pill ok">✓ Approved</span>${a.approved_by_name ? ` <span class="muted">by ${esc(a.approved_by_name)}</span>` : ''}</div>`;
+  const dis = editable ? '' : 'disabled';
+  const projects = isAdmin() ? S.projects : S.projects.filter((p) => canEditProject(p.id) || p.id === a.project_id);
   const m = modal({
     title: `${fullName(a)} – ${dayLabel(a.work_date, { weekday: 'long', month: 'short', day: 'numeric' })}`,
-    body: `
-      <div class="small muted">${esc([a.trade, a.classification].filter(Boolean).join(' · '))}${a.status !== 'scheduled' ? ` · <span class="pill ok">Verified ${fmtH(a.actual_hours)} h</span>` : ''}</div>
-      <label>Project<select name="project_id">${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, a.project_id)).join('')}</select></label>
+    body: `${statusLine}
+      <div class="small muted">${esc([a.trade, a.classification].filter(Boolean).join(' · '))}${a.status !== 'scheduled' ? ` · <span class="pill ok">Hours verified ${fmtH(a.actual_hours)} h</span>` : ''}</div>
+      <label>Project<select name="project_id" ${dis}>${projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, a.project_id)).join('')}</select></label>
       <div class="grid2">
-        <label>Date<input type="date" name="work_date" value="${a.work_date}"></label>
-        <label>Total hours<input type="number" step="0.5" min="0" max="24" name="planned_hours" value="${a.planned_hours}"></label>
+        <label>Date<input type="date" name="work_date" value="${a.work_date}" ${dis}></label>
+        <label>Total hours<input type="number" step="0.5" min="0" max="24" name="planned_hours" value="${a.planned_hours}" ${dis}></label>
       </div>
-      <label>Task / scope<input name="task" value="${esc(a.task || '')}"></label>`,
-    footer: `<button class="danger" data-act="del">Remove</button><span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
+      <label>Task / scope<input name="task" value="${esc(a.task || '')}" ${dis}></label>
+      ${!editable ? '<div class="small muted">Only the workforce manager or this job\'s superintendent can change this.</div>' : ''}
+      ${!isAdmin() && editable && ap === 'approved' ? '<div class="small muted">Changing an approved entry sends it back to the workforce manager for approval.</div>' : ''}
+      ${!isAdmin() && editable && ap === 'rejected' ? '<div class="small muted">Change the hours, day or job and save to send it again for approval.</div>' : ''}
+      ${isAdmin() && ap !== 'approved' ? `<label>Reason (needed to reject)<input name="reason" maxlength="300" placeholder="e.g. Needed on 24-115 pour" value=""></label>` : ''}`,
+    footer: `${editable ? '<button class="danger" data-act="del">Remove</button>' : ''}<span class="spacer"></span><button data-close>${editable ? 'Cancel' : 'Close'}</button>
+      ${isAdmin() && ap === 'pending' ? '<button class="danger" data-act="reject">✕ Reject</button>' : ''}
+      ${isAdmin() && ap !== 'approved' ? '<button class="ok" data-act="approve">✓ Approve</button>' : ''}
+      ${isAdmin() && ap === 'approved' && a.status === 'scheduled' ? '<button data-act="reject-open">Reject…</button>' : ''}
+      ${editable ? `<button class="primary" data-act="save">${!isAdmin() && ap === 'rejected' ? 'Resubmit' : 'Save'}</button>` : ''}`,
   });
-  $('[data-act=save]', m.el).onclick = async () => {
+  const done = (msg) => { m.close(); toast(msg); renderSchedule($('#page')); };
+  const save = $('[data-act=save]', m.el);
+  if (save) save.onclick = async () => {
     try {
-      const r = await api('PUT', `/assignments/${a.id}`, formData(m.el));
+      const f = formData(m.el); delete f.reason;
+      const r = await api('PUT', `/assignments/${a.id}`, f);
       renderSchedule($('#page'));
-      if (r.warnings?.length) { errorBox(m.el, ''); showWarnings(m.el, r.warnings); $('[data-act=save]', m.el).textContent = 'Save again'; } else { m.close(); toast('Updated'); }
+      if (r.warnings?.length) { errorBox(m.el, ''); showWarnings(m.el, r.warnings); save.textContent = 'Save again'; } else { m.close(); toast(r.approval_status === 'pending' && !isAdmin() ? 'Saved – sent for approval' : 'Updated'); }
     } catch (e) { errorBox(m.el, e.message); }
   };
-  $('[data-act=del]', m.el).onclick = async () => {
+  const del = $('[data-act=del]', m.el);
+  if (del) del.onclick = async () => {
     if (!confirm(`Remove ${fullName(a)} from ${a.job_number} on ${a.work_date}?`)) return;
-    try { await api('DELETE', `/assignments/${a.id}`); m.close(); toast('Removed'); renderSchedule($('#page')); } catch (e) { errorBox(m.el, e.message); }
+    try { await api('DELETE', `/assignments/${a.id}`); done('Removed'); } catch (e) { errorBox(m.el, e.message); }
   };
+  const approve = $('[data-act=approve]', m.el);
+  if (approve) approve.onclick = async () => {
+    try {
+      const r = await api('POST', '/assignments/approve', { ids: [a.id] });
+      if (r.conflicts.length) return errorBox(m.el, 'Could not approve:', r.conflicts);
+      done('Approved');
+    } catch (e) { errorBox(m.el, e.message); }
+  };
+  const reject = $('[data-act=reject]', m.el);
+  if (reject) reject.onclick = async () => {
+    try { await api('POST', '/assignments/reject', { ids: [a.id], reason: $('[name=reason]', m.el).value }); done('Rejected – the superintendent will see the reason'); } catch (e) { errorBox(m.el, e.message); }
+  };
+  const rejectOpen = $('[data-act=reject-open]', m.el);
+  if (rejectOpen) rejectOpen.onclick = () => { m.close(); rejectModal([a]); };
+}
+
+// Ask for the rejection reason, then reject one or more entries.
+function rejectModal(list, after) {
+  const m = modal({
+    title: list.length > 1 ? `Reject ${list.length} entries` : `Reject ${fullName(list[0])}`,
+    body: `<div class="small muted">${list.slice(0, 8).map((a) => `${esc(fullName(a))} · ${esc(a.job_number)} · ${esc(dayLabel(a.work_date))}`).join('<br>')}${list.length > 8 ? `<br>and ${list.length - 8} more` : ''}</div>
+      <label>Reason for rejection *<textarea name="reason" maxlength="300" placeholder="e.g. Kyle is needed on 24-115 for the deck pour – use Sam instead"></textarea></label>
+      <div class="small muted">The superintendent sees this reason on their schedule.</div>`,
+    footer: '<button data-close>Cancel</button><button class="danger" data-act="go">✕ Reject</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    try {
+      const r = await api('POST', '/assignments/reject', { ids: list.map((a) => a.id), reason: $('[name=reason]', m.el).value });
+      m.close(); toast(`Rejected ${r.rejected}`); (after || (() => renderSchedule($('#page'))))();
+    } catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+// Manager: approval queue. Superintendent: their pending and rejected requests.
+async function requestsModal() {
+  const r = await api('GET', '/requests');
+  const admin = isAdmin();
+  const row = (a, withBox) => `<tr data-id="${a.id}">
+    ${withBox ? `<td><input type="checkbox" class="rq" value="${a.id}" aria-label="Select"></td>` : ''}
+    <td class="nowrap">${esc(dayLabel(a.work_date))}</td><td>${esc(a.job_number)}<div class="small muted">${esc(a.project_name)}</div></td>
+    <td>${esc(fullName(a))}<div class="small muted">${esc(a.trade || '')}</div></td><td class="right">${fmtH(a.planned_hours)} h</td>
+    <td class="small">${esc(a.requested_by_name || '')}</td>
+    ${a.approval_status === 'rejected' ? `<td class="small"><b>Rejected:</b> ${esc(a.reject_reason || '')}${a.approved_by_name ? `<div class="muted">by ${esc(a.approved_by_name)}</div>` : ''}</td>` : ''}</tr>`;
+  const m = modal({
+    title: admin ? 'Crew requests to approve' : 'My crew requests',
+    wide: true,
+    body: `<h2 style="margin-top:0">Pending (${r.pending.length})</h2>
+      ${r.pending.length ? `<div class="table-wrap" style="max-height:340px"><table class="list"><thead><tr>${admin ? '<th><input type="checkbox" class="rq-all" aria-label="Select all"></th>' : ''}<th>Day</th><th>Job</th><th>Employee</th><th class="right">Hours</th><th>Requested by</th></tr></thead>
+        <tbody>${r.pending.map((a) => row(a, admin)).join('')}</tbody></table></div>` : '<div class="muted">Nothing waiting for approval.</div>'}
+      ${r.rejected.length ? `<h2>Rejected, last 2 weeks (${r.rejected.length})</h2><div class="table-wrap" style="max-height:240px"><table class="list"><thead><tr>${admin ? '<th></th>' : ''}<th>Day</th><th>Job</th><th>Employee</th><th class="right">Hours</th><th>Requested by</th><th>Reason</th></tr></thead>
+        <tbody>${r.rejected.map((a) => row(a, admin)).join('')}</tbody></table></div>
+        ${!admin ? '<div class="small muted">To ask again, open the entry on the schedule, adjust it and click Resubmit, or request someone else.</div>' : ''}` : ''}`,
+    footer: admin ? `<span class="small muted" id="rq-count" style="margin-right:auto">0 selected</span><button data-close>Close</button>
+      <button class="danger" data-act="reject" disabled>✕ Reject selected…</button><button class="ok" data-act="approve" disabled>✓ Approve selected</button>
+      ${r.pending.length ? `<button class="primary" data-act="all">✓ Approve all ${r.pending.length}</button>` : ''}` : '<button data-close>Close</button>',
+  });
+  if (!admin) return;
+  const all = [...r.pending, ...r.rejected];
+  const picked = () => $$('.rq:checked', m.el).map((x) => all.find((a) => a.id === Number(x.value)));
+  const sync = () => {
+    const n = picked().length;
+    $('#rq-count', m.el).textContent = `${n} selected`;
+    $('[data-act=approve]', m.el).disabled = !n;
+    $('[data-act=reject]', m.el).disabled = !n || picked().some((a) => a.approval_status === 'rejected');
+  };
+  $$('.rq', m.el).forEach((x) => (x.onchange = sync));
+  const allBox = $('.rq-all', m.el);
+  if (allBox) allBox.onchange = () => { $$('tbody .rq', m.el).slice(0, r.pending.length).forEach((x) => (x.checked = allBox.checked)); sync(); };
+  const approve = async (ids) => {
+    try {
+      const res = await api('POST', '/assignments/approve', { ids });
+      m.close(); renderSchedule($('#page'));
+      if (res.conflicts.length || res.warnings.length) {
+        const w = modal({ title: `Approved ${res.approved}`, body: '', footer: '<button data-close>OK</button>' });
+        if (res.conflicts.length) errorBox(w.el, 'Not approved (would double book):', res.conflicts);
+        if (res.warnings.length) showWarnings(w.el, res.warnings);
+      } else toast(`Approved ${res.approved}`);
+    } catch (e) { errorBox(m.el, e.message); }
+  };
+  $('[data-act=approve]', m.el).onclick = () => approve(picked().map((a) => a.id));
+  const allBtn = $('[data-act=all]', m.el); if (allBtn) allBtn.onclick = () => approve(r.pending.map((a) => a.id));
+  $('[data-act=reject]', m.el).onclick = () => { const list = picked(); m.close(); rejectModal(list); };
 }
 
 function copyWeekModal() {
@@ -629,7 +884,8 @@ function copyWeekModal() {
     body: `<p class="muted" style="margin:0">Copies every assignment from the source week into the week you're viewing. Anyone already booked or off is skipped – nobody gets double booked.</p>
       <div class="grid2"><label>Copy from week of<input type="date" name="from" value="${from}"></label>
       <label>Into week of<input type="date" name="to" value="${S.week}"></label></div>
-      <label>Project<select name="project_id"><option value="">All projects</option>${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`)).join('')}</select></label>`,
+      <label>Project<select name="project_id">${isAdmin() ? '<option value="">All projects</option>' : ''}${myProjects().map((p) => opt(p.id, `${p.job_number} – ${p.name}`)).join('')}</select></label>
+      ${isAdmin() ? '' : '<div class="small muted">Copied days go to the workforce manager for approval.</div>'}`,
     footer: `<button data-close>Cancel</button><button class="primary" data-act="go">Copy</button>`,
   });
   $('[data-act=go]', m.el).onclick = async () => {
@@ -990,6 +1246,7 @@ async function renderRecords(page) {
       <label>Employee<select name="employee_id"><option value="">All</option>${allEmps.map((e) => opt(e.id, `${e.last_name}, ${e.first_name}`, f.employee_id)).join('')}</select></label>
       <label>Trade<select name="trade"><option value="">All</option>${trades.map((t) => opt(t, t, f.trade)).join('')}</select></label>
       <label>Status<select name="status"><option value="">All</option>${['scheduled', 'verified', 'adjusted', 'no_show'].map((s) => opt(s, s.replace('_', '-'), f.status)).join('')}</select></label>
+      <label>Approval<select name="approval"><option value="">All</option>${[['approved', 'Approved'], ['pending', 'Pending'], ['rejected', 'Rejected']].map(([v, l]) => opt(v, l, f.approval)).join('')}</select></label>
     </div><div class="toolbar" style="margin:12px 0 0"><button class="primary" data-act="run">Search</button><button data-act="csv">Export CSV (Excel)</button></div></div>
     <div id="rec-out"></div>`;
   const qs = () => new URLSearchParams(Object.entries(formData($('#rec-f', page))).filter(([, v]) => v)).toString();
@@ -1006,10 +1263,12 @@ async function renderRecords(page) {
         <div class="card"><b>Hours by trade</b><table class="list">${Object.entries(s.by_trade).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="right">${fmtH(v)}</td></tr>`).join('')}</table></div>
       </div>
       ${r.truncated ? '<div class="alert warn">Showing first 2,000 rows. Export CSV for the full set.</div>' : ''}
-      <div class="table-wrap"><table class="list"><thead><tr><th>Date</th><th>Job</th><th>Employee</th><th>Trade</th><th class="right">Projected</th><th class="right">Actual</th><th>Status</th><th>Task</th></tr></thead>
+      <div class="table-wrap"><table class="list"><thead><tr><th>Date</th><th>Job</th><th>Employee</th><th>Trade</th><th class="right">Projected</th><th class="right">Actual</th><th>Status</th><th>Approval</th><th>Task</th></tr></thead>
       <tbody>${r.rows.map((x) => `<tr><td class="nowrap">${esc(x.work_date)}</td><td>${esc(x.job_number)} <span class="small muted">${esc(x.project_name)}</span></td>
         <td>${esc(fullName(x))}</td><td>${esc(x.trade || '')}</td><td class="right">${fmtH(x.planned_hours)}</td><td class="right">${x.actual_hours === null ? '' : fmtH(x.actual_hours)}</td>
-        <td><span class="pill ${x.status === 'no_show' ? 'bad' : x.status === 'scheduled' ? '' : 'ok'}">${esc(x.status.replace('_', '-'))}</span></td><td class="small">${esc(x.task || '')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No records.</td></tr>'}</tbody></table></div>`;
+        <td><span class="pill ${x.status === 'no_show' ? 'bad' : x.status === 'scheduled' ? '' : 'ok'}">${esc(x.status.replace('_', '-'))}</span></td>
+        <td>${x.approval_status === 'approved' ? '<span class="pill job">✓ approved</span>' : x.approval_status === 'pending' ? '<span class="pill warn">pending</span>' : `<span class="pill bad" title="${esc(x.reject_reason || '')}">rejected</span>`}</td>
+        <td class="small">${esc(x.task || '')}${x.reject_reason ? `<div class="muted">Rejected: ${esc(x.reject_reason)}</div>` : ''}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No records.</td></tr>'}</tbody></table></div>`;
   };
   $('[data-act=run]', page).onclick = run;
   $('[data-act=csv]', page).onclick = () => { window.location = `/api/records?${qs()}&format=csv`; };
@@ -1041,6 +1300,7 @@ async function renderPayroll(page) {
       <select data-act="weeks">${[1, 2, 4, 6, 8, 13, 26].map((w) => opt(w, `${w} week${w > 1 ? 's' : ''}`, S.payWeeks)).join('')}</select>
       <span class="spacer"></span><span class="small muted">OT after ${r.settings.ot_threshold_hours} h/wk @ ${r.settings.ot_multiplier}× · default burden ${r.settings.default_burden_pct}%</span>
     </div>
+    ${r.pending_requests?.count ? `<div class="alert">Costs include approved work only. ${r.pending_requests.count} pending crew request${r.pending_requests.count > 1 ? 's' : ''} (${fmtH(r.pending_requests.hours)} h) are not included until approved.</div>` : ''}
     ${r.missing_rates.length ? `<div class="alert warn">Missing pay rates (costed at $0): ${esc(r.missing_rates.join(', '))}. <a href="#" data-act="fix">Enter rates</a></div>` : ''}
     <div class="stats" style="margin-top:12px">
       <div class="stat"><div class="v">${money(t.total)}</div><div class="l">Forecast labor cost</div></div>
