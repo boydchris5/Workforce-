@@ -1,0 +1,711 @@
+'use strict';
+const path = require('node:path');
+const express = require('express');
+const { tx, getSettings } = require('./db');
+const auth = require('./auth');
+const { isDate, addDays, weekStart, weekDates, daysBetween } = require('./dates');
+const { costAssignments, sumInto, round2 } = require('./payroll');
+
+class HttpError extends Error {
+  constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
+}
+const bad = (msg, extra) => new HttpError(400, msg, extra);
+
+// ---- input helpers ---------------------------------------------------------
+const str = (v, max = 500) => (v === undefined || v === null || String(v).trim() === '' ? null : String(v).trim().slice(0, max));
+const num = (v) => (v === undefined || v === null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : NaN);
+const int = (v) => { const n = num(v); return n === null || Number.isNaN(n) ? null : Math.trunc(n); };
+const bool = (v) => (v === true || v === 1 || v === '1' || v === 'true' ? 1 : 0);
+function date(v, field, required = false) {
+  if (v === undefined || v === null || v === '') { if (required) throw bad(`${field} is required.`); return null; }
+  if (!isDate(v)) throw bad(`${field} must be a date (YYYY-MM-DD).`);
+  return v;
+}
+function hours(v, field = 'Hours') {
+  const n = num(v);
+  if (n === null) return null;
+  if (Number.isNaN(n) || n < 0 || n > 24) throw bad(`${field} must be between 0 and 24.`);
+  return n;
+}
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+function time(v) {
+  const s = str(v, 5);
+  if (s && !TIME.test(s)) throw bad('Start time must be HH:MM.');
+  return s;
+}
+
+function toCsv(rows, cols) {
+  const esc = (v) => {
+    if (v === null || v === undefined) return '';
+    let s = String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // block spreadsheet formula injection
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.map((c) => esc(c.label)).join(','), ...rows.map((r) => cols.map((c) => esc(r[c.key])).join(','))].join('\r\n');
+}
+
+function createApp(db, opts = {}) {
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use(express.json({ limit: '1mb' }));
+  app.use((_req, res, next) => {
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'same-origin',
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+    });
+    next();
+  });
+  app.use(auth.sessionMiddleware(db));
+
+  const audit = (req, action, entity, entityId, details) =>
+    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, details) VALUES (?, ?, ?, ?, ?)')
+      .run(req.user ? req.user.id : null, action, entity, entityId ?? null, details ? JSON.stringify(details) : null);
+
+  const api = express.Router();
+  const canSchedule = auth.requireRole('admin', 'super');
+  const adminOnly = auth.requireRole('admin');
+
+  api.get('/health', (_req, res) => res.json({ ok: true }));
+
+  // ---- auth ------------------------------------------------------------------
+  const loginAttempts = new Map();
+  api.post('/login', (req, res) => {
+    const username = str(req.body.username, 100);
+    const password = String(req.body.password || '');
+    const key = `${req.ip}|${(username || '').toLowerCase()}`;
+    const a = loginAttempts.get(key) || { n: 0, until: 0 };
+    if (a.until > Date.now()) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
+    const u = username && db.prepare('SELECT * FROM users WHERE username = ? AND active = 1').get(username);
+    if (!u || !auth.verifyPassword(password, u.password_hash)) {
+      a.n += 1;
+      if (a.n >= 8) { a.until = Date.now() + 5 * 60e3; a.n = 0; }
+      loginAttempts.set(key, a);
+      throw new HttpError(401, 'Wrong username or password.');
+    }
+    loginAttempts.delete(key);
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(new Date().toISOString());
+    const token = auth.createSession(db, u.id);
+    res.set('Set-Cookie', auth.cookieHeader(token, req.secure || opts.secureCookies));
+    res.json({ ok: true });
+  });
+
+  api.post('/logout', (req, res) => {
+    if (req.sessionToken) db.prepare('DELETE FROM sessions WHERE token = ?').run(req.sessionToken);
+    res.set('Set-Cookie', auth.cookieHeader('', req.secure || opts.secureCookies));
+    res.json({ ok: true });
+  });
+
+  api.use(auth.requireAuth);
+
+  api.get('/me', (req, res) => {
+    const s = getSettings(db);
+    res.json({ user: req.user, settings: { company_name: s.company_name, default_hours: Number(s.default_hours), default_start_time: s.default_start_time } });
+  });
+
+  api.post('/me/password', (req, res) => {
+    const u = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!auth.verifyPassword(String(req.body.current || ''), u.password_hash)) throw bad('Current password is wrong.');
+    const next = String(req.body.next || '');
+    if (next.length < 8) throw bad('New password must be at least 8 characters.');
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(next), req.user.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(req.user.id, req.sessionToken);
+    res.json({ ok: true });
+  });
+
+  // ---- skills ----------------------------------------------------------------
+  api.get('/skills', (_req, res) => {
+    res.json(db.prepare(`SELECT s.id, s.name, COUNT(es.employee_id) AS employee_count
+      FROM skills s LEFT JOIN employee_skills es ON es.skill_id = s.id GROUP BY s.id ORDER BY s.name`).all());
+  });
+  api.post('/skills', canSchedule, (req, res) => {
+    const name = str(req.body.name, 100);
+    if (!name) throw bad('Skill name is required.');
+    db.prepare('INSERT OR IGNORE INTO skills (name) VALUES (?)').run(name);
+    res.json(db.prepare('SELECT * FROM skills WHERE name = ?').get(name));
+  });
+  api.delete('/skills/:id', adminOnly, (req, res) => {
+    db.prepare('DELETE FROM skills WHERE id = ?').run(int(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ---- employees -------------------------------------------------------------
+  const employeeSkills = db.prepare(`SELECT s.id, s.name, es.expires_on FROM employee_skills es
+    JOIN skills s ON s.id = es.skill_id WHERE es.employee_id = ? ORDER BY s.name`);
+
+  function listEmployees(includeInactive) {
+    const rows = db.prepare(`SELECT * FROM employees ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY last_name, first_name`).all();
+    const skills = db.prepare(`SELECT es.employee_id, s.id, s.name, es.expires_on FROM employee_skills es JOIN skills s ON s.id = es.skill_id ORDER BY s.name`).all();
+    const byEmp = new Map();
+    for (const s of skills) {
+      if (!byEmp.has(s.employee_id)) byEmp.set(s.employee_id, []);
+      byEmp.get(s.employee_id).push({ id: s.id, name: s.name, expires_on: s.expires_on });
+    }
+    return rows.map((e) => ({ ...e, skills: byEmp.get(e.id) || [] }));
+  }
+
+  api.get('/employees', (req, res) => res.json(listEmployees(req.query.all === '1')));
+
+  api.get('/employees/:id', (req, res) => {
+    const e = db.prepare('SELECT * FROM employees WHERE id = ?').get(int(req.params.id));
+    if (!e) throw new HttpError(404, 'Employee not found.');
+    e.skills = employeeSkills.all(e.id);
+    e.recent = db.prepare(`SELECT a.work_date, a.planned_hours, a.actual_hours, a.status, p.job_number, p.name AS project_name
+      FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? ORDER BY a.work_date DESC LIMIT 60`).all(e.id);
+    res.json(e);
+  });
+
+  function readEmployee(b) {
+    const e = {
+      employee_no: str(b.employee_no, 50), first_name: str(b.first_name, 100), last_name: str(b.last_name, 100),
+      phone: str(b.phone, 50), email: str(b.email, 200), trade: str(b.trade, 100), union_local: str(b.union_local, 100),
+      classification: str(b.classification, 100), hire_date: date(b.hire_date, 'Hire date'),
+      active: b.active === undefined ? 1 : bool(b.active), notes: str(b.notes, 2000),
+    };
+    if (!e.first_name || !e.last_name) throw bad('First and last name are required.');
+    return e;
+  }
+
+  function saveSkills(employeeId, skills) {
+    if (!Array.isArray(skills)) return;
+    db.prepare('DELETE FROM employee_skills WHERE employee_id = ?').run(employeeId);
+    const findOrMake = db.prepare('INSERT OR IGNORE INTO skills (name) VALUES (?)');
+    const getId = db.prepare('SELECT id FROM skills WHERE name = ?');
+    const link = db.prepare('INSERT OR REPLACE INTO employee_skills (employee_id, skill_id, expires_on) VALUES (?, ?, ?)');
+    for (const s of skills) {
+      const name = str(typeof s === 'string' ? s : s.name, 100);
+      if (!name) continue;
+      findOrMake.run(name);
+      link.run(employeeId, getId.get(name).id, typeof s === 'object' ? date(s.expires_on, 'Skill expiration') : null);
+    }
+  }
+
+  api.post('/employees', canSchedule, (req, res) => {
+    const e = readEmployee(req.body);
+    const id = tx(db, () => {
+      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes)
+        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes)`).run(e);
+      const id = Number(r.lastInsertRowid);
+      saveSkills(id, req.body.skills);
+      return id;
+    });
+    audit(req, 'create', 'employee', id, { name: `${e.first_name} ${e.last_name}` });
+    res.json({ id });
+  });
+
+  api.put('/employees/:id', canSchedule, (req, res) => {
+    const id = int(req.params.id);
+    const e = readEmployee(req.body);
+    tx(db, () => {
+      const r = db.prepare(`UPDATE employees SET employee_no=:employee_no, first_name=:first_name, last_name=:last_name, phone=:phone, email=:email,
+        trade=:trade, union_local=:union_local, classification=:classification, hire_date=:hire_date, active=:active, notes=:notes WHERE id=:id`).run({ ...e, id });
+      if (!r.changes) throw new HttpError(404, 'Employee not found.');
+      saveSkills(id, req.body.skills);
+    });
+    audit(req, 'update', 'employee', id, { name: `${e.first_name} ${e.last_name}` });
+    res.json({ id });
+  });
+
+  api.delete('/employees/:id', adminOnly, (req, res) => {
+    const id = int(req.params.id);
+    const used = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE employee_id = ?').get(id).n;
+    if (used) {
+      // Keep history: deactivate instead of deleting.
+      db.prepare('UPDATE employees SET active = 0 WHERE id = ?').run(id);
+      audit(req, 'deactivate', 'employee', id);
+      return res.json({ ok: true, deactivated: true });
+    }
+    db.prepare('DELETE FROM employees WHERE id = ?').run(id);
+    audit(req, 'delete', 'employee', id);
+    res.json({ ok: true });
+  });
+
+  // ---- projects --------------------------------------------------------------
+  api.get('/projects', (req, res) => {
+    const where = req.query.all === '1' ? '' : "WHERE p.status IN ('planned','active','on_hold')";
+    res.json(db.prepare(`SELECT p.*, u.name AS superintendent_name,
+        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id) AS hours_to_date,
+        (SELECT COALESCE(SUM(a.actual_hours),0) FROM assignments a WHERE a.project_id = p.id AND a.status <> 'scheduled') AS verified_hours
+      FROM projects p LEFT JOIN users u ON u.id = p.superintendent_user_id ${where}
+      ORDER BY p.job_number`).all());
+  });
+
+  function readProject(b) {
+    const p = {
+      job_number: str(b.job_number, 50), name: str(b.name, 200), customer: str(b.customer, 200), address: str(b.address, 300),
+      superintendent_user_id: int(b.superintendent_user_id), status: str(b.status, 20) || 'active',
+      start_date: date(b.start_date, 'Start date'), end_date: date(b.end_date, 'End date'),
+      budget_hours: num(b.budget_hours), color: str(b.color, 20), notes: str(b.notes, 2000),
+    };
+    if (!p.job_number || !p.name) throw bad('Job number and project name are required.');
+    if (!['planned', 'active', 'on_hold', 'complete'].includes(p.status)) throw bad('Invalid status.');
+    if (Number.isNaN(p.budget_hours)) throw bad('Budget hours must be a number.');
+    if (p.color && !/^#[0-9a-fA-F]{6}$/.test(p.color)) p.color = null;
+    return p;
+  }
+
+  const uniqueMsg = (e, msg) => { if (/UNIQUE/.test(e.message)) throw bad(msg); throw e; };
+
+  api.post('/projects', canSchedule, (req, res) => {
+    const p = readProject(req.body);
+    let r;
+    try {
+      r = db.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_user_id, status, start_date, end_date, budget_hours, color, notes)
+        VALUES (:job_number, :name, :customer, :address, :superintendent_user_id, :status, :start_date, :end_date, :budget_hours, :color, :notes)`).run(p);
+    } catch (e) { uniqueMsg(e, 'That job number already exists.'); }
+    const id = Number(r.lastInsertRowid);
+    audit(req, 'create', 'project', id, { job_number: p.job_number });
+    res.json({ id });
+  });
+
+  api.put('/projects/:id', canSchedule, (req, res) => {
+    const id = int(req.params.id);
+    const p = readProject(req.body);
+    let r;
+    try {
+      r = db.prepare(`UPDATE projects SET job_number=:job_number, name=:name, customer=:customer, address=:address, superintendent_user_id=:superintendent_user_id,
+        status=:status, start_date=:start_date, end_date=:end_date, budget_hours=:budget_hours, color=:color, notes=:notes WHERE id=:id`).run({ ...p, id });
+    } catch (e) { uniqueMsg(e, 'That job number already exists.'); }
+    if (!r.changes) throw new HttpError(404, 'Project not found.');
+    audit(req, 'update', 'project', id, { job_number: p.job_number });
+    res.json({ id });
+  });
+
+  api.delete('/projects/:id', adminOnly, (req, res) => {
+    const id = int(req.params.id);
+    const used = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE project_id = ?').get(id).n;
+    if (used) throw bad('This project has schedule history. Mark it Complete instead of deleting it.');
+    db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+    audit(req, 'delete', 'project', id);
+    res.json({ ok: true });
+  });
+
+  // ---- weekly schedule ---------------------------------------------------------
+  const assignmentSelect = `SELECT a.*, e.first_name, e.last_name, e.trade, e.classification,
+      p.job_number, p.name AS project_name, p.color
+    FROM assignments a JOIN employees e ON e.id = a.employee_id JOIN projects p ON p.id = a.project_id`;
+
+  api.get('/schedule', (req, res) => {
+    const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
+    const days = weekDates(start);
+    const end = days[6];
+    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name`).all(start, end);
+    const timeOff = db.prepare(`SELECT t.*, e.first_name, e.last_name FROM time_off t JOIN employees e ON e.id = t.employee_id
+      WHERE t.off_date BETWEEN ? AND ?`).all(start, end);
+    const projectIds = new Set(assignments.map((a) => a.project_id));
+    const projects = db.prepare(`SELECT p.*, u.name AS superintendent_name,
+        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.work_date <= ?) AS hours_through_week
+      FROM projects p LEFT JOIN users u ON u.id = p.superintendent_user_id ORDER BY p.job_number`).all(end)
+      .filter((p) => projectIds.has(p.id) || ['active', 'planned'].includes(p.status));
+
+    // Running totals
+    const byProject = {}; const byDay = {}; const byEmployee = {};
+    let totalHours = 0;
+    for (const d of days) byDay[d] = { headcount: 0, hours: 0 };
+    for (const a of assignments) {
+      const h = a.planned_hours;
+      totalHours += h;
+      const p = (byProject[a.project_id] ||= { hours: 0, people: new Set(), days: {} });
+      p.hours += h; p.people.add(a.employee_id);
+      const pd = (p.days[a.work_date] ||= { headcount: 0, hours: 0 });
+      pd.headcount += 1; pd.hours += h;
+      byDay[a.work_date].headcount += 1; byDay[a.work_date].hours += h;
+      byEmployee[a.employee_id] = (byEmployee[a.employee_id] || 0) + h;
+    }
+    for (const p of Object.values(byProject)) { p.headcount = p.people.size; delete p.people; }
+
+    res.json({
+      start, end, days, projects, assignments, time_off: timeOff,
+      totals: { hours: totalHours, assignments: assignments.length, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee },
+    });
+  });
+
+  api.get('/my-schedule', (req, res) => {
+    if (!req.user.employee_id) return res.json({ linked: false, assignments: [] });
+    const from = weekStart(new Date().toISOString().slice(0, 10));
+    res.json({
+      linked: true,
+      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? ORDER BY a.work_date LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
+      time_off: db.prepare('SELECT * FROM time_off WHERE employee_id = ? AND off_date >= ? ORDER BY off_date').all(req.user.employee_id, from),
+    });
+  });
+
+  // ---- assignments (double-booking protected) -------------------------------------
+  const findBooking = db.prepare(`SELECT a.id, a.project_id, p.job_number, p.name AS project_name FROM assignments a JOIN projects p ON p.id = a.project_id
+    WHERE a.employee_id = ? AND a.work_date = ?`);
+  const findOff = db.prepare('SELECT reason FROM time_off WHERE employee_id = ? AND off_date = ?');
+  const empName = db.prepare("SELECT first_name || ' ' || last_name AS name, active FROM employees WHERE id = ?");
+
+  function conflictFor(employeeId, workDate, ignoreId) {
+    const b = findBooking.get(employeeId, workDate);
+    if (b && b.id !== ignoreId) return { type: 'booked', message: `already scheduled on ${b.job_number} – ${b.project_name}`, project_id: b.project_id };
+    const off = findOff.get(employeeId, workDate);
+    if (off) return { type: 'time_off', message: `is off${off.reason ? ` (${off.reason})` : ''}` };
+    return null;
+  }
+
+  api.post('/assignments', canSchedule, (req, res) => {
+    const b = req.body;
+    const projectId = int(b.project_id);
+    const project = db.prepare('SELECT id, job_number FROM projects WHERE id = ?').get(projectId);
+    if (!project) throw bad('Pick a project.');
+    const employeeIds = [...new Set((Array.isArray(b.employee_ids) ? b.employee_ids : [b.employee_id]).map(int).filter(Boolean))];
+    const dates = [...new Set((Array.isArray(b.dates) ? b.dates : [b.work_date]))].map((d) => date(d, 'Date', true));
+    if (!employeeIds.length) throw bad('Pick at least one employee.');
+    if (!dates.length) throw bad('Pick at least one day.');
+    if (employeeIds.length * dates.length > 1000) throw bad('Too many assignments in one request.');
+    const settings = getSettings(db);
+    const planned = hours(b.planned_hours) ?? Number(settings.default_hours);
+    const startTime = time(b.start_time);
+    const task = str(b.task, 500);
+
+    const created = []; const conflicts = [];
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    tx(db, () => {
+      for (const eid of employeeIds) {
+        const emp = empName.get(eid);
+        if (!emp) { conflicts.push({ employee_id: eid, message: 'Employee not found' }); continue; }
+        for (const d of dates) {
+          const c = conflictFor(eid, d);
+          if (c) { conflicts.push({ employee_id: eid, work_date: d, name: emp.name, ...c, message: `${emp.name} ${c.message} on ${d}` }); continue; }
+          try {
+            const r = ins.run(eid, projectId, d, planned, startTime, task, req.user.id);
+            created.push(Number(r.lastInsertRowid));
+          } catch (e) {
+            if (/UNIQUE/.test(e.message)) conflicts.push({ employee_id: eid, work_date: d, name: emp.name, type: 'booked', message: `${emp.name} is already scheduled on ${d}` });
+            else throw e;
+          }
+        }
+      }
+    });
+    if (created.length) audit(req, 'schedule', 'assignment', null, { project: project.job_number, count: created.length, dates });
+    res.status(created.length ? 200 : 409).json({ created, conflicts, error: created.length ? undefined : conflicts[0]?.message });
+  });
+
+  api.put('/assignments/:id', canSchedule, (req, res) => {
+    const id = int(req.params.id);
+    const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+    if (!cur) throw new HttpError(404, 'Assignment not found.');
+    const b = req.body;
+    const next = {
+      id,
+      employee_id: b.employee_id !== undefined ? int(b.employee_id) : cur.employee_id,
+      project_id: b.project_id !== undefined ? int(b.project_id) : cur.project_id,
+      work_date: b.work_date !== undefined ? date(b.work_date, 'Date', true) : cur.work_date,
+      planned_hours: b.planned_hours !== undefined ? hours(b.planned_hours) ?? cur.planned_hours : cur.planned_hours,
+      start_time: b.start_time !== undefined ? time(b.start_time) : cur.start_time,
+      task: b.task !== undefined ? str(b.task, 500) : cur.task,
+    };
+    if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(next.project_id)) throw bad('Project not found.');
+    if (next.employee_id !== cur.employee_id || next.work_date !== cur.work_date) {
+      const c = conflictFor(next.employee_id, next.work_date, id);
+      if (c) throw new HttpError(409, `${empName.get(next.employee_id)?.name || 'Employee'} ${c.message} on ${next.work_date}.`);
+    }
+    try {
+      db.prepare(`UPDATE assignments SET employee_id=:employee_id, project_id=:project_id, work_date=:work_date, planned_hours=:planned_hours,
+        start_time=:start_time, task=:task, updated_at=datetime('now') WHERE id=:id`).run(next);
+    } catch (e) {
+      if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That person is already scheduled that day.');
+      throw e;
+    }
+    audit(req, 'update', 'assignment', id, { from: { project_id: cur.project_id, date: cur.work_date }, to: { project_id: next.project_id, date: next.work_date } });
+    res.json({ id });
+  });
+
+  api.delete('/assignments/:id', canSchedule, (req, res) => {
+    const id = int(req.params.id);
+    const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+    if (!cur) throw new HttpError(404, 'Assignment not found.');
+    db.prepare('DELETE FROM assignments WHERE id = ?').run(id);
+    audit(req, 'delete', 'assignment', id, { employee_id: cur.employee_id, project_id: cur.project_id, date: cur.work_date });
+    res.json({ ok: true });
+  });
+
+  // Copy one week's schedule into another week (skips anyone who would be double booked).
+  api.post('/assignments/copy-week', canSchedule, (req, res) => {
+    const from = weekStart(date(req.body.from, 'From week', true));
+    const to = weekStart(date(req.body.to, 'To week', true));
+    if (from === to) throw bad('Pick a different target week.');
+    const projectId = int(req.body.project_id);
+    const offset = daysBetween(from, to);
+    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? ${projectId ? 'AND project_id = ?' : ''}`)
+      .all(...[from, addDays(from, 6), ...(projectId ? [projectId] : [])]);
+    const created = []; const conflicts = [];
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    tx(db, () => {
+      for (const a of src) {
+        const d = addDays(a.work_date, offset);
+        const c = conflictFor(a.employee_id, d);
+        if (c) { conflicts.push({ employee_id: a.employee_id, work_date: d, message: `${empName.get(a.employee_id)?.name} ${c.message} on ${d}` }); continue; }
+        if (!empName.get(a.employee_id)?.active) continue;
+        created.push(Number(ins.run(a.employee_id, a.project_id, d, a.planned_hours, a.start_time, a.task, req.user.id).lastInsertRowid));
+      }
+    });
+    audit(req, 'copy_week', 'assignment', null, { from, to, project_id: projectId, created: created.length });
+    res.json({ created, conflicts });
+  });
+
+  // ---- time off --------------------------------------------------------------------
+  api.post('/time-off', canSchedule, (req, res) => {
+    const eid = int(req.body.employee_id);
+    if (!empName.get(eid)) throw bad('Pick an employee.');
+    const dates = (Array.isArray(req.body.dates) ? req.body.dates : [req.body.off_date]).map((d) => date(d, 'Date', true));
+    const reason = str(req.body.reason, 200);
+    const conflicts = []; let added = 0;
+    tx(db, () => {
+      for (const d of dates) {
+        const b = findBooking.get(eid, d);
+        if (b) { conflicts.push(`${d}: scheduled on ${b.job_number}. Remove that assignment first.`); continue; }
+        added += db.prepare('INSERT OR IGNORE INTO time_off (employee_id, off_date, reason, created_by) VALUES (?, ?, ?, ?)').run(eid, d, reason, req.user.id).changes;
+      }
+    });
+    audit(req, 'create', 'time_off', eid, { dates, reason });
+    res.json({ added, conflicts });
+  });
+  api.delete('/time-off/:id', canSchedule, (req, res) => {
+    db.prepare('DELETE FROM time_off WHERE id = ?').run(int(req.params.id));
+    audit(req, 'delete', 'time_off', int(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ---- hour verification -----------------------------------------------------------
+  api.get('/verification', canSchedule, (req, res) => {
+    const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
+    const end = addDays(start, 6);
+    const projectId = int(req.query.project_id);
+    const rows = db.prepare(`${assignmentSelect} LEFT JOIN users v ON v.id = a.verified_by
+      WHERE a.work_date BETWEEN ? AND ? ${projectId ? 'AND a.project_id = ?' : ''}
+      ORDER BY p.job_number, a.work_date, e.last_name`).all(...[start, end, ...(projectId ? [projectId] : [])]);
+    const verifierNames = new Map(db.prepare('SELECT id, name FROM users').all().map((u) => [u.id, u.name]));
+    const summary = { planned: 0, actual: 0, verified_count: 0, pending_count: 0, no_show_count: 0, variance: 0 };
+    for (const r of rows) {
+      r.verified_by_name = verifierNames.get(r.verified_by) || null;
+      summary.planned += r.planned_hours;
+      if (r.status === 'scheduled') summary.pending_count += 1;
+      else {
+        summary.verified_count += 1;
+        if (r.status === 'no_show') summary.no_show_count += 1;
+        summary.actual += r.status === 'no_show' ? 0 : r.actual_hours ?? 0;
+      }
+    }
+    const verifiedPlanned = rows.filter((r) => r.status !== 'scheduled').reduce((s, r) => s + r.planned_hours, 0);
+    summary.variance = round2(summary.actual - verifiedPlanned);
+    res.json({ start, end, rows, summary });
+  });
+
+  function applyVerify(req, id, b) {
+    const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+    if (!cur) throw new HttpError(404, 'Assignment not found.');
+    const status = str(b.status, 20) || 'verified';
+    if (!['verified', 'no_show', 'scheduled'].includes(status)) throw bad('Invalid status.');
+    let actual = null; let finalStatus = status;
+    if (status === 'verified') {
+      actual = hours(b.actual_hours, 'Actual hours') ?? cur.planned_hours;
+      if (actual !== cur.planned_hours) finalStatus = 'adjusted';
+    } else if (status === 'no_show') actual = 0;
+    const reset = status === 'scheduled';
+    db.prepare(`UPDATE assignments SET actual_hours = ?, status = ?, verified_by = ?, verified_at = ${reset ? 'NULL' : "datetime('now')"},
+      verify_note = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(actual, finalStatus, reset ? null : req.user.id, str(b.note, 500), id);
+    return { id, status: finalStatus, actual_hours: actual };
+  }
+
+  api.post('/assignments/:id/verify', canSchedule, (req, res) => {
+    const out = applyVerify(req, int(req.params.id), req.body);
+    audit(req, 'verify', 'assignment', out.id, out);
+    res.json(out);
+  });
+
+  // Verify many at once: "everyone worked their scheduled hours".
+  api.post('/verification/bulk', canSchedule, (req, res) => {
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
+    if (!ids.length) throw bad('Nothing selected.');
+    const out = tx(db, () => ids.map((id) => {
+      const cur = db.prepare('SELECT status FROM assignments WHERE id = ?').get(id);
+      return cur && cur.status === 'scheduled' ? applyVerify(req, id, { status: 'verified' }) : null;
+    }).filter(Boolean));
+    audit(req, 'verify_bulk', 'assignment', null, { count: out.length });
+    res.json({ verified: out.length });
+  });
+
+  // ---- records / history -------------------------------------------------------------
+  function recordQuery(q) {
+    const where = []; const args = [];
+    if (q.from) { where.push('a.work_date >= ?'); args.push(date(q.from, 'From')); }
+    if (q.to) { where.push('a.work_date <= ?'); args.push(date(q.to, 'To')); }
+    if (int(q.employee_id)) { where.push('a.employee_id = ?'); args.push(int(q.employee_id)); }
+    if (int(q.project_id)) { where.push('a.project_id = ?'); args.push(int(q.project_id)); }
+    if (str(q.trade)) { where.push('e.trade = ?'); args.push(str(q.trade)); }
+    if (str(q.status)) { where.push('a.status = ?'); args.push(str(q.status)); }
+    return db.prepare(`${assignmentSelect} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.work_date DESC, p.job_number, e.last_name LIMIT 20000`).all(...args);
+  }
+
+  api.get('/records', (req, res) => {
+    const rows = recordQuery(req.query);
+    if (req.query.format === 'csv') {
+      res.set('Content-Type', 'text/csv; charset=utf-8');
+      res.set('Content-Disposition', 'attachment; filename="workforce-records.csv"');
+      return res.send(toCsv(rows, [
+        { key: 'work_date', label: 'Date' }, { key: 'job_number', label: 'Job #' }, { key: 'project_name', label: 'Project' },
+        { key: 'last_name', label: 'Last' }, { key: 'first_name', label: 'First' }, { key: 'trade', label: 'Trade' },
+        { key: 'classification', label: 'Classification' }, { key: 'start_time', label: 'Start' }, { key: 'planned_hours', label: 'Planned Hrs' },
+        { key: 'actual_hours', label: 'Actual Hrs' }, { key: 'status', label: 'Status' }, { key: 'task', label: 'Task' },
+      ]));
+    }
+    const summary = { rows: rows.length, planned: 0, actual: 0, by_project: {}, by_trade: {} };
+    for (const r of rows) {
+      const h = r.status === 'no_show' ? 0 : r.actual_hours ?? r.planned_hours;
+      summary.planned += r.planned_hours;
+      summary.actual += r.actual_hours ?? 0;
+      const pk = `${r.job_number} – ${r.project_name}`;
+      summary.by_project[pk] = round2((summary.by_project[pk] || 0) + h);
+      const tk = r.trade || 'Unassigned';
+      summary.by_trade[tk] = round2((summary.by_trade[tk] || 0) + h);
+    }
+    res.json({ rows: rows.slice(0, 2000), truncated: rows.length > 2000, summary });
+  });
+
+  // ---- payroll forecast (private) ------------------------------------------------------
+  const payMap = () => new Map(db.prepare('SELECT * FROM employee_pay').all().map((p) => [p.employee_id, p]));
+
+  api.get('/payroll/rates', auth.requirePayroll, (_req, res) => {
+    res.json(db.prepare(`SELECT e.id AS employee_id, e.first_name, e.last_name, e.trade, e.union_local, e.classification,
+        p.base_rate, p.fringe_rate, p.burden_pct, p.updated_at
+      FROM employees e LEFT JOIN employee_pay p ON p.employee_id = e.id WHERE e.active = 1 ORDER BY e.last_name, e.first_name`).all());
+  });
+
+  api.put('/payroll/rates/:employeeId', auth.requirePayroll, (req, res) => {
+    const eid = int(req.params.employeeId);
+    if (!empName.get(eid)) throw new HttpError(404, 'Employee not found.');
+    const base = num(req.body.base_rate) ?? 0; const fringe = num(req.body.fringe_rate) ?? 0; const burden = num(req.body.burden_pct);
+    if ([base, fringe, burden].some((n) => Number.isNaN(n) || (n !== null && n < 0))) throw bad('Rates must be positive numbers.');
+    db.prepare(`INSERT INTO employee_pay (employee_id, base_rate, fringe_rate, burden_pct, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(employee_id) DO UPDATE SET base_rate=excluded.base_rate, fringe_rate=excluded.fringe_rate, burden_pct=excluded.burden_pct, updated_at=excluded.updated_at`)
+      .run(eid, base, fringe, burden);
+    audit(req, 'update', 'pay_rate', eid);
+    res.json({ ok: true });
+  });
+
+  api.get('/payroll/forecast', auth.requirePayroll, (req, res) => {
+    const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
+    const weeks = Math.min(Math.max(int(req.query.weeks) || 4, 1), 26);
+    const end = addDays(start, weeks * 7 - 1);
+    const settings = getSettings(db);
+    const rows = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ?`).all(start, end);
+    const costed = costAssignments(rows, payMap(), settings);
+
+    const byWeek = new Map(); const byProject = new Map(); const byEmployee = new Map(); const byTrade = new Map(); const grid = new Map();
+    const grand = sumInto(new Map(), 'all', {}, { hours: 0, reg_hours: 0, ot_hours: 0, wages: 0, burden: 0, fringe: 0, total: 0 });
+    const missing = new Set();
+    for (const c of costed) {
+      const wk = weekStart(c.work_date);
+      sumInto(byWeek, wk, { week: wk }, c);
+      sumInto(byProject, c.project_id, { project_id: c.project_id, job_number: c.job_number, project_name: c.project_name }, c);
+      sumInto(byEmployee, c.employee_id, { employee_id: c.employee_id, name: `${c.last_name}, ${c.first_name}`, trade: c.trade }, c);
+      sumInto(byTrade, c.trade || 'Unassigned', { trade: c.trade || 'Unassigned' }, c);
+      sumInto(grid, `${c.project_id}|${wk}`, { project_id: c.project_id, week: wk }, c);
+      for (const f of ['hours', 'reg_hours', 'ot_hours', 'wages', 'burden', 'fringe', 'total']) grand[f] = round2(grand[f] + c[f]);
+      if (c.missing_rate) missing.add(`${c.first_name} ${c.last_name}`);
+    }
+    const weeksList = Array.from({ length: weeks }, (_, i) => addDays(start, i * 7));
+    res.json({
+      start, end, weeks: weeksList,
+      settings: { ot_threshold_hours: Number(settings.ot_threshold_hours), ot_multiplier: Number(settings.ot_multiplier), default_burden_pct: Number(settings.default_burden_pct) },
+      totals: grand,
+      by_week: weeksList.map((w) => byWeek.get(w) || { week: w, hours: 0, reg_hours: 0, ot_hours: 0, wages: 0, burden: 0, fringe: 0, total: 0 }),
+      by_project: [...byProject.values()].sort((a, b) => b.total - a.total),
+      by_employee: [...byEmployee.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      by_trade: [...byTrade.values()].sort((a, b) => b.total - a.total),
+      project_week: [...grid.values()],
+      missing_rates: [...missing].sort(),
+    });
+  });
+
+  // ---- users & settings (admin) -----------------------------------------------------
+  api.get('/users', canSchedule, (req, res) => {
+    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.active, u.created_at' : 'u.id, u.name, u.role';
+    res.json(db.prepare(`SELECT ${cols} FROM users u WHERE u.active = 1 OR ? ORDER BY u.name`).all(req.user.role === 'admin' ? 1 : 0));
+  });
+
+  function readUser(b, isNew) {
+    const u = {
+      username: str(b.username, 100), name: str(b.name, 200), role: str(b.role, 20) || 'viewer',
+      can_view_payroll: bool(b.can_view_payroll), employee_id: int(b.employee_id), active: b.active === undefined ? 1 : bool(b.active),
+    };
+    if (!u.username || !u.name) throw bad('Username and name are required.');
+    if (!['admin', 'super', 'viewer'].includes(u.role)) throw bad('Invalid role.');
+    const pw = b.password ? String(b.password) : '';
+    if ((isNew || pw) && pw.length < 8) throw bad('Password must be at least 8 characters.');
+    return { u, pw };
+  }
+
+  api.post('/users', adminOnly, (req, res) => {
+    const { u, pw } = readUser(req.body, true);
+    let r;
+    try {
+      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.active);
+    } catch (e) { uniqueMsg(e, 'That username is taken.'); }
+    audit(req, 'create', 'user', Number(r.lastInsertRowid), { username: u.username, role: u.role });
+    res.json({ id: Number(r.lastInsertRowid) });
+  });
+
+  api.put('/users/:id', adminOnly, (req, res) => {
+    const id = int(req.params.id);
+    const { u, pw } = readUser(req.body, false);
+    if (id === req.user.id && (u.role !== 'admin' || !u.active)) throw bad('You cannot remove your own admin access.');
+    try {
+      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, active=? WHERE id=?`)
+        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.active, id);
+    } catch (e) { uniqueMsg(e, 'That username is taken.'); }
+    if (pw) {
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(pw), id);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    }
+    if (!u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    audit(req, 'update', 'user', id, { role: u.role, payroll: u.can_view_payroll, active: u.active, password_reset: !!pw });
+    res.json({ id });
+  });
+
+  api.get('/settings', adminOnly, (_req, res) => res.json(getSettings(db)));
+  api.put('/settings', adminOnly, (req, res) => {
+    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'default_start_time'];
+    const up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
+    for (const k of allowed) if (req.body[k] !== undefined && req.body[k] !== null && String(req.body[k]).trim() !== '') up.run(String(req.body[k]).trim().slice(0, 200), k);
+    audit(req, 'update', 'settings', null, req.body);
+    res.json(getSettings(db));
+  });
+
+  api.get('/audit', adminOnly, (req, res) => {
+    res.json(db.prepare(`SELECT l.*, u.name AS user_name FROM audit_log l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.id DESC LIMIT ?`)
+      .all(Math.min(int(req.query.limit) || 300, 2000)));
+  });
+
+  // Full database snapshot for off-site backup.
+  api.get('/backup', adminOnly, (req, res) => {
+    const file = path.join(require('node:os').tmpdir(), `wf-backup-${Date.now()}.db`);
+    db.prepare('VACUUM INTO ?').run(file);
+    audit(req, 'backup', 'database', null);
+    res.download(file, `workforce-backup-${new Date().toISOString().slice(0, 10)}.db`, () => require('node:fs').rm(file, { force: true }, () => {}));
+  });
+
+  app.use('/api', api);
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
+
+  app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h' }));
+  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, _req, res, _next) => {
+    const status = err.status || (err.type === 'entity.parse.failed' ? 400 : 500);
+    if (status >= 500) console.error(err);
+    res.status(status).json({ error: status >= 500 ? 'Something went wrong.' : err.message, ...(err.extra || {}) });
+  });
+
+  return app;
+}
+
+module.exports = { createApp };
