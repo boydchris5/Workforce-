@@ -7,13 +7,13 @@ A web app for scheduling field staff by project. It works in any browser on a co
 | Area | Who can use it | What it does |
 |---|---|---|
 | **Schedule** | Everyone can view. The Workforce Manager and superintendents can edit. | Weekly board organized **by project**: each row is a job and each column is a day. **Who's Where** flips the view to show each person's job for each day. Running totals show people and hours per cell, per project, per day and for the week, plus project-to-date hours against budget. |
-| **No double booking** | Automatic | A person can be on only **one project per day**, and can't be scheduled on a day marked as time off. The scheduling screen greys out anyone who is already booked. The server rejects conflicts, and the database has a unique constraint on employee + date as the final safeguard. |
+| **No double booking, split days allowed** | Automatic | A person can split a day across two or more jobs. It is blocked as a double booking when they are already on the same job that day, their time slots overlap (e.g. both jobs at 07:00 for 8 hours), the day would exceed the daily hours limit (12 by default, set in Admin → Settings), or they are marked off. The scheduling screen shows each person's existing jobs and times, the server rejects conflicts, and the database allows only one row per person per job per day. In Who's Where, "+ split" adds a second job to a filled day. |
 | **Copy last week** | Manager, superintendents | Rolls a week's crews forward. Anyone who would be double booked is skipped and listed. |
 | **Verify Hours** | Manager, superintendents | Compares projected and actual hours for each person and day. Rows can be confirmed, adjusted or marked as a no-show, or a supervisor can verify everyone as scheduled in one click. Shows variance, the pending count and who verified each row. |
 | **Employees** | Everyone can view. Manager and superintendents can edit. | Employee list with union trade, local, classification, phone, and skills and certifications with expiration dates (expired ones are flagged in red). Filter by trade or skill. |
 | **Projects** | Everyone can view. Manager and superintendents can edit. | Job number, superintendent, address (opens in maps on a phone), budgeted labor hours, status and board color. |
 | **Records** | Everyone | Searchable history of every crew-day by date range, project, employee, trade and status, with hours by project and by trade. Exports to CSV for Excel. |
-| **🔒 Payroll** | Admin, plus anyone given payroll access | Private pay rates (base, fringe, burden %) and a labor cost forecast over 1–26 weeks: by week, project × week, project, trade and employee. Overtime is calculated after 40 hours a week at 1.5× (both adjustable). Pay rates are stored in a separate table that no other screen reads. |
+| **🔒 Payroll** | Admin, plus anyone given payroll access | Private pay rates (base, fringe, burden %) with **effective dates and full history**. Every day worked is costed at the rate in effect that day, so past weeks keep the rate actually paid and a union increase applies only from its start date. A "Union increase for a trade" button adds a dated raise for everyone in a trade at once. The labor cost forecast covers 1–26 weeks (pick a past week to see historical cost), broken down by week, project × week, project, trade and employee. Overtime is calculated after 40 hours a week at 1.5× (both adjustable). Pay rates are stored in a separate table that no other screen reads. |
 | **My Schedule** | Field staff with a linked login | A phone-friendly list of upcoming days, job, start time and task. |
 | **Admin** | Workforce Manager | Users and roles, payroll access, company settings, activity log (who changed what) and a one-click database backup. |
 
@@ -61,6 +61,10 @@ On first start with an empty database, an `admin` login is created. Its password
 | `DB_FILE` | `./data/workforce.db` | Database location (put it on persistent storage) |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / random | First-run admin login |
 | `NODE_ENV=production` | | Marks session cookies Secure (HTTPS only) |
+
+## Upgrading
+
+The database upgrades itself on startup. Earlier versions are migrated in place: schedule history is kept, and each person's single pay rate becomes the first entry in their rate history.
 
 ## Project layout
 

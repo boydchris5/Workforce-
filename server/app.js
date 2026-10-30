@@ -4,7 +4,7 @@ const express = require('express');
 const { tx, getSettings } = require('./db');
 const auth = require('./auth');
 const { isDate, addDays, weekStart, weekDates, daysBetween } = require('./dates');
-const { costAssignments, sumInto, round2 } = require('./payroll');
+const { costAssignments, rateLookup, sumInto, round2 } = require('./payroll');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -291,7 +291,7 @@ function createApp(db, opts = {}) {
     const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
     const days = weekDates(start);
     const end = days[6];
-    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name`).all(start, end);
+    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name, a.start_time`).all(start, end);
     const timeOff = db.prepare(`SELECT t.*, e.first_name, e.last_name FROM time_off t JOIN employees e ON e.id = t.employee_id
       WHERE t.off_date BETWEEN ? AND ?`).all(start, end);
     const projectIds = new Set(assignments.map((a) => a.project_id));
@@ -303,7 +303,8 @@ function createApp(db, opts = {}) {
     // Running totals
     const byProject = {}; const byDay = {}; const byEmployee = {};
     let totalHours = 0;
-    for (const d of days) byDay[d] = { headcount: 0, hours: 0 };
+    const peopleByDay = {};
+    for (const d of days) { byDay[d] = { headcount: 0, hours: 0 }; peopleByDay[d] = new Set(); }
     for (const a of assignments) {
       const h = a.planned_hours;
       totalHours += h;
@@ -311,7 +312,8 @@ function createApp(db, opts = {}) {
       p.hours += h; p.people.add(a.employee_id);
       const pd = (p.days[a.work_date] ||= { headcount: 0, hours: 0 });
       pd.headcount += 1; pd.hours += h;
-      byDay[a.work_date].headcount += 1; byDay[a.work_date].hours += h;
+      byDay[a.work_date].hours += h; peopleByDay[a.work_date].add(a.employee_id);
+      byDay[a.work_date].headcount = peopleByDay[a.work_date].size;
       byEmployee[a.employee_id] = (byEmployee[a.employee_id] || 0) + h;
     }
     for (const p of Object.values(byProject)) { p.headcount = p.people.size; delete p.people; }
@@ -327,22 +329,40 @@ function createApp(db, opts = {}) {
     const from = weekStart(new Date().toISOString().slice(0, 10));
     res.json({
       linked: true,
-      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? ORDER BY a.work_date LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
+      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? ORDER BY a.work_date, a.start_time LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
       time_off: db.prepare('SELECT * FROM time_off WHERE employee_id = ? AND off_date >= ? ORDER BY off_date').all(req.user.employee_id, from),
     });
   });
 
   // ---- assignments (double-booking protected) -------------------------------------
-  const findBooking = db.prepare(`SELECT a.id, a.project_id, p.job_number, p.name AS project_name FROM assignments a JOIN projects p ON p.id = a.project_id
-    WHERE a.employee_id = ? AND a.work_date = ?`);
+  const findBookings = db.prepare(`SELECT a.id, a.project_id, a.planned_hours, a.start_time, p.job_number, p.name AS project_name
+    FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? AND a.work_date = ? ORDER BY a.start_time, a.id`);
   const findOff = db.prepare('SELECT reason FROM time_off WHERE employee_id = ? AND off_date = ?');
   const empName = db.prepare("SELECT first_name || ' ' || last_name AS name, active FROM employees WHERE id = ?");
 
-  function conflictFor(employeeId, workDate, ignoreId) {
-    const b = findBooking.get(employeeId, workDate);
-    if (b && b.id !== ignoreId) return { type: 'booked', message: `already scheduled on ${b.job_number} – ${b.project_name}`, project_id: b.project_id };
+  const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const fromMin = (n) => `${String(Math.floor(n / 60) % 24).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+  const slot = (start, hrs) => (start ? `${start}–${fromMin(toMin(start) + Math.round(hrs * 60))}` : `${hrs} h`);
+
+  // A person can split a day across jobs. It is a double booking when they are
+  // off that day, already on the same job that day, their time slots overlap,
+  // or the day's total hours would pass the daily cap.
+  function conflictFor(employeeId, workDate, { projectId, hours = 0, start = null }, ignoreId) {
     const off = findOff.get(employeeId, workDate);
     if (off) return { type: 'time_off', message: `is off${off.reason ? ` (${off.reason})` : ''}` };
+    const others = findBookings.all(employeeId, workDate).filter((b) => b.id !== ignoreId);
+    const same = others.find((b) => b.project_id === projectId);
+    if (same) return { type: 'booked', message: `is already scheduled on ${same.job_number} – ${same.project_name}`, project_id: same.project_id };
+    if (start) {
+      const s0 = toMin(start); const s1 = s0 + hours * 60;
+      const hit = others.find((b) => b.start_time && toMin(b.start_time) < s1 && s0 < toMin(b.start_time) + b.planned_hours * 60);
+      if (hit) return { type: 'overlap', message: `overlaps ${hit.job_number} (${slot(hit.start_time, hit.planned_hours)})`, project_id: hit.project_id };
+    }
+    const cap = Number(getSettings(db).max_daily_hours) || 24;
+    const total = others.reduce((sum, b) => sum + b.planned_hours, 0) + hours;
+    if (others.length && total > cap) {
+      return { type: 'over_cap', message: `would have ${total} hrs (daily limit ${cap}) – already on ${others.map((b) => `${b.job_number} ${slot(b.start_time, b.planned_hours)}`).join(', ')}` };
+    }
     return null;
   }
 
@@ -369,13 +389,13 @@ function createApp(db, opts = {}) {
         const emp = empName.get(eid);
         if (!emp) { conflicts.push({ employee_id: eid, message: 'Employee not found' }); continue; }
         for (const d of dates) {
-          const c = conflictFor(eid, d);
+          const c = conflictFor(eid, d, { projectId, hours: planned, start: startTime });
           if (c) { conflicts.push({ employee_id: eid, work_date: d, name: emp.name, ...c, message: `${emp.name} ${c.message} on ${d}` }); continue; }
           try {
             const r = ins.run(eid, projectId, d, planned, startTime, task, req.user.id);
             created.push(Number(r.lastInsertRowid));
           } catch (e) {
-            if (/UNIQUE/.test(e.message)) conflicts.push({ employee_id: eid, work_date: d, name: emp.name, type: 'booked', message: `${emp.name} is already scheduled on ${d}` });
+            if (/UNIQUE/.test(e.message)) conflicts.push({ employee_id: eid, work_date: d, name: emp.name, type: 'booked', message: `${emp.name} is already scheduled on ${project.job_number} on ${d}` });
             else throw e;
           }
         }
@@ -400,15 +420,13 @@ function createApp(db, opts = {}) {
       task: b.task !== undefined ? str(b.task, 500) : cur.task,
     };
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(next.project_id)) throw bad('Project not found.');
-    if (next.employee_id !== cur.employee_id || next.work_date !== cur.work_date) {
-      const c = conflictFor(next.employee_id, next.work_date, id);
-      if (c) throw new HttpError(409, `${empName.get(next.employee_id)?.name || 'Employee'} ${c.message} on ${next.work_date}.`);
-    }
+    const c = conflictFor(next.employee_id, next.work_date, { projectId: next.project_id, hours: next.planned_hours, start: next.start_time }, id);
+    if (c) throw new HttpError(409, `${empName.get(next.employee_id)?.name || 'Employee'} ${c.message} on ${next.work_date}.`);
     try {
       db.prepare(`UPDATE assignments SET employee_id=:employee_id, project_id=:project_id, work_date=:work_date, planned_hours=:planned_hours,
         start_time=:start_time, task=:task, updated_at=datetime('now') WHERE id=:id`).run(next);
     } catch (e) {
-      if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That person is already scheduled that day.');
+      if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That person is already scheduled on that job that day.');
       throw e;
     }
     audit(req, 'update', 'assignment', id, { from: { project_id: cur.project_id, date: cur.work_date }, to: { project_id: next.project_id, date: next.work_date } });
@@ -431,14 +449,14 @@ function createApp(db, opts = {}) {
     if (from === to) throw bad('Pick a different target week.');
     const projectId = int(req.body.project_id);
     const offset = daysBetween(from, to);
-    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? ${projectId ? 'AND project_id = ?' : ''}`)
+    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? ${projectId ? 'AND project_id = ?' : ''} ORDER BY work_date, start_time, id`)
       .all(...[from, addDays(from, 6), ...(projectId ? [projectId] : [])]);
     const created = []; const conflicts = [];
     const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`);
     tx(db, () => {
       for (const a of src) {
         const d = addDays(a.work_date, offset);
-        const c = conflictFor(a.employee_id, d);
+        const c = conflictFor(a.employee_id, d, { projectId: a.project_id, hours: a.planned_hours, start: a.start_time });
         if (c) { conflicts.push({ employee_id: a.employee_id, work_date: d, message: `${empName.get(a.employee_id)?.name} ${c.message} on ${d}` }); continue; }
         if (!empName.get(a.employee_id)?.active) continue;
         created.push(Number(ins.run(a.employee_id, a.project_id, d, a.planned_hours, a.start_time, a.task, req.user.id).lastInsertRowid));
@@ -457,8 +475,8 @@ function createApp(db, opts = {}) {
     const conflicts = []; let added = 0;
     tx(db, () => {
       for (const d of dates) {
-        const b = findBooking.get(eid, d);
-        if (b) { conflicts.push(`${d}: scheduled on ${b.job_number}. Remove that assignment first.`); continue; }
+        const booked = findBookings.all(eid, d);
+        if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((b) => b.job_number).join(', ')}. Remove that first.`); continue; }
         added += db.prepare('INSERT OR IGNORE INTO time_off (employee_id, off_date, reason, created_by) VALUES (?, ?, ?, ?)').run(eid, d, reason, req.user.id).changes;
       }
     });
@@ -569,23 +587,44 @@ function createApp(db, opts = {}) {
   });
 
   // ---- payroll forecast (private) ------------------------------------------------------
-  const payMap = () => new Map(db.prepare('SELECT * FROM employee_pay').all().map((p) => [p.employee_id, p]));
+  const allRates = () => db.prepare('SELECT * FROM employee_pay_rates').all();
 
+  // Current rate (as of today) plus the full dated history for each active employee.
   api.get('/payroll/rates', auth.requirePayroll, (_req, res) => {
-    res.json(db.prepare(`SELECT e.id AS employee_id, e.first_name, e.last_name, e.trade, e.union_local, e.classification,
-        p.base_rate, p.fringe_rate, p.burden_pct, p.updated_at
-      FROM employees e LEFT JOIN employee_pay p ON p.employee_id = e.id WHERE e.active = 1 ORDER BY e.last_name, e.first_name`).all());
+    const today = new Date().toISOString().slice(0, 10);
+    const history = db.prepare(`SELECT r.*, u.name AS created_by_name FROM employee_pay_rates r LEFT JOIN users u ON u.id = r.created_by
+      ORDER BY r.employee_id, r.effective_date DESC`).all();
+    const byEmp = new Map();
+    for (const h of history) { if (!byEmp.has(h.employee_id)) byEmp.set(h.employee_id, []); byEmp.get(h.employee_id).push(h); }
+    const rateFor = rateLookup(history);
+    res.json(db.prepare(`SELECT id AS employee_id, first_name, last_name, trade, union_local, classification FROM employees
+      WHERE active = 1 ORDER BY last_name, first_name`).all().map((e) => {
+      const list = byEmp.get(e.employee_id) || [];
+      return { ...e, current: rateFor(e.employee_id, today), upcoming: list.filter((r) => r.effective_date > today).reverse(), history: list };
+    }));
   });
 
-  api.put('/payroll/rates/:employeeId', auth.requirePayroll, (req, res) => {
+  // Add a rate effective on a date (replaces any rate already on that exact date).
+  api.post('/payroll/rates/:employeeId', auth.requirePayroll, (req, res) => {
     const eid = int(req.params.employeeId);
     if (!empName.get(eid)) throw new HttpError(404, 'Employee not found.');
+    const eff = date(req.body.effective_date, 'Effective date', true);
     const base = num(req.body.base_rate) ?? 0; const fringe = num(req.body.fringe_rate) ?? 0; const burden = num(req.body.burden_pct);
     if ([base, fringe, burden].some((n) => Number.isNaN(n) || (n !== null && n < 0))) throw bad('Rates must be positive numbers.');
-    db.prepare(`INSERT INTO employee_pay (employee_id, base_rate, fringe_rate, burden_pct, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(employee_id) DO UPDATE SET base_rate=excluded.base_rate, fringe_rate=excluded.fringe_rate, burden_pct=excluded.burden_pct, updated_at=excluded.updated_at`)
-      .run(eid, base, fringe, burden);
-    audit(req, 'update', 'pay_rate', eid);
+    db.prepare(`INSERT INTO employee_pay_rates (employee_id, effective_date, base_rate, fringe_rate, burden_pct, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(employee_id, effective_date) DO UPDATE SET base_rate=excluded.base_rate, fringe_rate=excluded.fringe_rate,
+        burden_pct=excluded.burden_pct, note=excluded.note, created_by=excluded.created_by, created_at=datetime('now')`)
+      .run(eid, eff, base, fringe, burden, str(req.body.note, 200), req.user.id);
+    audit(req, 'set_rate', 'pay_rate', eid, { effective_date: eff });
+    res.json({ ok: true });
+  });
+
+  // Remove a rate entered by mistake.
+  api.delete('/payroll/rates/entry/:id', auth.requirePayroll, (req, res) => {
+    const r = db.prepare('SELECT employee_id, effective_date FROM employee_pay_rates WHERE id = ?').get(int(req.params.id));
+    if (!r) throw new HttpError(404, 'Rate not found.');
+    db.prepare('DELETE FROM employee_pay_rates WHERE id = ?').run(int(req.params.id));
+    audit(req, 'delete_rate', 'pay_rate', r.employee_id, { effective_date: r.effective_date });
     res.json({ ok: true });
   });
 
@@ -595,7 +634,7 @@ function createApp(db, opts = {}) {
     const end = addDays(start, weeks * 7 - 1);
     const settings = getSettings(db);
     const rows = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ?`).all(start, end);
-    const costed = costAssignments(rows, payMap(), settings);
+    const costed = costAssignments(rows, rateLookup(allRates()), settings);
 
     const byWeek = new Map(); const byProject = new Map(); const byEmployee = new Map(); const byTrade = new Map(); const grid = new Map();
     const grand = sumInto(new Map(), 'all', {}, { hours: 0, reg_hours: 0, ot_hours: 0, wages: 0, burden: 0, fringe: 0, total: 0 });
@@ -672,7 +711,7 @@ function createApp(db, opts = {}) {
 
   api.get('/settings', adminOnly, (_req, res) => res.json(getSettings(db)));
   api.put('/settings', adminOnly, (req, res) => {
-    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'default_start_time'];
+    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'default_start_time', 'max_daily_hours'];
     const up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     for (const k of allowed) if (req.body[k] !== undefined && req.body[k] !== null && String(req.body[k]).trim() !== '') up.run(String(req.body[k]).trim().slice(0, 200), k);
     audit(req, 'update', 'settings', null, req.body);

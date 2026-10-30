@@ -165,6 +165,9 @@ table.list tfoot td { font-weight: 700; background: var(--charcoal); color: #fff
 .chip.off, .pill.off { background: repeating-linear-gradient(45deg, #fff, #fff 4px, var(--tint) 4px, var(--tint) 8px); border-left-color: var(--soft); color: var(--soft); }
 .add-btn { width: 100%; border: 1px dashed var(--light); background: transparent; color: var(--muted); font-size: 12px; padding: 2px; min-height: 26px; justify-content: center; }
 .add-btn:hover { background: var(--orange-tint); color: var(--orange-dk); border-color: var(--orange); }
+.add-btn.split { min-height: 20px; font-size: 11px; margin-top: 2px; opacity: 0; }
+td:hover .add-btn.split, .add-btn.split:focus-visible { opacity: 1; }
+@media (hover: none) { .add-btn.split { opacity: 1; } }
 
 .person-cell { min-height: 30px; cursor: default; }
 .person-cell.can { cursor: pointer; }

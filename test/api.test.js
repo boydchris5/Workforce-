@@ -53,28 +53,57 @@ test('setup projects and employees', async () => {
 });
 
 test('prevents double booking', async () => {
-  const r1 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [MON, '2026-11-03'], planned_hours: 8 });
+  const r1 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [MON, '2026-11-03'], planned_hours: 8, start_time: '07:00' });
   assert.equal(r1.status, 200);
   assert.equal(r1.body.created.length, 4);
 
-  // Same person, same day, different project -> rejected
-  const r2 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON] });
+  // Same person, same day, overlapping time on another job -> rejected
+  const r2 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON], planned_hours: 8, start_time: '07:00' });
   assert.equal(r2.status, 409);
-  assert.match(r2.body.conflicts[0].message, /already scheduled on 25-001/);
+  assert.match(r2.body.conflicts[0].message, /overlaps 25-001 \(07:00–15:00\)/);
 
-  // Mixed request: new day goes through, booked day is skipped
-  const r3 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON, '2026-11-04'] });
-  assert.equal(r3.body.created.length, 1);
-  assert.equal(r3.body.conflicts.length, 1);
+  // Same person on the same job twice in one day -> rejected
+  const r3 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1], dates: [MON], planned_hours: 2, start_time: '16:00' });
+  assert.equal(r3.status, 409);
+  assert.match(r3.body.conflicts[0].message, /already scheduled on 25-001/);
 
-  // Moving an assignment onto a booked day -> rejected
+  // Mixed request: new day goes through, overlapping day is skipped
+  const r4 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON, '2026-11-04'], planned_hours: 8, start_time: '07:00' });
+  assert.equal(r4.body.created.length, 1);
+  assert.equal(r4.body.conflicts.length, 1);
+
+  // Moving an assignment onto an overlapping slot -> rejected
   const sched = (await field('GET', `/schedule?start=${MON}`)).body;
   const wed = sched.assignments.find((a) => a.employee_id === e1 && a.work_date === '2026-11-04');
   const move = await sup('PUT', `/assignments/${wed.id}`, { work_date: MON });
   assert.equal(move.status, 409);
 
-  // Database constraint backs it up even if app checks were bypassed
-  assert.throws(() => conn.prepare('INSERT INTO assignments (employee_id, project_id, work_date) VALUES (?, ?, ?)').run(e1, p2, MON), /UNIQUE/);
+  // Database constraint backs up the same-job rule even if app checks were bypassed
+  assert.throws(() => conn.prepare('INSERT INTO assignments (employee_id, project_id, work_date) VALUES (?, ?, ?)').run(e1, p1, MON), /UNIQUE/);
+});
+
+test('allows split days within the daily cap', async () => {
+  const day = '2026-11-12';
+  const a = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [day], planned_hours: 4, start_time: '07:00' });
+  assert.equal(a.status, 200);
+  const b = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [day], planned_hours: 4, start_time: '11:30' });
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  const s = (await field('GET', `/schedule?start=${day}`)).body;
+  assert.equal(s.assignments.filter((x) => x.employee_id === e2 && x.work_date === day).length, 2);
+  assert.equal(s.totals.by_day[day].headcount, 1); // one person, two jobs
+  assert.equal(s.totals.by_day[day].hours, 8);
+
+  // Third slot that pushes the day past the 12-hour cap -> rejected
+  const c = await sup('POST', '/assignments', { project_id: (await boss('POST', '/projects', { job_number: '25-003', name: 'Plant' })).body.id, employee_ids: [e2], dates: [day], planned_hours: 6, start_time: '16:00' });
+  assert.equal(c.status, 409);
+  assert.match(c.body.conflicts[0].message, /would have 14 hrs \(daily limit 12\)/);
+
+  // Without start times only the cap applies
+  const d2 = '2026-11-13';
+  assert.equal((await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [d2], planned_hours: 6 })).status, 200);
+  assert.equal((await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [d2], planned_hours: 6 })).status, 200);
+  // Clean up so later tests see the original schedule
+  for (const x of (await field('GET', `/schedule?start=${day}`)).body.assignments) await sup('DELETE', `/assignments/${x.id}`);
 });
 
 test('blocks scheduling on time off', async () => {
@@ -122,7 +151,7 @@ test('payroll is private and computes OT', async () => {
   // No pay fields leak through general endpoints
   assert.ok(!('base_rate' in (await sup('GET', '/employees')).body[0]));
 
-  await boss('PUT', `/payroll/rates/${e1}`, { base_rate: 40, fringe_rate: 20, burden_pct: 10 });
+  await boss('POST', `/payroll/rates/${e1}`, { effective_date: '2026-01-01', base_rate: 40, fringe_rate: 20, burden_pct: 10 });
   // Push e1 over 40 hours: Thu-Sat 12h days on p2 => 8+8+8 already + 36 = 60
   await boss('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: ['2026-11-05', '2026-11-06', '2026-11-07'], planned_hours: 12 });
   const f = (await boss('GET', `/payroll/forecast?start=${MON}&weeks=1`)).body;
@@ -163,4 +192,68 @@ test('admin can download a database backup', async () => {
   const r = await boss('GET', '/backup');
   assert.equal(r.status, 200);
   assert.match(String(r.body).slice(0, 16), /^SQLite format 3/);
+});
+
+test('pay rate history: each day is costed at the rate in effect that day', async () => {
+  // e1 already has $40 from 2026-01-01. A raise to $50 effective Wednesday of the test week.
+  assert.equal((await sup('POST', `/payroll/rates/${e1}`, { effective_date: '2026-11-04', base_rate: 50 })).status, 403);
+  await boss('POST', `/payroll/rates/${e1}`, { effective_date: '2026-11-04', base_rate: 50, fringe_rate: 20, burden_pct: 10, note: 'Union increase' });
+  const f = (await boss('GET', `/payroll/forecast?start=${MON}&weeks=1`)).body;
+  const emp = f.by_employee.find((x) => x.employee_id === e1);
+  // Mon 9.5 + Tue 8 at $40 = 17.5 reg hrs; Wed 8 + Thu 12 at $50 reg until 40 hrs, rest OT at $50
+  // Hours in order: Mon 9.5, Tue 8, Wed 8 (p2), Thu 12, Fri 12, Sat 12 = 61.5
+  const reg40 = 17.5 * 40;
+  const reg50 = (40 - 17.5) * 50;
+  const ot50 = (emp.hours - 40) * 50 * 1.5;
+  assert.equal(emp.wages, reg40 + reg50 + ot50);
+
+  const rates = (await boss('GET', '/payroll/rates')).body.find((r) => r.employee_id === e1);
+  assert.equal(rates.history.length, 2);
+  assert.equal(rates.history[0].effective_date, '2026-11-04');
+  assert.equal(rates.history[0].note, 'Union increase');
+
+  // Deleting the raise puts the whole week back at $40
+  await boss('DELETE', `/payroll/rates/entry/${rates.history[0].id}`);
+  const f2 = (await boss('GET', `/payroll/forecast?start=${MON}&weeks=1`)).body;
+  assert.equal(f2.by_employee.find((x) => x.employee_id === e1).wages, 40 * 40 + (emp.hours - 40) * 40 * 1.5);
+});
+
+test('upgrades a database from the earlier version without losing data', () => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const { DatabaseSync } = require('node:sqlite');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')), 'old.db');
+  const old = new DatabaseSync(file);
+  old.exec(`
+    CREATE TABLE employees (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE projects (id INTEGER PRIMARY KEY, job_number TEXT NOT NULL UNIQUE, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, can_view_payroll INTEGER NOT NULL DEFAULT 0, employee_id INTEGER, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE employee_pay (employee_id INTEGER PRIMARY KEY, base_rate REAL NOT NULL DEFAULT 0, fringe_rate REAL NOT NULL DEFAULT 0, burden_pct REAL, updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE assignments (id INTEGER PRIMARY KEY, employee_id INTEGER NOT NULL, project_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+      planned_hours REAL NOT NULL DEFAULT 8, start_time TEXT, task TEXT, actual_hours REAL, status TEXT NOT NULL DEFAULT 'scheduled',
+      verified_by INTEGER, verified_at TEXT, verify_note TEXT, created_by INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (employee_id, work_date));
+    INSERT INTO employees (id, first_name, last_name) VALUES (1, 'Dan', 'Miller');
+    INSERT INTO projects (id, job_number, name) VALUES (1, '24-101', 'School'), (2, '24-115', 'Bridge');
+    INSERT INTO employee_pay (employee_id, base_rate, fringe_rate, updated_at) VALUES (1, 45.5, 24.5, '2026-05-01 10:00:00');
+    INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, status, actual_hours) VALUES (1, 1, '2026-10-26', 8, 'verified', 8);
+  `);
+  old.close();
+
+  const up = db.open(file);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 2);
+  const a = up.prepare('SELECT * FROM assignments').all();
+  assert.equal(a.length, 1);
+  assert.equal(a[0].status, 'verified');
+  const r = up.prepare('SELECT * FROM employee_pay_rates').all();
+  assert.equal(r.length, 1);
+  assert.equal(r[0].base_rate, 45.5);
+  assert.equal(r[0].effective_date, '2026-05-01');
+  assert.ok(!up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'employee_pay'").get());
+  // Split days now allowed at the database level
+  up.prepare("INSERT INTO assignments (employee_id, project_id, work_date, planned_hours) VALUES (1, 2, '2026-10-26', 2)").run();
+  up.close();
+  // Opening again is a no-op
+  const again = db.open(file);
+  assert.equal(again.prepare('SELECT COUNT(*) AS n FROM assignments').get().n, 2);
+  again.close();
 });

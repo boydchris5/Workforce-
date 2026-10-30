@@ -3,6 +3,29 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
+// A person may split a day across jobs, so the hard database guarantee is one
+// row per employee per project per day. Overlapping times and the daily hours
+// cap are enforced by the app (see conflictFor in app.js).
+const assignmentsDdl = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
+  id INTEGER PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  work_date TEXT NOT NULL,
+  planned_hours REAL NOT NULL DEFAULT 8,
+  start_time TEXT,
+  task TEXT,
+  actual_hours REAL,
+  status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','verified','adjusted','no_show')),
+  verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  verified_at TEXT,
+  verify_note TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (employee_id, work_date, project_id)
+);`;
+const ASSIGNMENTS = assignmentsDdl('assignments');
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
@@ -51,12 +74,19 @@ CREATE TABLE IF NOT EXISTS employee_skills (
 );
 
 -- Pay data lives in its own table so it is only ever read by payroll endpoints.
-CREATE TABLE IF NOT EXISTS employee_pay (
-  employee_id INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+-- Rates are effective-dated: each work day is costed at the rate in effect
+-- on that day, so past payroll keeps the rate that was actually paid.
+CREATE TABLE IF NOT EXISTS employee_pay_rates (
+  id INTEGER PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  effective_date TEXT NOT NULL,
   base_rate REAL NOT NULL DEFAULT 0,
   fringe_rate REAL NOT NULL DEFAULT 0,
   burden_pct REAL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  note TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (employee_id, effective_date)
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -75,28 +105,11 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- One row per employee per day. The UNIQUE constraint is the hard guarantee
--- that nobody can be double booked, no matter how the row was created.
-CREATE TABLE IF NOT EXISTS assignments (
-  id INTEGER PRIMARY KEY,
-  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  work_date TEXT NOT NULL,
-  planned_hours REAL NOT NULL DEFAULT 8,
-  start_time TEXT,
-  task TEXT,
-  actual_hours REAL,
-  status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','verified','adjusted','no_show')),
-  verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  verified_at TEXT,
-  verify_note TEXT,
-  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (employee_id, work_date)
-);
+${ASSIGNMENTS}
 CREATE INDEX IF NOT EXISTS idx_assign_date ON assignments(work_date);
 CREATE INDEX IF NOT EXISTS idx_assign_project ON assignments(project_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_assign_emp ON assignments(employee_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_pay_rates ON employee_pay_rates(employee_id, effective_date);
 
 CREATE TABLE IF NOT EXISTS time_off (
   id INTEGER PRIMARY KEY,
@@ -131,7 +144,39 @@ const DEFAULT_SETTINGS = {
   default_burden_pct: '25',
   default_hours: '8',
   default_start_time: '07:00',
+  max_daily_hours: '12',
 };
+
+const SCHEMA_VERSION = 2;
+
+// Upgrades databases created by earlier versions without losing data.
+function migrate(db) {
+  const version = db.prepare('PRAGMA user_version').get().user_version;
+  if (version >= SCHEMA_VERSION) return;
+  const tableSql = (name) => db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)?.sql || '';
+
+  // v2: allow split days (one row per employee per project per day).
+  if (!/UNIQUE \(employee_id, work_date, project_id\)/.test(tableSql('assignments'))) {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    tx(db, () => {
+      db.exec(assignmentsDdl('assignments_v2'));
+      db.exec('INSERT INTO assignments_v2 SELECT id, employee_id, project_id, work_date, planned_hours, start_time, task, actual_hours, status, verified_by, verified_at, verify_note, created_by, created_at, updated_at FROM assignments;');
+      db.exec('DROP TABLE assignments; ALTER TABLE assignments_v2 RENAME TO assignments;');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_assign_date ON assignments(work_date); CREATE INDEX IF NOT EXISTS idx_assign_project ON assignments(project_id, work_date); CREATE INDEX IF NOT EXISTS idx_assign_emp ON assignments(employee_id, work_date);');
+    });
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+
+  // v2: single pay rate per person -> effective-dated rate history.
+  if (tableSql('employee_pay')) {
+    tx(db, () => {
+      db.exec(`INSERT OR IGNORE INTO employee_pay_rates (employee_id, effective_date, base_rate, fringe_rate, burden_pct, note)
+        SELECT employee_id, date(updated_at), base_rate, fringe_rate, burden_pct, 'Carried over from earlier version' FROM employee_pay;`);
+      db.exec('DROP TABLE employee_pay;');
+    });
+  }
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+}
 
 function open(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -139,6 +184,7 @@ function open(file) {
   db.exec('PRAGMA foreign_keys = ON;');
   if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  migrate(db);
   const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
   return db;

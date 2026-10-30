@@ -33,6 +33,12 @@ function weekLabel(start) {
   const o = { month: 'short', day: 'numeric', timeZone: 'UTC' };
   return `${new Date(start + 'T12:00:00Z').toLocaleDateString(undefined, o)} – ${new Date(end + 'T12:00:00Z').toLocaleDateString(undefined, { ...o, year: 'numeric' })}`;
 }
+const slotLabel = (a) => {
+  if (!a.start_time) return `${fmtH(a.planned_hours)}h`;
+  const [h, m] = a.start_time.split(':').map(Number);
+  const end = h * 60 + m + Math.round(a.planned_hours * 60);
+  return `${a.start_time}–${String(Math.floor(end / 60) % 24).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
+};
 const fullName = (e) => `${e.first_name} ${e.last_name}`;
 const shortName = (e) => `${e.first_name} ${e.last_name.charAt(0)}.`;
 const isWeekend = (i) => i >= 5;
@@ -379,7 +385,7 @@ function personRows() {
 
 function personBoard() {
   const d = S.sched; const today = todayStr();
-  const map = {}; for (const a of d.assignments) map[`${a.employee_id}|${a.work_date}`] = a;
+  const map = {}; for (const a of d.assignments) (map[`${a.employee_id}|${a.work_date}`] ||= []).push(a);
   const off = {}; for (const o of d.time_off) off[`${o.employee_id}|${o.off_date}`] = o;
   const rows = personRows();
   if (!rows.length) return `<div class="card muted">No employees yet. <a href="#/employees">Add employees</a>.</div>`;
@@ -389,11 +395,13 @@ function personBoard() {
       const wk = d.totals.by_employee[e.id] || 0;
       return `<tr><th class="proj"><div class="proj-name">${esc(e.last_name)}, ${esc(e.first_name)}</div><div class="small muted">${esc([e.trade, e.classification].filter(Boolean).join(' · '))}</div></th>
         ${d.days.map((day, i) => {
-          const a = map[`${e.id}|${day}`]; const o = off[`${e.id}|${day}`];
-          const inner = a ? chip(a, `${a.job_number} ${a.project_name}`)
+          const list = map[`${e.id}|${day}`] || []; const o = off[`${e.id}|${day}`];
+          const split = list.length > 1;
+          const inner = list.length ? list.map((a) => chip(a, split ? `${a.job_number} · ${slotLabel(a)}` : `${a.job_number} ${a.project_name}`)).join('')
+              + (canSchedule() ? `<button class="add-btn split" data-emp="${e.id}|${day}" title="Add a second job this day">+ split</button>` : '')
             : o ? `<div class="chip off" data-off="${o.id}" title="${esc(o.reason || '')}">Off${o.reason ? ' – ' + esc(o.reason) : ''}</div>`
             : `<span class="avail">available</span>`;
-          return `<td class="person-cell ${!a && !o && canSchedule() ? 'can' : ''} ${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''}" ${!a && !o ? `data-emp="${e.id}|${day}"` : ''}>${inner}</td>`;
+          return `<td class="person-cell ${!list.length && !o && canSchedule() ? 'can' : ''} ${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''}" ${!list.length && !o ? `data-emp="${e.id}|${day}"` : ''}>${inner}</td>`;
         }).join('')}
         <td class="tot ${wk > 40 ? 'over40' : ''}">${fmtH(wk)}</td></tr>`;
     }).join('')}</tbody>
@@ -402,13 +410,13 @@ function personBoard() {
 
 function personMobile() {
   const d = S.sched; const day = d.days[S.dayIdx];
-  const map = {}; for (const a of d.assignments) if (a.work_date === day) map[a.employee_id] = a;
+  const map = {}; for (const a of d.assignments) if (a.work_date === day) (map[a.employee_id] ||= []).push(a);
   const off = {}; for (const o of d.time_off) if (o.off_date === day) off[o.employee_id] = o;
   return `${dayTabs()}<div class="pcard"><div class="pb">${personRows().map((e) => {
-    const a = map[e.id]; const o = off[e.id];
-    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #eef1f4" ${!a && !o ? `data-emp="${e.id}|${day}" class="person-cell ${canSchedule() ? 'can' : ''}"` : ''}>
+    const list = map[e.id] || []; const o = off[e.id];
+    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--tint)" ${!list.length && !o ? `data-emp="${e.id}|${day}" class="person-cell ${canSchedule() ? 'can' : ''}"` : ''}>
       <div><b>${esc(fullName(e))}</b><div class="small muted">${esc(e.trade || '')}</div></div>
-      <div class="right" style="max-width:60%">${a ? `<span class="pill job" data-aid="${a.id}">${esc(a.job_number)} ${esc(a.project_name)}</span>` : o ? `<span class="pill off">Off</span>` : '<span class="avail">available</span>'}</div>
+      <div class="right" style="max-width:60%;display:grid;gap:4px;justify-items:end;align-content:start">${list.length ? list.map((a) => `<span class="pill job" data-aid="${a.id}">${esc(a.job_number)} ${list.length > 1 ? esc(slotLabel(a)) : esc(a.project_name)}</span>`).join('') : o ? `<span class="pill off">Off</span>` : '<span class="avail">available</span>'}</div>
     </div>`;
   }).join('')}</div></div>`;
 }
@@ -418,7 +426,12 @@ function bindBoard(el) {
   if (!canSchedule()) return;
   $$('[data-add]', el).forEach((b) => (b.onclick = () => { const [pid, day] = b.dataset.add.split('|'); assignModal({ project_id: Number(pid), dates: [day] }); }));
   $$('[data-aid]', el).forEach((c) => (c.onclick = (ev) => { ev.stopPropagation(); editAssignmentModal(S.sched.assignments.find((a) => a.id === Number(c.dataset.aid))); }));
-  $$('[data-emp]', el).forEach((c) => (c.onclick = () => { const [eid, day] = c.dataset.emp.split('|'); assignModal({ employee_ids: [Number(eid)], dates: [day] }); }));
+  $$('[data-emp]', el).forEach((c) => (c.onclick = (ev) => {
+    ev.stopPropagation();
+    const [eid, day] = c.dataset.emp.split('|');
+    const split = c.classList.contains('split');
+    assignModal({ employee_ids: [Number(eid)], dates: [day], splitFor: split ? S.sched.assignments.filter((a) => a.employee_id === Number(eid) && a.work_date === day) : null });
+  }));
   $$('[data-off]', el).forEach((c) => (c.onclick = async (ev) => {
     ev.stopPropagation();
     if (!confirm('Remove this time-off day?')) return;
@@ -436,15 +449,29 @@ function assignModal(pre) {
   const trades = [...new Set(S.employees.map((e) => e.trade).filter(Boolean))].sort();
   const skills = [...new Set(S.employees.flatMap((e) => e.skills.map((s) => s.name)))].sort();
 
+  // Split day: start when the existing job ends, fill the rest of a normal day, pick another job.
+  let defHours = S.settings.default_hours || 8; let defStart = S.settings.default_start_time || ''; let defProject = pre.project_id;
+  if (pre.splitFor?.length) {
+    const slots = [...pre.splitFor].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+    const used = slots.reduce((sum, a) => sum + a.planned_hours, 0);
+    defHours = Math.max(1, (S.settings.default_hours || 8) - used);
+    const last = slots[slots.length - 1];
+    defStart = last.start_time ? slotLabel(last).split('–')[1] : '';
+    defProject = projects.find((p) => !slots.some((a) => a.project_id === p.id))?.id;
+    if (used >= (S.settings.default_hours || 8)) defHours = 2;
+  }
+  const splitNote = pre.splitFor?.length ? `<div class="alert">${esc(fullName(pre.splitFor[0]))} is on ${esc(pre.splitFor.map((a) => `${a.job_number} ${slotLabel(a)}`).join(', '))}.
+    To split a normal day between two jobs, shorten that job first (click it on the board), then add the second job here. Times can't overlap.</div>` : '';
+
   const m = modal({
-    title: 'Schedule crew',
+    title: pre.splitFor ? 'Split day – add another job' : 'Schedule crew',
     wide: true,
-    body: `
+    body: `${splitNote}
       <div class="grid2">
-        <label>Project<select name="project_id">${projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, pre.project_id)).join('')}</select></label>
+        <label>Project<select name="project_id">${projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, defProject)).join('')}</select></label>
         <div class="grid2" style="grid-template-columns:1fr 1fr">
-          <label>Hours / day<input name="planned_hours" type="number" step="0.5" min="0" max="24" value="${S.settings.default_hours || 8}"></label>
-          <label>Start time<input name="start_time" type="time" value="${esc(S.settings.default_start_time || '')}"></label>
+          <label>Hours / day<input name="planned_hours" type="number" step="0.5" min="0" max="24" value="${defHours}"></label>
+          <label>Start time<input name="start_time" type="time" value="${esc(defStart)}"></label>
         </div>
       </div>
       <div><div class="small muted" style="margin-bottom:4px">Days <button class="link" data-days="wk">Mon–Fri</button><button class="link" data-days="none">clear</button></div>
@@ -454,16 +481,17 @@ function assignModal(pre) {
         <input type="search" data-f="q" placeholder="Search name…" style="flex:1;min-width:140px">
         <select data-f="trade"><option value="">All trades</option>${trades.map((x) => opt(x, x)).join('')}</select>
         <select data-f="skill"><option value="">Any skill</option>${skills.map((x) => opt(x, x)).join('')}</select>
-        <label class="check"><input type="checkbox" data-f="availOnly" checked> Available only</label>
+        <label class="check" title="Uncheck to show people already on another job, for a split day"><input type="checkbox" data-f="availOnly" ${pre.splitFor ? '' : 'checked'}> Open only</label>
       </div>
       <div class="emp-pick" id="emp-pick"></div>
       <div class="small muted" id="pick-count"></div>`,
     footer: `<button data-close>Cancel</button><button class="primary" data-act="save">Schedule</button>`,
   });
 
-  const busyMap = {};
-  for (const a of d.assignments) (busyMap[a.employee_id] ||= {})[a.work_date] = `${a.job_number}`;
-  for (const o of d.time_off) (busyMap[o.employee_id] ||= {})[o.off_date] = 'OFF';
+  // Per person per day: jobs already booked (a split day is allowed) or time off.
+  const booked = {}; const offMap = {};
+  for (const a of d.assignments) ((booked[a.employee_id] ||= {})[a.work_date] ||= []).push(a);
+  for (const o of d.time_off) (offMap[o.employee_id] ||= {})[o.off_date] = true;
 
   const drawList = () => {
     const f = Object.fromEntries($$('[data-f]', m.el).map((x) => [x.dataset.f, x.type === 'checkbox' ? x.checked : x.value.toLowerCase()]));
@@ -475,21 +503,31 @@ function assignModal(pre) {
       (!f.q || fullName(e).toLowerCase().includes(f.q)) &&
       (!f.trade || (e.trade || '').toLowerCase() === f.trade) &&
       (!f.skill || e.skills.some((s) => s.name.toLowerCase() === f.skill)));
+    const pid = Number($('[name=project_id]', m.el).value);
     const html = rows.map((e) => {
-      const conflicts = dates.filter((day) => busyMap[e.id]?.[day]).map((day) => `${DOW[d.days.indexOf(day)]}: ${busyMap[e.id][day]}`);
-      const allBusy = dates.length > 0 && conflicts.length === dates.length;
-      if (f.availOnly && allBusy && !checked.has(e.id)) return '';
+      const dow = (day) => DOW[d.days.indexOf(day)];
+      // Blocked: off that day, or already on this same job that day.
+      const blocked = dates.filter((day) => offMap[e.id]?.[day] || (booked[e.id]?.[day] || []).some((a) => a.project_id === pid));
+      const elsewhere = dates.filter((day) => !blocked.includes(day) && booked[e.id]?.[day]);
+      const allBlocked = dates.length > 0 && blocked.length === dates.length;
+      const anyBooked = dates.length > 0 && dates.every((day) => blocked.includes(day) || elsewhere.includes(day));
+      if (f.availOnly && anyBooked && !checked.has(e.id)) return '';
       const wk = d.totals.by_employee[e.id] || 0;
-      return `<label class="${allBusy ? 'busy' : ''}"><input type="checkbox" value="${e.id}" ${checked.has(e.id) && !allBusy ? 'checked' : ''} ${allBusy ? 'disabled' : ''}>
+      const tags = [
+        ...blocked.map((day) => `<span class="pill bad">${dow(day)}: ${offMap[e.id]?.[day] ? 'OFF' : 'already on this job'}</span>`),
+        ...elsewhere.map((day) => `<span class="pill warn" title="Can be added as a split day if the times don't overlap">${dow(day)}: ${esc(booked[e.id][day].map((a) => `${a.job_number} ${slotLabel(a)}`).join(', '))}</span>`),
+      ].join(' ');
+      return `<label class="${allBlocked ? 'busy' : ''}"><input type="checkbox" value="${e.id}" ${checked.has(e.id) && !allBlocked ? 'checked' : ''} ${allBlocked ? 'disabled' : ''}>
         <span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc([e.trade, e.classification, e.union_local && 'Local ' + e.union_local].filter(Boolean).join(' · '))}</span></span>
-        <span class="meta">${conflicts.length ? `<span class="pill ${allBusy ? 'bad' : 'warn'}">${esc(conflicts.join(', '))}</span><br>` : ''}${fmtH(wk)} h this wk</span></label>`;
+        <span class="meta">${tags ? tags + '<br>' : ''}${fmtH(wk)} h this wk</span></label>`;
     }).join('');
-    $('#emp-pick', m.el).innerHTML = html || `<div class="muted" style="padding:12px">${f.availOnly && dates.length ? 'Everyone matching is already booked or off on the selected day(s). Uncheck “Available only” to see where they are.' : 'No matching employees.'}</div>`;
+    $('#emp-pick', m.el).innerHTML = html || `<div class="muted" style="padding:12px">${f.availOnly && dates.length ? 'Everyone matching is already booked or off on the selected day(s). Uncheck “Open only” to add someone for a split day.' : 'No matching employees.'}</div>`;
     const n = $$('#emp-pick input:checked', m.el).length;
     $('#pick-count', m.el).textContent = `${n} selected × ${dates.length} day(s)`;
     $$('#emp-pick input', m.el).forEach((x) => (x.onchange = () => { $('#pick-count', m.el).textContent = `${$$('#emp-pick input:checked', m.el).length} selected × ${dates.length} day(s)`; }));
   };
   $$('[data-f]', m.el).forEach((x) => (x.oninput = drawList));
+  $('[name=project_id]', m.el).onchange = drawList;
   $$('[name=dates]', m.el).forEach((x) => (x.onchange = drawList));
   $$('[data-days]', m.el).forEach((b) => (b.onclick = (e) => {
     e.preventDefault();
@@ -944,7 +982,7 @@ async function renderPayroll(page) {
     <h2>By employee</h2>
     <div class="table-wrap"><table class="list"><thead><tr><th>Employee</th>${heads}</tr></thead>
       <tbody>${r.by_employee.map((p) => `<tr><td>${esc(p.name)} <span class="small muted">${esc(p.trade || '')}</span></td>${cells(p)}</tr>`).join('')}</tbody></table></div>
-    <p class="small muted">Uses verified actual hours where entered, otherwise scheduled hours. Wages = Reg × base + OT × base × multiplier. Burden = wages × burden %. Fringe = all hours × fringe rate.</p>`;
+    <p class="small muted">Each day is costed at the pay rate in effect that day; pick a past week to see what labor actually cost. Uses verified actual hours where entered, otherwise scheduled hours. Wages = Reg × base + OT × base × multiplier. Burden = wages × burden %. Fringe = all hours × fringe rate.</p>`;
   const body = $('#pay-body', page);
   $('[data-act=prev]', body).onclick = () => { S.payStart = addDays(S.payStart, -7); renderPayroll(page); };
   $('[data-act=next]', body).onclick = () => { S.payStart = addDays(S.payStart, 7); renderPayroll(page); };
@@ -955,23 +993,102 @@ async function renderPayroll(page) {
 
 async function payRates(el) {
   const rows = await api('GET', '/payroll/rates');
+  const today = todayStr();
+  const nextMon = addDays(weekStart(today), 7);
+  const rateCell = (r) => (r ? `${money2(r.base_rate)}<span class="small muted"> + ${money2(r.fringe_rate)} fringe${r.burden_pct !== null ? ` · ${r.burden_pct}% burden` : ''}</span>` : '<span class="pill warn">No rate</span>');
   el.classList.remove('muted');
-  el.innerHTML = `<p class="small muted">Enter each person's base hourly wage, union fringe package per hour, and burden % (payroll taxes, WC, GL). Leave burden blank to use the company default.</p>
-    <div class="table-wrap"><table class="list"><thead><tr><th>Employee</th><th>Trade / local</th><th style="width:120px">Base $/hr</th><th style="width:120px">Fringe $/hr</th><th style="width:110px">Burden %</th><th></th></tr></thead>
+  el.innerHTML = `<p class="small muted">Each rate has an effective date. Every day worked is costed at the rate in effect on that day, so past weeks keep the rate that was paid and a union increase only applies from its start date. Leave burden blank to use the company default.</p>
+    <div class="toolbar"><button data-act="bulk">Union increase for a trade…</button></div>
+    <div class="table-wrap"><table class="list"><thead><tr><th>Employee</th><th>Trade / local</th><th>Current rate</th><th>Since</th><th>Scheduled change</th><th></th></tr></thead>
     <tbody>${rows.map((r) => `<tr data-id="${r.employee_id}">
-      <td>${esc(r.last_name)}, ${esc(r.first_name)}<div class="small muted">${esc(r.classification || '')}</div></td>
+      <td><b>${esc(r.last_name)}, ${esc(r.first_name)}</b><div class="small muted">${esc(r.classification || '')}</div></td>
       <td>${esc(r.trade || '')}${r.union_local ? ` · L${esc(r.union_local)}` : ''}</td>
-      <td><input type="number" step="0.01" min="0" name="base_rate" value="${r.base_rate ?? ''}"></td>
-      <td><input type="number" step="0.01" min="0" name="fringe_rate" value="${r.fringe_rate ?? ''}"></td>
-      <td><input type="number" step="0.1" min="0" name="burden_pct" value="${r.burden_pct ?? ''}" placeholder="default"></td>
-      <td><button data-save>Save</button></td></tr>`).join('')}</tbody></table></div>`;
+      <td>${rateCell(r.current)}</td>
+      <td class="nowrap small">${r.current ? esc(r.current.effective_date > today ? 'starts ' + r.current.effective_date : r.current.effective_date) : ''}</td>
+      <td class="small">${r.upcoming.map((u) => `<span class="pill job">${esc(u.effective_date)}: ${money2(u.base_rate)}</span>`).join(' ')}</td>
+      <td class="nowrap"><button data-act="hist">History (${r.history.length})</button> <button class="primary" data-act="new">New rate</button></td></tr>`).join('')}</tbody></table></div>`;
+
+  const rateForm = (title, emp, preset = {}) => {
+    const m = modal({
+      title,
+      body: `${emp ? `<div class="small muted">${esc(emp.first_name)} ${esc(emp.last_name)} · ${esc(emp.trade || '')}${emp.current ? ` · current ${money2(emp.current.base_rate)}/hr` : ''}</div>` : ''}
+        ${preset.extra || ''}
+        <div class="grid2">
+          <label>Effective date<input type="date" name="effective_date" value="${esc(preset.effective_date || nextMon)}"></label>
+          <label>Base $/hr<input type="number" step="0.01" min="0" name="base_rate" value="${esc(preset.base_rate ?? emp?.current?.base_rate ?? '')}"></label>
+          <label>Fringe $/hr<input type="number" step="0.01" min="0" name="fringe_rate" value="${esc(preset.fringe_rate ?? emp?.current?.fringe_rate ?? '')}"></label>
+          <label>Burden % (blank = default)<input type="number" step="0.1" min="0" name="burden_pct" value="${esc(preset.burden_pct ?? emp?.current?.burden_pct ?? '')}"></label>
+        </div>
+        <label>Note<input name="note" maxlength="200" placeholder="e.g. June 1 Local 1445 increase, promoted to foreman" value="${esc(preset.note || '')}"></label>
+        <div class="small muted">Days on or after the effective date use this rate. Earlier days keep their earlier rate. Entering a date that already has a rate replaces it.</div>`,
+      footer: '<button data-close>Cancel</button><button class="primary" data-act="save">Save rate</button>',
+    });
+    return m;
+  };
+
   $$('tr[data-id]', el).forEach((tr) => {
-    const save = async () => {
-      try { await api('PUT', `/payroll/rates/${tr.dataset.id}`, formData(tr)); toast('Rate saved'); } catch (e) { toast(e.message, true); }
+    const emp = rows.find((r) => r.employee_id === Number(tr.dataset.id));
+    $('[data-act=new]', tr).onclick = () => {
+      const m = rateForm('New pay rate', emp);
+      $('[data-act=save]', m.el).onclick = async () => {
+        try { await api('POST', `/payroll/rates/${emp.employee_id}`, formData(m.el)); m.close(); toast('Rate saved'); payRates(el); } catch (e) { errorBox(m.el, e.message); }
+      };
     };
-    $('[data-save]', tr).onclick = save;
-    $$('input', tr).forEach((i) => i.addEventListener('keydown', (e) => e.key === 'Enter' && save()));
+    $('[data-act=hist]', tr).onclick = () => {
+      const m = modal({
+        title: `Rate history – ${emp.first_name} ${emp.last_name}`,
+        wide: true,
+        body: emp.history.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Effective</th><th class="right">Base</th><th class="right">Fringe</th><th class="right">Burden</th><th>Note</th><th>Entered by</th><th></th></tr></thead>
+          <tbody>${emp.history.map((h) => `<tr><td class="nowrap">${esc(h.effective_date)}${emp.current && h.id === emp.current.id ? ' <span class="pill ok">current</span>' : h.effective_date > today ? ' <span class="pill warn">upcoming</span>' : ''}</td>
+            <td class="right">${money2(h.base_rate)}</td><td class="right">${money2(h.fringe_rate)}</td><td class="right">${h.burden_pct ?? 'default'}${h.burden_pct !== null ? '%' : ''}</td>
+            <td class="small">${esc(h.note || '')}</td><td class="small muted">${esc(h.created_by_name || '')}<br>${esc(h.created_at.slice(0, 10))}</td>
+            <td><button class="link" data-del="${h.id}">remove</button></td></tr>`).join('')}</tbody></table></div>
+          <div class="small muted">Removing a rate re-costs the days it covered at the rate before it. Use it only to fix a mistake.</div>` : '<div class="muted">No rates yet.</div>',
+        footer: '<button data-close>Close</button>',
+      });
+      $$('[data-del]', m.el).forEach((b) => (b.onclick = async () => {
+        if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'click again to remove'; return; }
+        try { await api('DELETE', `/payroll/rates/entry/${b.dataset.del}`); m.close(); toast('Rate removed'); payRates(el); } catch (e) { toast(e.message, true); }
+      }));
+    };
   });
+
+  // Apply the same raise to everyone in a trade (e.g. a union contract increase).
+  $('[data-act=bulk]', el).onclick = () => {
+    const trades = [...new Set(rows.map((r) => r.trade).filter(Boolean))].sort();
+    const m = modal({
+      title: 'Union increase for a trade',
+      body: `<label>Trade<select name="trade">${trades.map((t) => opt(t, t)).join('')}</select></label>
+        <div class="grid2">
+          <label>Effective date<input type="date" name="effective_date" value="${nextMon}"></label>
+          <label>Base increase $/hr<input type="number" step="0.01" name="base_inc" value="0"></label>
+          <label>Fringe increase $/hr<input type="number" step="0.01" name="fringe_inc" value="0"></label>
+        </div>
+        <label>Note<input name="note" maxlength="200" placeholder="e.g. Local 1445 June 1 increase"></label>
+        <div class="small muted" id="bulk-preview"></div>`,
+      footer: '<button data-close>Cancel</button><button class="primary" data-act="save">Add rates</button>',
+    });
+    const targets = () => rows.filter((r) => r.trade === $('[name=trade]', m.el).value && r.current);
+    const preview = () => {
+      const t = targets(); const f = formData(m.el);
+      $('#bulk-preview', m.el).textContent = `${t.length} people get a new rate effective ${f.effective_date}: base +${money2(Number(f.base_inc) || 0)}, fringe +${money2(Number(f.fringe_inc) || 0)}. People without a current rate are skipped.`;
+    };
+    $$('input,select', m.el).forEach((x) => (x.oninput = preview)); preview();
+    $('[data-act=save]', m.el).onclick = async () => {
+      const f = formData(m.el);
+      try {
+        for (const r of targets()) {
+          await api('POST', `/payroll/rates/${r.employee_id}`, {
+            effective_date: f.effective_date,
+            base_rate: Math.round((r.current.base_rate + (Number(f.base_inc) || 0)) * 100) / 100,
+            fringe_rate: Math.round((r.current.fringe_rate + (Number(f.fringe_inc) || 0)) * 100) / 100,
+            burden_pct: r.current.burden_pct ?? '', note: f.note,
+          });
+        }
+        m.close(); toast(`Added ${targets().length} rates`); payRates(el);
+      } catch (e) { errorBox(m.el, e.message); }
+    };
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1147,7 @@ async function adminSettings(el) {
       <label>OT after (hours / week)<input type="number" name="ot_threshold_hours" value="${esc(s.ot_threshold_hours)}"></label>
       <label>OT multiplier<input type="number" step="0.1" name="ot_multiplier" value="${esc(s.ot_multiplier)}"></label>
       <label>Default burden % (taxes, WC, GL)<input type="number" step="0.1" name="default_burden_pct" value="${esc(s.default_burden_pct)}"></label>
+      <label>Daily hours limit per person (split days)<input type="number" step="0.5" min="1" max="24" name="max_daily_hours" value="${esc(s.max_daily_hours)}"></label>
     </div><div style="margin-top:12px"><button class="primary" data-act="save">Save settings</button></div></div>
     <div class="card"><b>Backup</b><p class="small muted">Download a complete copy of the database (schedule history, employees, projects, pay rates). Store it somewhere secure – it contains payroll data.</p>
       <a class="btn" href="/api/backup">Download database backup</a></div>`;
