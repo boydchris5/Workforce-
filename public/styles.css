@@ -232,6 +232,8 @@ button.attn { border-color: var(--orange); color: var(--orange-dk); font-weight:
 .co-add input, .co-add select { width: auto; flex: 1 1 120px; min-width: 0; }
 .co-add .check { flex: 0 0 auto; }
 #emp-ns .list td { font-size: 13px; }
+.hidden-note { background: var(--tint); border-left: 4px solid var(--orange); padding: 6px 10px; margin-bottom: 8px; border-radius: 0 6px 6px 0; }
+.toggle-hours { white-space: nowrap; font-weight: 700; }
 .over40 { color: var(--orange-dk); font-weight: 700; }
 
 /* mobile day view */
