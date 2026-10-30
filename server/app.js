@@ -848,8 +848,11 @@ function createApp(db, opts = {}) {
   app.use('/api', api);
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
 
-  app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h' }));
-  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+  // Browsers must re-check the app's files on every load (a cheap 304 when
+  // unchanged) so a new deploy shows up immediately instead of after a cache delay.
+  const noCache = (res) => res.set('Cache-Control', 'no-cache');
+  app.use(express.static(path.join(__dirname, '..', 'public'), { setHeaders: noCache }));
+  app.get(/^\/(?!api\/).*/, (_req, res) => { noCache(res); res.sendFile(path.join(__dirname, '..', 'public', 'index.html')); });
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
