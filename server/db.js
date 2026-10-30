@@ -113,6 +113,19 @@ CREATE INDEX IF NOT EXISTS idx_assign_project ON assignments(project_id, work_da
 CREATE INDEX IF NOT EXISTS idx_assign_emp ON assignments(employee_id, work_date);
 CREATE INDEX IF NOT EXISTS idx_pay_rates ON employee_pay_rates(employee_id, effective_date);
 
+-- Change orders add labor hours to a project's budget.
+CREATE TABLE IF NOT EXISTS project_change_orders (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  co_number TEXT,
+  description TEXT,
+  hours REAL NOT NULL DEFAULT 0,
+  co_date TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_co_project ON project_change_orders(project_id);
+
 CREATE TABLE IF NOT EXISTS time_off (
   id INTEGER PRIMARY KEY,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -150,7 +163,7 @@ const DEFAULT_SETTINGS = {
   warn_daily_hours: '8',
 };
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -201,6 +214,10 @@ function migrate(db) {
       db.exec('ALTER TABLE assignments ADD COLUMN reject_reason TEXT;');
       db.exec('CREATE INDEX IF NOT EXISTS idx_assign_approval ON assignments(approval_status, work_date);');
     });
+  }
+  // v5: hours already used on a job before it came into this app.
+  if (!db.prepare('PRAGMA table_info(projects)').all().some((c) => c.name === 'starting_hours')) {
+    db.exec('ALTER TABLE projects ADD COLUMN starting_hours REAL NOT NULL DEFAULT 0;');
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

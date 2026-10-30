@@ -152,7 +152,8 @@ test('hour verification', async () => {
   assert.equal(v.rows.length, 4);
   const [a, b, ...rest] = v.rows;
   await sup('POST', `/assignments/${a.id}/verify`, { status: 'verified', actual_hours: 9.5 });
-  await sup('POST', `/assignments/${b.id}/verify`, { status: 'no_show' });
+  assert.equal((await sup('POST', `/assignments/${b.id}/verify`, { status: 'no_show' })).status, 400); // reason required
+  await sup('POST', `/assignments/${b.id}/verify`, { status: 'no_show', note: 'Sick – excused: called in at 6am' });
   const bulk = await sup('POST', '/verification/bulk', { ids: rest.map((r) => r.id) });
   assert.equal(bulk.body.verified, 2);
   const after = (await sup('GET', `/verification?start=${MON}&project_id=${p1}`)).body;
@@ -259,7 +260,8 @@ test('upgrades a database from an earlier version without losing data', () => {
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(up.prepare('SELECT starting_hours AS h FROM projects WHERE id = 1').get().h, 0);
   assert.equal(up.prepare('SELECT approval_status AS s FROM assignments').get().s, 'approved'); // existing work counts as approved
   assert.equal(up.prepare('SELECT superintendent_employee_id AS s FROM projects WHERE id = 1').get().s, 1);
   const a = up.prepare('SELECT * FROM assignments').all();
@@ -390,4 +392,74 @@ test('employee import: preview, skip clerical, create, then re-import updates wi
   assert.equal(alan2.phone, '(618)790-4668');
   assert.equal(alan2.active, 0);
   assert.equal((await boss('GET', '/employees?all=1')).body.filter((e) => e.employee_no === '9001').length, 1);
+});
+
+test('no-show reasons and future time off show up under the employee', async () => {
+  const emp = (await boss('GET', `/employees/${e2}`)).body;
+  assert.ok(emp.no_shows.some((n) => /Sick – excused/.test(n.verify_note)));
+
+  // Three weeks off next spring, weekdays only, entered from the employee record
+  const r = (await boss('POST', '/time-off', { employee_id: e1, from: '2027-03-01', to: '2027-03-19', weekdays_only: true, reason: 'Vacation' })).body;
+  assert.equal(r.added, 15);
+  const after = (await boss('GET', `/employees/${e1}`)).body;
+  assert.equal(after.time_off.filter((t) => t.off_date >= '2027-03-01').length, 15);
+  // That week on the schedule already shows them off, and they can't be booked
+  const wk = (await boss('GET', '/schedule?start=2027-03-08')).body;
+  assert.equal(wk.time_off.filter((t) => t.employee_id === e1).length, 5);
+  const book = await boss('POST', '/assignments', { project_id: p1, employee_ids: [e1], dates: ['2027-03-10'] });
+  assert.equal(book.status, 409);
+  assert.match(book.body.conflicts[0].message, /off \(Vacation\)/);
+  assert.equal((await boss('POST', '/time-off', { employee_id: e1, from: '2027-03-19', to: '2027-03-01' })).status, 400);
+});
+
+test('projects: starting hours and change orders roll into hours used and total budget', async () => {
+  const pid = (await boss('POST', '/projects', { job_number: 'CO-1', name: 'Change order job', budget_hours: 1000, starting_hours: 250 })).body.id;
+  await boss('POST', `/projects/${pid}/change-orders`, { co_number: 'CO-001', description: 'Added canopy', hours: 120, co_date: '2026-11-01' });
+  await boss('POST', `/projects/${pid}/change-orders`, { co_number: 'CO-002', description: 'Deduct alt 2', hours: -20 });
+  assert.equal((await boss('POST', `/projects/${pid}/change-orders`, { hours: 'lots' })).status, 400);
+  await boss('POST', '/assignments', { project_id: pid, employee_ids: [e2], dates: ['2026-11-30'], planned_hours: 8 });
+  let p = (await field('GET', '/projects')).body.find((x) => x.id === pid);
+  assert.equal(p.co_hours, 100);
+  assert.equal(p.total_budget_hours, 1100);
+  assert.equal(p.hours_to_date, 258);
+  const cos = (await field('GET', `/projects/${pid}/change-orders`)).body;
+  assert.equal(cos.length, 2);
+  // A superintendent who doesn't run the job can't add change orders
+  assert.equal((await sup('POST', `/projects/${pid}/change-orders`, { hours: 5 })).status, 403);
+  await boss('DELETE', `/change-orders/${cos.find((c) => c.co_number === 'CO-002').id}`);
+  p = (await field('GET', '/projects')).body.find((x) => x.id === pid);
+  assert.equal(p.total_budget_hours, 1120);
+});
+
+test('project import: stages map to status, leads matched by name, re-import updates', async () => {
+  const rows = [
+    { 'Project Number': 'T530', Name: 'Apple Festival Stand-Stage Setup', Stage: 'Course of Construction', State: 'Illinois', 'Budget Hours': '400', 'Starting Hours': '120', 'Change Order Hours': '40', Superintendent: 'Mike Jones', 'Project Manager': 'Nobody Here' },
+    { 'Project Number': '4365', Name: 'City of Carbondale Event Center', Address: 'S. Washington St.', City: 'Carbondale', State: 'Illinois', ZIP: '62901', Stage: 'Bidding' },
+    { 'Project Number': 'T115', Name: 'Warranty Work', Stage: 'Warranty' },
+    { 'Project Number': '4265', Name: 'Herrin Fire Station', Stage: 'Pre-Construction' },
+    { 'Project Number': 'X1', Name: 'Bad', Stage: 'Sideways' },
+  ];
+  assert.equal((await sup('POST', '/projects/import', { rows })).status, 403);
+  const pre = (await boss('POST', '/projects/import', { rows })).body;
+  assert.deepEqual(pre.summary, { create: 4, update: 0, skip: 0, error: 1 });
+  assert.match(pre.results[0].reason, /Project manager "Nobody Here" is not an employee/);
+  const done = (await boss('POST', '/projects/import', { rows: rows.filter((r) => r['Project Number'] !== 'X1'), commit: true })).body;
+  assert.deepEqual(done.summary, { create: 4, update: 0, skip: 0, error: 0 });
+  const all = (await boss('GET', '/projects?all=1')).body;
+  const t530 = all.find((x) => x.job_number === 'T530');
+  assert.equal(t530.status, 'active');
+  assert.equal(t530.superintendent_name, 'Mike Jones');
+  assert.equal(t530.starting_hours, 120);
+  assert.equal(t530.total_budget_hours, 440);
+  assert.equal(all.find((x) => x.job_number === '4365').status, 'planned');
+  assert.equal(all.find((x) => x.job_number === '4365').address, 'S. Washington St., Carbondale, Illinois 62901');
+  assert.equal(all.find((x) => x.job_number === 'T115').status, 'active');
+  assert.equal(all.find((x) => x.job_number === '4265').status, 'planned'); // Pre-Construction is not Active
+  // Re-import: updates by job number, replaces imported CO hours, keeps fields left blank
+  const again = (await boss('POST', '/projects/import', { rows: [{ 'Job Number': 'T530', 'Project Name': 'Apple Festival Stage', 'Change Order Hours': '60' }], commit: true })).body;
+  assert.deepEqual(again.summary, { create: 0, update: 1, skip: 0, error: 0 });
+  const t2 = (await boss('GET', '/projects?all=1')).body.find((x) => x.job_number === 'T530');
+  assert.equal(t2.name, 'Apple Festival Stage');
+  assert.equal(t2.total_budget_hours, 460);
+  assert.equal(t2.starting_hours, 120);
 });

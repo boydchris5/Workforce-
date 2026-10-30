@@ -148,6 +148,11 @@ function createApp(db, opts = {}) {
     e.skills = employeeSkills.all(e.id);
     e.recent = db.prepare(`SELECT a.work_date, a.planned_hours, a.actual_hours, a.status, p.job_number, p.name AS project_name
       FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? ORDER BY a.work_date DESC LIMIT 60`).all(e.id);
+    const today = new Date().toISOString().slice(0, 10);
+    e.time_off = db.prepare('SELECT id, off_date, reason FROM time_off WHERE employee_id = ? AND off_date >= ? ORDER BY off_date').all(e.id, addDays(today, -30));
+    e.no_shows = db.prepare(`SELECT a.work_date, a.verify_note, p.job_number, p.name AS project_name, u.name AS verified_by_name
+      FROM assignments a JOIN projects p ON p.id = a.project_id LEFT JOIN users u ON u.id = a.verified_by
+      WHERE a.employee_id = ? AND a.status = 'no_show' ORDER BY a.work_date DESC LIMIT 50`).all(e.id);
     res.json(e);
   });
 
@@ -332,10 +337,15 @@ function createApp(db, opts = {}) {
   const leadNames = `TRIM(se.first_name || ' ' || se.last_name) AS superintendent_name, TRIM(pm.first_name || ' ' || pm.last_name) AS project_manager_name`;
   const leadJoins = 'LEFT JOIN employees se ON se.id = p.superintendent_employee_id LEFT JOIN employees pm ON pm.id = p.project_manager_employee_id';
 
+  // Hours to date = hours used before the job came into the app (starting_hours)
+  // + approved scheduled/verified hours. Total budget = budget + change orders.
+  const coHours = '(SELECT COALESCE(SUM(c.hours), 0) FROM project_change_orders c WHERE c.project_id = p.id)';
+
   api.get('/projects', (req, res) => {
     const where = req.query.all === '1' ? '' : "WHERE p.status IN ('planned','active','on_hold')";
-    res.json(db.prepare(`SELECT p.*, ${leadNames},
-        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.approval_status = 'approved') AS hours_to_date,
+    res.json(db.prepare(`SELECT p.*, ${leadNames}, ${coHours} AS co_hours,
+        CASE WHEN p.budget_hours IS NULL AND ${coHours} = 0 THEN NULL ELSE COALESCE(p.budget_hours, 0) + ${coHours} END AS total_budget_hours,
+        p.starting_hours + (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.approval_status = 'approved') AS hours_to_date,
         (SELECT COALESCE(SUM(a.actual_hours),0) FROM assignments a WHERE a.project_id = p.id AND a.status <> 'scheduled' AND a.approval_status = 'approved') AS verified_hours
       FROM projects p ${leadJoins} ${where}
       ORDER BY p.job_number`).all());
@@ -347,11 +357,12 @@ function createApp(db, opts = {}) {
       superintendent_employee_id: int(b.superintendent_employee_id), project_manager_employee_id: int(b.project_manager_employee_id),
       status: str(b.status, 20) || 'active',
       start_date: date(b.start_date, 'Start date'), end_date: date(b.end_date, 'End date'),
-      budget_hours: num(b.budget_hours), color: str(b.color, 20), notes: str(b.notes, 2000),
+      budget_hours: num(b.budget_hours), starting_hours: num(b.starting_hours) ?? 0, color: str(b.color, 20), notes: str(b.notes, 2000),
     };
     if (!p.job_number || !p.name) throw bad('Job number and project name are required.');
     if (!['planned', 'active', 'on_hold', 'complete'].includes(p.status)) throw bad('Invalid status.');
     if (Number.isNaN(p.budget_hours)) throw bad('Budget hours must be a number.');
+    if (Number.isNaN(p.starting_hours) || p.starting_hours < 0) throw bad('Starting hours must be zero or more.');
     if (p.color && !/^#[0-9a-fA-F]{6}$/.test(p.color)) p.color = null;
     return p;
   }
@@ -362,8 +373,8 @@ function createApp(db, opts = {}) {
     const p = readProject(req.body);
     let r;
     try {
-      r = db.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_employee_id, project_manager_employee_id, status, start_date, end_date, budget_hours, color, notes)
-        VALUES (:job_number, :name, :customer, :address, :superintendent_employee_id, :project_manager_employee_id, :status, :start_date, :end_date, :budget_hours, :color, :notes)`).run(p);
+      r = db.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_employee_id, project_manager_employee_id, status, start_date, end_date, budget_hours, starting_hours, color, notes)
+        VALUES (:job_number, :name, :customer, :address, :superintendent_employee_id, :project_manager_employee_id, :status, :start_date, :end_date, :budget_hours, :starting_hours, :color, :notes)`).run(p);
     } catch (e) { uniqueMsg(e, 'That job number already exists.'); }
     const id = Number(r.lastInsertRowid);
     audit(req, 'create', 'project', id, { job_number: p.job_number });
@@ -376,7 +387,7 @@ function createApp(db, opts = {}) {
     let r;
     try {
       r = db.prepare(`UPDATE projects SET job_number=:job_number, name=:name, customer=:customer, address=:address, superintendent_employee_id=:superintendent_employee_id, project_manager_employee_id=:project_manager_employee_id,
-        status=:status, start_date=:start_date, end_date=:end_date, budget_hours=:budget_hours, color=:color, notes=:notes WHERE id=:id`).run({ ...p, id });
+        status=:status, start_date=:start_date, end_date=:end_date, budget_hours=:budget_hours, starting_hours=:starting_hours, color=:color, notes=:notes WHERE id=:id`).run({ ...p, id });
     } catch (e) { uniqueMsg(e, 'That job number already exists.'); }
     if (!r.changes) throw new HttpError(404, 'Project not found.');
     audit(req, 'update', 'project', id, { job_number: p.job_number });
@@ -389,6 +400,141 @@ function createApp(db, opts = {}) {
     if (used) throw bad('This project has schedule history. Mark it Complete instead of deleting it.');
     db.prepare('DELETE FROM projects WHERE id = ?').run(id);
     audit(req, 'delete', 'project', id);
+    res.json({ ok: true });
+  });
+
+  // ---- project import (CSV rows parsed in the browser) ------------------------------
+  // Matched to existing projects by job number. Blank cells never erase data.
+  // Superintendent / project manager are matched to employees by name.
+  const PROJECT_FIELDS = {
+    job_number: ['jobnumber', 'projectnumber', 'job', 'jobno', 'number', 'projectno'],
+    name: ['projectname', 'name', 'project', 'jobname'],
+    customer: ['customer', 'owner', 'client', 'gc', 'generalcontractor'],
+    address: ['address', 'siteaddress', 'address1', 'street'],
+    city: ['city'], state: ['state'], zip: ['zip', 'zipcode', 'postalcode'],
+    status: ['status', 'stage', 'projectstatus'],
+    start_date: ['startdate', 'start'], end_date: ['enddate', 'end', 'completiondate', 'finishdate'],
+    budget_hours: ['budgethours', 'budget', 'totalhours', 'estimatedhours', 'contracthours', 'laborhours'],
+    starting_hours: ['startinghours', 'hoursused', 'hourstodate', 'priorhours', 'usedhours'],
+    change_order_hours: ['changeorderhours', 'cohours', 'changeorders'],
+    superintendent: ['superintendent', 'super', 'foreman', 'superintendentforeman'],
+    project_manager: ['projectmanager', 'pm', 'manager'],
+    notes: ['notes', 'note', 'comments', 'type'],
+  };
+  const projectField = (() => {
+    const m = new Map();
+    for (const [f, aliases] of Object.entries(PROJECT_FIELDS)) for (const a of aliases) m.set(a, f);
+    return (h) => m.get(String(h).toLowerCase().replace(/[^a-z0-9]/g, '')) || null;
+  })();
+  function importStatus(v) {
+    const t = String(v ?? '').trim().toLowerCase();
+    if (!t) return null;
+    // Check pre-construction before the general "construction" match.
+    if (/pre-?\s?construction|planned|bidding|awarded|not started/.test(t)) return 'planned';
+    if (/course of construction|^active$|in progress|construction|warranty/.test(t)) return 'active';
+    if (/hold/.test(t)) return 'on_hold';
+    if (/complete|closed|finished/.test(t)) return 'complete';
+    throw new Error(`"${v}" is not a status (use Active, Planned, On hold or Complete)`);
+  }
+  function importHours(v, label) {
+    const t = String(v ?? '').replace(/,/g, '').trim();
+    if (!t) return null;
+    const n = Number(t);
+    if (!Number.isFinite(n)) throw new Error(`${label} "${v}" is not a number`);
+    return n;
+  }
+  const employeeByName = (name) => {
+    const t = str(name, 200);
+    if (!t) return { id: null, missing: false };
+    const [first, last] = t.includes(',') ? t.split(',').map((x) => x.trim()).reverse() : [t.split(/\s+/).slice(0, -1).join(' '), t.split(/\s+/).slice(-1)[0]];
+    const e = db.prepare('SELECT id FROM employees WHERE first_name = ? COLLATE NOCASE AND last_name = ? COLLATE NOCASE').get(first || '', last || '');
+    return { id: e?.id ?? null, missing: !e };
+  };
+
+  api.post('/projects/import', adminOnly, (req, res) => {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+    if (!rows.length) throw bad('The file has no rows.');
+    if (rows.length > 2000) throw bad('Import at most 2,000 projects at a time.');
+    const commit = req.body.commit === true;
+    const byJob = db.prepare('SELECT * FROM projects WHERE job_number = ? COLLATE NOCASE');
+    const results = []; const seen = new Set();
+    rows.forEach((raw, idx) => {
+      const line = idx + 2;
+      const r = {};
+      for (const [k, v] of Object.entries(raw || {})) { const f = projectField(k); if (f && r[f] === undefined) r[f] = v; }
+      try {
+        const street = str(r.address, 200);
+        const cityLine = [str(r.city, 100), [str(r.state, 50), str(r.zip, 20)].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+        const sup = employeeByName(r.superintendent); const pm = employeeByName(r.project_manager);
+        const rec = {
+          job_number: str(r.job_number, 50), name: str(r.name, 200), customer: str(r.customer, 200),
+          address: [street, (street || str(r.city)) ? cityLine : ''].filter(Boolean).join(', ') || null,
+          status: importStatus(r.status), start_date: importDate(r.start_date), end_date: importDate(r.end_date),
+          budget_hours: importHours(r.budget_hours, 'Budget hours'), starting_hours: importHours(r.starting_hours, 'Starting hours'),
+          change_order_hours: importHours(r.change_order_hours, 'Change order hours'),
+          superintendent_employee_id: sup.id, project_manager_employee_id: pm.id, notes: str(r.notes, 2000),
+        };
+        if (!rec.job_number || !rec.name) throw new Error('Job number and project name are required');
+        if (rec.starting_hours !== null && rec.starting_hours < 0) throw new Error('Starting hours must be zero or more');
+        if (seen.has(rec.job_number.toLowerCase())) throw new Error(`Job number ${rec.job_number} appears more than once`);
+        seen.add(rec.job_number.toLowerCase());
+        const warn = [sup.missing && `Superintendent "${r.superintendent}" is not an employee – left blank`, pm.missing && `Project manager "${r.project_manager}" is not an employee – left blank`].filter(Boolean);
+        const existing = byJob.get(rec.job_number);
+        results.push({ line, action: existing ? 'update' : 'create', name: rec.name, job_number: rec.job_number, status: rec.status, existing_id: existing?.id, rec, reason: warn.join('; ') });
+      } catch (e) {
+        results.push({ line, action: 'error', name: str(r.name) || '', job_number: str(r.job_number) || '', reason: e.message });
+      }
+    });
+    const summary = { create: 0, update: 0, skip: 0, error: 0 };
+    for (const x of results) summary[x.action] += 1;
+    if (commit) {
+      if (summary.error) throw bad(`Fix the ${summary.error} row(s) with errors first.`, { results: results.map(({ rec, existing_id, ...x }) => x), summary });
+      const cols = ['job_number', 'name', 'customer', 'address', 'status', 'start_date', 'end_date', 'budget_hours', 'starting_hours', 'superintendent_employee_id', 'project_manager_employee_id', 'notes'];
+      const setCo = (pid, hours) => {
+        // One "Imported" change order per project; re-importing replaces it.
+        db.prepare("DELETE FROM project_change_orders WHERE project_id = ? AND co_number = 'IMPORT'").run(pid);
+        if (hours) db.prepare("INSERT INTO project_change_orders (project_id, co_number, description, hours, created_by) VALUES (?, 'IMPORT', 'Change order hours from import', ?, ?)").run(pid, hours, req.user.id);
+      };
+      tx(db, () => {
+        for (const x of results) {
+          const rec = x.rec;
+          if (x.action === 'create') {
+            const vals = cols.map((c) => (c === 'status' ? rec.status || 'active' : c === 'starting_hours' ? rec.starting_hours ?? 0 : rec[c]));
+            const id = Number(db.prepare(`INSERT INTO projects (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...vals).lastInsertRowid);
+            if (rec.change_order_hours !== null) setCo(id, rec.change_order_hours);
+          } else if (x.action === 'update') {
+            const sets = cols.filter((c) => rec[c] !== null);
+            if (sets.length) db.prepare(`UPDATE projects SET ${sets.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...sets.map((c) => rec[c]), x.existing_id);
+            if (rec.change_order_hours !== null) setCo(x.existing_id, rec.change_order_hours);
+          }
+        }
+      });
+      audit(req, 'import', 'project', null, summary);
+    }
+    res.json({ committed: commit, summary, results: results.map(({ rec, existing_id, ...x }) => x) });
+  });
+
+  // ---- change orders ---------------------------------------------------------------
+  api.get('/projects/:id/change-orders', (req, res) => {
+    res.json(db.prepare(`SELECT c.*, u.name AS created_by_name FROM project_change_orders c LEFT JOIN users u ON u.id = c.created_by
+      WHERE c.project_id = ? ORDER BY COALESCE(c.co_date, c.created_at), c.id`).all(int(req.params.id)));
+  });
+  api.post('/projects/:id/change-orders', canSchedule, (req, res) => {
+    const pid = int(req.params.id);
+    assertCanEdit(req, pid);
+    const h = num(req.body.hours);
+    if (h === null || Number.isNaN(h)) throw bad('Change order hours must be a number (use a negative number for a deduct).');
+    const r = db.prepare('INSERT INTO project_change_orders (project_id, co_number, description, hours, co_date, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(pid, str(req.body.co_number, 50), str(req.body.description, 500), h, date(req.body.co_date, 'Date'), req.user.id);
+    audit(req, 'create', 'change_order', pid, { co_number: str(req.body.co_number, 50), hours: h });
+    res.json({ id: Number(r.lastInsertRowid) });
+  });
+  api.delete('/change-orders/:id', canSchedule, (req, res) => {
+    const c = db.prepare('SELECT * FROM project_change_orders WHERE id = ?').get(int(req.params.id));
+    if (!c) throw new HttpError(404, 'Change order not found.');
+    assertCanEdit(req, c.project_id);
+    db.prepare('DELETE FROM project_change_orders WHERE id = ?').run(c.id);
+    audit(req, 'delete', 'change_order', c.project_id, { co_number: c.co_number, hours: c.hours });
     res.json({ ok: true });
   });
 
@@ -428,7 +574,8 @@ function createApp(db, opts = {}) {
       WHERE t.off_date BETWEEN ? AND ?`).all(start, end);
     const projectIds = new Set(assignments.map((a) => a.project_id));
     const projects = db.prepare(`SELECT p.*, ${leadNames},
-        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.work_date <= ? AND a.approval_status = 'approved') AS hours_through_week
+        CASE WHEN p.budget_hours IS NULL AND ${coHours} = 0 THEN NULL ELSE COALESCE(p.budget_hours, 0) + ${coHours} END AS total_budget_hours,
+        p.starting_hours + (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.work_date <= ? AND a.approval_status = 'approved') AS hours_through_week
       FROM projects p ${leadJoins} ORDER BY p.job_number`).all(end)
       .filter((p) => projectIds.has(p.id) || ['active', 'planned'].includes(p.status));
 
@@ -690,7 +837,22 @@ function createApp(db, opts = {}) {
   api.post('/time-off', canSchedule, (req, res) => {
     const eid = int(req.body.employee_id);
     if (!empName.get(eid)) throw bad('Pick an employee.');
-    const dates = (Array.isArray(req.body.dates) ? req.body.dates : [req.body.off_date]).map((d) => date(d, 'Date', true));
+    let dates;
+    if (req.body.from) {
+      // A date range (e.g. three weeks next spring), optionally weekdays only.
+      const from = date(req.body.from, 'From', true); const to = date(req.body.to || req.body.from, 'To', true);
+      if (to < from) throw bad('The end date is before the start date.');
+      if (daysBetween(from, to) > 366) throw bad('Enter at most one year of time off at a time.');
+      dates = [];
+      for (let d = from; d <= to; d = addDays(d, 1)) {
+        const dow = new Date(d + 'T00:00:00Z').getUTCDay();
+        if (req.body.weekdays_only && (dow === 0 || dow === 6)) continue;
+        dates.push(d);
+      }
+      if (!dates.length) throw bad('That range has no weekdays.');
+    } else {
+      dates = (Array.isArray(req.body.dates) ? req.body.dates : [req.body.off_date]).map((d) => date(d, 'Date', true));
+    }
     const reason = str(req.body.reason, 200);
     const conflicts = []; let added = 0;
     tx(db, () => {
@@ -700,7 +862,7 @@ function createApp(db, opts = {}) {
         added += db.prepare('INSERT OR IGNORE INTO time_off (employee_id, off_date, reason, created_by) VALUES (?, ?, ?, ?)').run(eid, d, reason, req.user.id).changes;
       }
     });
-    audit(req, 'create', 'time_off', eid, { dates, reason });
+    audit(req, 'create', 'time_off', eid, { from: dates[0], to: dates[dates.length - 1], days: added, reason });
     res.json({ added, conflicts });
   });
   api.delete('/time-off/:id', canSchedule, (req, res) => {
@@ -743,7 +905,10 @@ function createApp(db, opts = {}) {
     if (status === 'verified') {
       actual = hours(b.actual_hours, 'Actual hours') ?? cur.planned_hours;
       if (actual !== cur.planned_hours) finalStatus = 'adjusted';
-    } else if (status === 'no_show') actual = 0;
+    } else if (status === 'no_show') {
+      actual = 0;
+      if (!str(b.note)) throw bad('Give a reason for the no-show (e.g. Sick – excused).');
+    }
     const reset = status === 'scheduled';
     db.prepare(`UPDATE assignments SET actual_hours = ?, status = ?, verified_by = ?, verified_at = ${reset ? 'NULL' : "datetime('now')"},
       verify_note = ?, updated_at = datetime('now') WHERE id = ?`)
@@ -791,7 +956,7 @@ function createApp(db, opts = {}) {
         { key: 'work_date', label: 'Date' }, { key: 'job_number', label: 'Job #' }, { key: 'project_name', label: 'Project' },
         { key: 'last_name', label: 'Last' }, { key: 'first_name', label: 'First' }, { key: 'trade', label: 'Trade' },
         { key: 'classification', label: 'Classification' }, { key: 'planned_hours', label: 'Planned Hrs' },
-        { key: 'actual_hours', label: 'Actual Hrs' }, { key: 'status', label: 'Status' }, { key: 'approval_status', label: 'Approval' }, { key: 'reject_reason', label: 'Rejection Reason' }, { key: 'task', label: 'Task' },
+        { key: 'actual_hours', label: 'Actual Hrs' }, { key: 'status', label: 'Status' }, { key: 'approval_status', label: 'Approval' }, { key: 'verify_note', label: 'Verification / No-show Note' }, { key: 'reject_reason', label: 'Rejection Reason' }, { key: 'task', label: 'Task' },
       ]));
     }
     const summary = { rows: rows.length, planned: 0, actual: 0, by_project: {}, by_trade: {} };

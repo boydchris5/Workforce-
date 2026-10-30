@@ -226,6 +226,12 @@ button.attn { border-color: var(--orange); color: var(--orange-dk); font-weight:
 .dcard.dragging { opacity: .4; }
 .drop-ok { outline: 2px dashed var(--orange); outline-offset: 2px; background: var(--orange-tint); }
 .djob.drop-ok .djob-body { background: var(--orange-tint); }
+.co-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: grid; gap: 8px; }
+.co-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.co-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.co-add input, .co-add select { width: auto; flex: 1 1 120px; min-width: 0; }
+.co-add .check { flex: 0 0 auto; }
+#emp-ns .list td { font-size: 13px; }
 .over40 { color: var(--orange-dk); font-weight: 700; }
 
 /* mobile day view */
