@@ -53,26 +53,26 @@ test('setup projects and employees', async () => {
 });
 
 test('prevents double booking', async () => {
-  const r1 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [MON, '2026-11-03'], planned_hours: 8 });
+  const r1 = await boss('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [MON, '2026-11-03'], planned_hours: 8 });
   assert.equal(r1.status, 200);
   assert.equal(r1.body.created.length, 4);
   assert.deepEqual(r1.body.warnings, []); // exactly 8 h is not over
 
   // Same person on the same job twice in one day -> rejected
-  const r3 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1], dates: [MON], planned_hours: 2 });
+  const r3 = await boss('POST', '/assignments', { project_id: p1, employee_ids: [e1], dates: [MON], planned_hours: 2 });
   assert.equal(r3.status, 409);
   assert.match(r3.body.conflicts[0].message, /already scheduled on 25-001/);
 
   // Over the hard daily limit (12) -> rejected
-  const r2 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON], planned_hours: 6 });
+  const r2 = await boss('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON], planned_hours: 6 });
   assert.equal(r2.status, 409);
   assert.match(r2.body.conflicts[0].message, /would have 14 hrs \(daily limit 12\)/);
 
   // Moving onto a day already on that job -> rejected
-  await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: ['2026-11-04'], planned_hours: 8 });
+  await boss('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: ['2026-11-04'], planned_hours: 8 });
   const sched = (await field('GET', `/schedule?start=${MON}`)).body;
   const wed = sched.assignments.find((a) => a.employee_id === e1 && a.work_date === '2026-11-04');
-  assert.equal((await sup('PUT', `/assignments/${wed.id}`, { work_date: MON, project_id: p1 })).status, 409);
+  assert.equal((await boss('PUT', `/assignments/${wed.id}`, { work_date: MON, project_id: p1 })).status, 409);
 
   // Database constraint backs up the same-job rule even if app checks were bypassed
   assert.throws(() => conn.prepare('INSERT INTO assignments (employee_id, project_id, work_date) VALUES (?, ?, ?)').run(e1, p1, MON), /UNIQUE/);
@@ -80,9 +80,9 @@ test('prevents double booking', async () => {
 
 test('split days are allowed and over 8 hours a day is warned, not blocked', async () => {
   const day = '2026-11-12';
-  const a = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [day], planned_hours: 4 });
+  const a = await boss('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [day], planned_hours: 4 });
   assert.equal(a.status, 200);
-  const b = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [day], planned_hours: 4 });
+  const b = await boss('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [day], planned_hours: 4 });
   assert.equal(b.status, 200);
   assert.deepEqual(b.body.warnings, []);
   let s = (await field('GET', `/schedule?start=${day}`)).body;
@@ -92,7 +92,7 @@ test('split days are allowed and over 8 hours a day is warned, not blocked', asy
 
   // A third job taking the day to 10 h is saved, with a warning
   const p3 = (await boss('POST', '/projects', { job_number: '25-003', name: 'Plant' })).body.id;
-  const c = await sup('POST', '/assignments', { project_id: p3, employee_ids: [e2], dates: [day], planned_hours: 2 });
+  const c = await boss('POST', '/assignments', { project_id: p3, employee_ids: [e2], dates: [day], planned_hours: 2 });
   assert.equal(c.status, 200);
   assert.equal(c.body.warnings.length, 1);
   assert.match(c.body.warnings[0].message, /Jose Ramirez is scheduled 10 hrs on 2026-11-12 \(over 8\)/);
@@ -101,13 +101,13 @@ test('split days are allowed and over 8 hours a day is warned, not blocked', asy
 
   // Editing hours up also warns; threshold follows the admin setting
   const one = s.assignments.find((x) => x.project_id === p1);
-  assert.equal((await sup('PUT', `/assignments/${one.id}`, { planned_hours: 5 })).body.warnings[0].hours, 11);
+  assert.equal((await boss('PUT', `/assignments/${one.id}`, { planned_hours: 5 })).body.warnings[0].hours, 11);
   await boss('PUT', '/settings', { warn_daily_hours: 12 });
-  assert.deepEqual((await sup('PUT', `/assignments/${one.id}`, { planned_hours: 4 })).body.warnings, []);
+  assert.deepEqual((await boss('PUT', `/assignments/${one.id}`, { planned_hours: 4 })).body.warnings, []);
   await boss('PUT', '/settings', { warn_daily_hours: 8 });
 
   // Clean up so later tests see the original schedule
-  for (const x of (await field('GET', `/schedule?start=${day}`)).body.assignments) await sup('DELETE', `/assignments/${x.id}`);
+  for (const x of (await field('GET', `/schedule?start=${day}`)).body.assignments) await boss('DELETE', `/assignments/${x.id}`);
 });
 
 test('projects list a superintendent and project manager from employees', async () => {
@@ -127,7 +127,7 @@ test('projects list a superintendent and project manager from employees', async 
 test('blocks scheduling on time off', async () => {
   const r = await sup('POST', '/time-off', { employee_id: e2, dates: ['2026-11-05'], reason: 'Vacation' });
   assert.equal(r.body.added, 1);
-  const a = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: ['2026-11-05'] });
+  const a = await boss('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: ['2026-11-05'] });
   assert.equal(a.status, 409);
   assert.match(a.body.conflicts[0].message, /off \(Vacation\)/);
 });
@@ -191,8 +191,8 @@ test('records search + CSV export', async () => {
 });
 
 test('copy week skips conflicts', async () => {
-  await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: ['2026-11-09'] });
-  const r = (await sup('POST', '/assignments/copy-week', { from: MON, to: '2026-11-09' })).body;
+  await boss('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: ['2026-11-09'] });
+  const r = (await boss('POST', '/assignments/copy-week', { from: MON, to: '2026-11-09' })).body;
   assert.ok(r.created.length > 0);
   assert.equal(r.conflicts.length, 1);
 });
@@ -259,7 +259,8 @@ test('upgrades a database from an earlier version without losing data', () => {
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(up.prepare('SELECT approval_status AS s FROM assignments').get().s, 'approved'); // existing work counts as approved
   assert.equal(up.prepare('SELECT superintendent_employee_id AS s FROM projects WHERE id = 1').get().s, 1);
   const a = up.prepare('SELECT * FROM assignments').all();
   assert.equal(a.length, 1);
@@ -276,4 +277,62 @@ test('upgrades a database from an earlier version without losing data', () => {
   const again = db.open(file);
   assert.equal(again.prepare('SELECT COUNT(*) AS n FROM assignments').get().n, 2);
   again.close();
+});
+
+test('superintendents request crew on their own jobs; the manager approves or rejects with a reason', async () => {
+  const day = '2026-11-16';
+  const mike = (await boss('GET', '/employees')).body.find((e) => e.first_name === 'Mike' && e.last_name === 'Jones');
+  // Link the superintendent login to Mike Jones, who runs p1 (set in the earlier projects test)
+  await boss('PUT', '/users/2', { username: 'super', name: 'Super', role: 'super', employee_id: mike.id });
+  const supNow = await login('super');
+
+  // Requests on their own job are pending; other jobs are refused
+  const r = await supNow('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [day], planned_hours: 8 });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.approval_status, 'pending');
+  assert.equal((await supNow('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: ['2026-11-17'] })).status, 403);
+  assert.equal((await supNow('POST', '/assignments/approve', { ids: r.body.created })).status, 403);
+
+  // Field staff don't see pending; the manager does
+  assert.equal((await field('GET', `/schedule?start=${day}`)).body.assignments.length, 0);
+  const s = (await boss('GET', `/schedule?start=${day}`)).body;
+  assert.equal(s.totals.approval.pending, 2);
+  assert.equal(s.assignments[0].requested_by_name, 'Super');
+  // Payroll and verification ignore pending requests
+  const f = (await boss('GET', `/payroll/forecast?start=${day}&weeks=1`)).body;
+  assert.equal(f.totals.hours, 0);
+  assert.deepEqual(f.pending_requests, { count: 2, hours: 16 });
+  assert.equal((await boss('GET', `/verification?start=${day}`)).body.rows.length, 0);
+
+  const [a1, a2] = r.body.created;
+  const ofE1 = s.assignments.find((x) => x.employee_id === e1).id;
+  const ofE2 = s.assignments.find((x) => x.employee_id === e2).id;
+  assert.deepEqual([a1, a2].sort(), [ofE1, ofE2].sort());
+
+  // Rejecting needs a reason
+  assert.equal((await boss('POST', '/assignments/reject', { ids: [ofE2] })).status, 400);
+  assert.equal((await boss('POST', '/assignments/reject', { ids: [ofE2], reason: 'Jose is needed on the bridge pour' })).body.rejected, 1);
+  const reqs = (await supNow('GET', '/requests')).body;
+  assert.equal(reqs.rejected[0].reject_reason, 'Jose is needed on the bridge pour');
+  assert.equal(reqs.pending.length, 1);
+  // A rejected person is free: the manager can book Jose elsewhere that day with no warning
+  const elsewhere = await boss('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [day], planned_hours: 8 });
+  assert.equal(elsewhere.status, 200);
+  assert.deepEqual(elsewhere.body.warnings, []);
+  assert.equal(elsewhere.body.approval_status, 'approved');
+
+  // Approving makes it visible to crews and counted in payroll
+  assert.equal((await boss('POST', '/assignments/approve', { ids: [ofE1] })).body.approved, 1);
+  const fieldView = (await field('GET', `/schedule?start=${day}`)).body.assignments;
+  assert.ok(fieldView.some((x) => x.id === ofE1 && x.approval_status === 'approved'));
+  assert.equal((await boss('GET', `/payroll/forecast?start=${day}&weeks=1`)).body.totals.hours, 16);
+
+  // A superintendent changing an approved entry sends it back for approval
+  assert.equal((await supNow('PUT', `/assignments/${ofE1}`, { planned_hours: 6 })).body.approval_status, 'pending');
+  // ...but they can't touch another superintendent's job
+  const other = (await boss('GET', `/schedule?start=${day}`)).body.assignments.find((x) => x.project_id === p2);
+  assert.equal((await supNow('DELETE', `/assignments/${other.id}`)).status, 403);
+  // The manager's own edits stay approved
+  await boss('POST', '/assignments/approve', { ids: [ofE1] });
+  assert.equal((await boss('PUT', `/assignments/${ofE1}`, { planned_hours: 7 })).body.approval_status, 'approved');
 });

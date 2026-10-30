@@ -224,8 +224,8 @@ function createApp(db, opts = {}) {
   api.get('/projects', (req, res) => {
     const where = req.query.all === '1' ? '' : "WHERE p.status IN ('planned','active','on_hold')";
     res.json(db.prepare(`SELECT p.*, ${leadNames},
-        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id) AS hours_to_date,
-        (SELECT COALESCE(SUM(a.actual_hours),0) FROM assignments a WHERE a.project_id = p.id AND a.status <> 'scheduled') AS verified_hours
+        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.approval_status = 'approved') AS hours_to_date,
+        (SELECT COALESCE(SUM(a.actual_hours),0) FROM assignments a WHERE a.project_id = p.id AND a.status <> 'scheduled' AND a.approval_status = 'approved') AS verified_hours
       FROM projects p ${leadJoins} ${where}
       ORDER BY p.job_number`).all());
   });
@@ -283,19 +283,41 @@ function createApp(db, opts = {}) {
 
   // ---- weekly schedule ---------------------------------------------------------
   const assignmentSelect = `SELECT a.*, e.first_name, e.last_name, e.trade, e.classification,
-      p.job_number, p.name AS project_name, p.color
-    FROM assignments a JOIN employees e ON e.id = a.employee_id JOIN projects p ON p.id = a.project_id`;
+      p.job_number, p.name AS project_name, p.color, p.superintendent_employee_id,
+      cu.name AS requested_by_name, au.name AS approved_by_name
+    FROM assignments a JOIN employees e ON e.id = a.employee_id JOIN projects p ON p.id = a.project_id
+    LEFT JOIN users cu ON cu.id = a.created_by LEFT JOIN users au ON au.id = a.approved_by`;
+
+  // Approval workflow: superintendents request crew on the projects they run
+  // (pending); the workforce manager (admin) approves or rejects with a reason.
+  // Admin-entered work is approved immediately. Rejected rows stay for the
+  // record but never count as booked, scheduled, or paid.
+  const projectRow = db.prepare('SELECT id, job_number, name, superintendent_employee_id FROM projects WHERE id = ?');
+  function assertCanEdit(req, projectId) {
+    if (req.user.role === 'admin') return;
+    const p = projectRow.get(projectId);
+    if (!p) throw bad('Project not found.');
+    if (!req.user.employee_id) throw new HttpError(403, 'Your login is not linked to an employee record, so you have no projects to request crew for. Ask the workforce manager.');
+    if (p.superintendent_employee_id !== req.user.employee_id) {
+      throw new HttpError(403, `You can only request crew on your own projects. ${p.job_number} is run by another superintendent.`);
+    }
+  }
+  const approvalFor = (req) => (req.user.role === 'admin'
+    ? { approval_status: 'approved', approved_by: req.user.id, approved_at: new Date().toISOString() }
+    : { approval_status: 'pending', approved_by: null, approved_at: null });
 
   api.get('/schedule', (req, res) => {
     const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
     const days = weekDates(start);
     const end = days[6];
-    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name, a.id`).all(start, end);
+    const approvedOnly = req.user.role === 'viewer';
+    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ${approvedOnly ? "AND a.approval_status = 'approved'" : ''}
+      ORDER BY e.last_name, e.first_name, a.id`).all(start, end);
     const timeOff = db.prepare(`SELECT t.*, e.first_name, e.last_name FROM time_off t JOIN employees e ON e.id = t.employee_id
       WHERE t.off_date BETWEEN ? AND ?`).all(start, end);
     const projectIds = new Set(assignments.map((a) => a.project_id));
     const projects = db.prepare(`SELECT p.*, ${leadNames},
-        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.work_date <= ?) AS hours_through_week
+        (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.work_date <= ? AND a.approval_status = 'approved') AS hours_through_week
       FROM projects p ${leadJoins} ORDER BY p.job_number`).all(end)
       .filter((p) => projectIds.has(p.id) || ['active', 'planned'].includes(p.status));
 
@@ -304,7 +326,10 @@ function createApp(db, opts = {}) {
     let totalHours = 0;
     const peopleByDay = {}; const personDay = {};
     for (const d of days) { byDay[d] = { headcount: 0, hours: 0 }; peopleByDay[d] = new Set(); }
+    const approval = { pending: 0, rejected: 0, approved: 0 };
     for (const a of assignments) {
+      approval[a.approval_status] = (approval[a.approval_status] || 0) + 1;
+      if (a.approval_status === 'rejected') continue; // freed up; shown only so the super sees the reason
       const h = a.planned_hours;
       totalHours += h;
       const p = (byProject[a.project_id] ||= { hours: 0, people: new Set(), days: {} });
@@ -324,7 +349,7 @@ function createApp(db, opts = {}) {
 
     res.json({
       start, end, days, projects, assignments, time_off: timeOff,
-      totals: { hours: totalHours, assignments: assignments.length, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
+      totals: { approval, hours: totalHours, assignments: assignments.length - approval.rejected, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
     });
   });
 
@@ -333,17 +358,19 @@ function createApp(db, opts = {}) {
     const from = weekStart(new Date().toISOString().slice(0, 10));
     res.json({
       linked: true,
-      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? ORDER BY a.work_date, a.id LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
+      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? AND a.approval_status = 'approved' ORDER BY a.work_date, a.id LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
       time_off: db.prepare('SELECT * FROM time_off WHERE employee_id = ? AND off_date >= ? ORDER BY off_date').all(req.user.employee_id, from),
     });
   });
 
   // ---- assignments (double-booking protected) -------------------------------------
   const findBookings = db.prepare(`SELECT a.id, a.project_id, a.planned_hours, p.job_number, p.name AS project_name
-    FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? AND a.work_date = ? ORDER BY a.id`);
+    FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? AND a.work_date = ? AND a.approval_status <> 'rejected' ORDER BY a.id`);
   const findOff = db.prepare('SELECT reason FROM time_off WHERE employee_id = ? AND off_date = ?');
   const empName = db.prepare("SELECT first_name || ' ' || last_name AS name, active FROM employees WHERE id = ?");
-  const dayHours = db.prepare('SELECT COALESCE(SUM(planned_hours), 0) AS h FROM assignments WHERE employee_id = ? AND work_date = ?');
+  const dayHours = db.prepare("SELECT COALESCE(SUM(planned_hours), 0) AS h FROM assignments WHERE employee_id = ? AND work_date = ? AND approval_status <> 'rejected'");
+  // A rejected row for the same person/job/day is replaced when they're requested again.
+  const clearRejected = db.prepare("DELETE FROM assignments WHERE employee_id = ? AND project_id = ? AND work_date = ? AND approval_status = 'rejected'");
 
   // A person can split a day across jobs. It is a double booking when they are
   // off that day, already on the same job that day, or the day's total hours
@@ -379,8 +406,10 @@ function createApp(db, opts = {}) {
   api.post('/assignments', canSchedule, (req, res) => {
     const b = req.body;
     const projectId = int(b.project_id);
-    const project = db.prepare('SELECT id, job_number FROM projects WHERE id = ?').get(projectId);
+    const project = projectRow.get(projectId);
     if (!project) throw bad('Pick a project.');
+    assertCanEdit(req, projectId);
+    const appr = approvalFor(req);
     const employeeIds = [...new Set((Array.isArray(b.employee_ids) ? b.employee_ids : [b.employee_id]).map(int).filter(Boolean))];
     const dates = [...new Set((Array.isArray(b.dates) ? b.dates : [b.work_date]))].map((d) => date(d, 'Date', true));
     if (!employeeIds.length) throw bad('Pick at least one employee.');
@@ -391,8 +420,8 @@ function createApp(db, opts = {}) {
     const task = str(b.task, 500);
 
     const created = []; const conflicts = [];
-    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by)
-      VALUES (?, ?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by, approval_status, approved_by, approved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const touched = [];
     tx(db, () => {
       for (const eid of employeeIds) {
@@ -402,7 +431,8 @@ function createApp(db, opts = {}) {
           const c = conflictFor(eid, d, { projectId, hours: planned });
           if (c) { conflicts.push({ employee_id: eid, work_date: d, name: emp.name, ...c, message: `${emp.name} ${c.message} on ${d}` }); continue; }
           try {
-            const r = ins.run(eid, projectId, d, planned, task, req.user.id);
+            clearRejected.run(eid, projectId, d);
+            const r = ins.run(eid, projectId, d, planned, task, req.user.id, appr.approval_status, appr.approved_by, appr.approved_at);
             created.push(Number(r.lastInsertRowid));
             touched.push([eid, d]);
           } catch (e) {
@@ -412,8 +442,8 @@ function createApp(db, opts = {}) {
         }
       }
     });
-    if (created.length) audit(req, 'schedule', 'assignment', null, { project: project.job_number, count: created.length, dates });
-    res.status(created.length ? 200 : 409).json({ created, conflicts, warnings: overWarnings(touched), error: created.length ? undefined : conflicts[0]?.message });
+    if (created.length) audit(req, appr.approval_status === 'pending' ? 'request' : 'schedule', 'assignment', null, { project: project.job_number, count: created.length, dates });
+    res.status(created.length ? 200 : 409).json({ created, approval_status: appr.approval_status, conflicts, warnings: overWarnings(touched), error: created.length ? undefined : conflicts[0]?.message });
   });
 
   api.put('/assignments/:id', canSchedule, (req, res) => {
@@ -430,23 +460,35 @@ function createApp(db, opts = {}) {
       task: b.task !== undefined ? str(b.task, 500) : cur.task,
     };
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(next.project_id)) throw bad('Project not found.');
+    assertCanEdit(req, cur.project_id);
+    if (next.project_id !== cur.project_id) assertCanEdit(req, next.project_id);
+    // A superintendent's change (or resubmitting a rejection) goes back to the manager for approval.
+    const changed = ['employee_id', 'project_id', 'work_date', 'planned_hours', 'task'].some((k) => next[k] !== cur[k]);
+    const appr = req.user.role === 'admin'
+      ? { approval_status: cur.approval_status === 'rejected' ? 'rejected' : 'approved', approved_by: cur.approved_by ?? req.user.id, approved_at: cur.approved_at ?? new Date().toISOString(), reject_reason: cur.reject_reason }
+      : changed || cur.approval_status === 'rejected' ? { approval_status: 'pending', approved_by: null, approved_at: null, reject_reason: null }
+        : { approval_status: cur.approval_status, approved_by: cur.approved_by, approved_at: cur.approved_at, reject_reason: cur.reject_reason };
+    Object.assign(next, appr);
     const c = conflictFor(next.employee_id, next.work_date, { projectId: next.project_id, hours: next.planned_hours }, id);
     if (c) throw new HttpError(409, `${empName.get(next.employee_id)?.name || 'Employee'} ${c.message} on ${next.work_date}.`);
     try {
+      if (next.approval_status !== 'rejected') clearRejected.run(next.employee_id, next.project_id, next.work_date);
       db.prepare(`UPDATE assignments SET employee_id=:employee_id, project_id=:project_id, work_date=:work_date, planned_hours=:planned_hours,
-        task=:task, updated_at=datetime('now') WHERE id=:id`).run(next);
+        task=:task, approval_status=:approval_status, approved_by=:approved_by, approved_at=:approved_at, reject_reason=:reject_reason,
+        updated_at=datetime('now') WHERE id=:id`).run(next);
     } catch (e) {
       if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That person is already scheduled on that job that day.');
       throw e;
     }
     audit(req, 'update', 'assignment', id, { from: { project_id: cur.project_id, date: cur.work_date }, to: { project_id: next.project_id, date: next.work_date } });
-    res.json({ id, warnings: overWarnings([[next.employee_id, next.work_date]]) });
+    res.json({ id, approval_status: next.approval_status, warnings: overWarnings([[next.employee_id, next.work_date]]) });
   });
 
   api.delete('/assignments/:id', canSchedule, (req, res) => {
     const id = int(req.params.id);
     const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
     if (!cur) throw new HttpError(404, 'Assignment not found.');
+    assertCanEdit(req, cur.project_id);
     db.prepare('DELETE FROM assignments WHERE id = ?').run(id);
     audit(req, 'delete', 'assignment', id, { employee_id: cur.employee_id, project_id: cur.project_id, date: cur.work_date });
     res.json({ ok: true });
@@ -458,11 +500,15 @@ function createApp(db, opts = {}) {
     const to = weekStart(date(req.body.to, 'To week', true));
     if (from === to) throw bad('Pick a different target week.');
     const projectId = int(req.body.project_id);
+    if (projectId) assertCanEdit(req, projectId);
+    else if (req.user.role !== 'admin') throw bad('Pick one of your projects to copy.');
     const offset = daysBetween(from, to);
-    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? ${projectId ? 'AND project_id = ?' : ''} ORDER BY work_date, id`)
+    const appr = approvalFor(req);
+    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? AND approval_status <> 'rejected' ${projectId ? 'AND project_id = ?' : ''} ORDER BY work_date, id`)
       .all(...[from, addDays(from, 6), ...(projectId ? [projectId] : [])]);
     const created = []; const conflicts = [];
-    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by) VALUES (?, ?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by, approval_status, approved_by, approved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const touched = [];
     tx(db, () => {
       for (const a of src) {
@@ -470,12 +516,63 @@ function createApp(db, opts = {}) {
         const c = conflictFor(a.employee_id, d, { projectId: a.project_id, hours: a.planned_hours });
         if (c) { conflicts.push({ employee_id: a.employee_id, work_date: d, message: `${empName.get(a.employee_id)?.name} ${c.message} on ${d}` }); continue; }
         if (!empName.get(a.employee_id)?.active) continue;
-        created.push(Number(ins.run(a.employee_id, a.project_id, d, a.planned_hours, a.task, req.user.id).lastInsertRowid));
+        clearRejected.run(a.employee_id, a.project_id, d);
+        created.push(Number(ins.run(a.employee_id, a.project_id, d, a.planned_hours, a.task, req.user.id, appr.approval_status, appr.approved_by, appr.approved_at).lastInsertRowid));
         touched.push([a.employee_id, d]);
       }
     });
     audit(req, 'copy_week', 'assignment', null, { from, to, project_id: projectId, created: created.length });
-    res.json({ created, conflicts, warnings: overWarnings(touched) });
+    res.json({ created, approval_status: appr.approval_status, conflicts, warnings: overWarnings(touched) });
+  });
+
+  // ---- approvals -------------------------------------------------------------------
+  // Pending requests (manager: all; superintendent: own projects) plus recent rejections.
+  api.get('/requests', canSchedule, (req, res) => {
+    const mine = req.user.role === 'admin' ? '' : 'AND p.superintendent_employee_id = ?';
+    const args = req.user.role === 'admin' ? [] : [req.user.employee_id ?? -1];
+    const since = addDays(new Date().toISOString().slice(0, 10), -14);
+    res.json({
+      pending: db.prepare(`${assignmentSelect} WHERE a.approval_status = 'pending' ${mine} ORDER BY a.work_date, p.job_number, e.last_name`).all(...args),
+      rejected: db.prepare(`${assignmentSelect} WHERE a.approval_status = 'rejected' AND a.work_date >= ? ${mine} ORDER BY a.work_date, p.job_number`).all(since, ...args),
+    });
+  });
+
+  api.post('/assignments/approve', adminOnly, (req, res) => {
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
+    if (!ids.length) throw bad('Nothing selected.');
+    const conflicts = []; let approved = 0; const touched = [];
+    tx(db, () => {
+      for (const id of ids) {
+        const a = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+        if (!a || a.approval_status === 'approved') continue;
+        if (a.approval_status === 'rejected') {
+          // Re-approving a rejection must not double book.
+          const c = conflictFor(a.employee_id, a.work_date, { projectId: a.project_id, hours: a.planned_hours }, a.id);
+          if (c) { conflicts.push(`${empName.get(a.employee_id)?.name} ${c.message} on ${a.work_date}`); continue; }
+        }
+        db.prepare("UPDATE assignments SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), reject_reason = NULL, updated_at = datetime('now') WHERE id = ?")
+          .run(req.user.id, id);
+        approved += 1; touched.push([a.employee_id, a.work_date]);
+      }
+    });
+    audit(req, 'approve', 'assignment', null, { count: approved });
+    res.json({ approved, conflicts, warnings: overWarnings(touched) });
+  });
+
+  api.post('/assignments/reject', adminOnly, (req, res) => {
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
+    const reason = str(req.body.reason, 300);
+    if (!ids.length) throw bad('Nothing selected.');
+    if (!reason) throw bad('Give a reason for the rejection so the superintendent knows why.');
+    let rejected = 0;
+    tx(db, () => {
+      for (const id of ids) {
+        rejected += db.prepare(`UPDATE assignments SET approval_status = 'rejected', reject_reason = ?, approved_by = ?, approved_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ? AND status = 'scheduled'`).run(reason, req.user.id, id).changes;
+      }
+    });
+    audit(req, 'reject', 'assignment', null, { count: rejected, reason });
+    res.json({ rejected });
   });
 
   // ---- time off --------------------------------------------------------------------
@@ -507,7 +604,7 @@ function createApp(db, opts = {}) {
     const end = addDays(start, 6);
     const projectId = int(req.query.project_id);
     const rows = db.prepare(`${assignmentSelect} LEFT JOIN users v ON v.id = a.verified_by
-      WHERE a.work_date BETWEEN ? AND ? ${projectId ? 'AND a.project_id = ?' : ''}
+      WHERE a.work_date BETWEEN ? AND ? AND a.approval_status = 'approved' ${projectId ? 'AND a.project_id = ?' : ''}
       ORDER BY p.job_number, a.work_date, e.last_name`).all(...[start, end, ...(projectId ? [projectId] : [])]);
     const verifierNames = new Map(db.prepare('SELECT id, name FROM users').all().map((u) => [u.id, u.name]));
     const summary = { planned: 0, actual: 0, verified_count: 0, pending_count: 0, no_show_count: 0, variance: 0 };
@@ -570,6 +667,7 @@ function createApp(db, opts = {}) {
     if (int(q.project_id)) { where.push('a.project_id = ?'); args.push(int(q.project_id)); }
     if (str(q.trade)) { where.push('e.trade = ?'); args.push(str(q.trade)); }
     if (str(q.status)) { where.push('a.status = ?'); args.push(str(q.status)); }
+    if (str(q.approval)) { where.push('a.approval_status = ?'); args.push(str(q.approval)); }
     return db.prepare(`${assignmentSelect} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.work_date DESC, p.job_number, e.last_name LIMIT 20000`).all(...args);
   }
 
@@ -582,11 +680,12 @@ function createApp(db, opts = {}) {
         { key: 'work_date', label: 'Date' }, { key: 'job_number', label: 'Job #' }, { key: 'project_name', label: 'Project' },
         { key: 'last_name', label: 'Last' }, { key: 'first_name', label: 'First' }, { key: 'trade', label: 'Trade' },
         { key: 'classification', label: 'Classification' }, { key: 'planned_hours', label: 'Planned Hrs' },
-        { key: 'actual_hours', label: 'Actual Hrs' }, { key: 'status', label: 'Status' }, { key: 'task', label: 'Task' },
+        { key: 'actual_hours', label: 'Actual Hrs' }, { key: 'status', label: 'Status' }, { key: 'approval_status', label: 'Approval' }, { key: 'reject_reason', label: 'Rejection Reason' }, { key: 'task', label: 'Task' },
       ]));
     }
     const summary = { rows: rows.length, planned: 0, actual: 0, by_project: {}, by_trade: {} };
     for (const r of rows) {
+      if (r.approval_status === 'rejected') continue; // kept in the list for the record, not in hour totals
       const h = r.status === 'no_show' ? 0 : r.actual_hours ?? r.planned_hours;
       summary.planned += r.planned_hours;
       summary.actual += r.actual_hours ?? 0;
@@ -645,7 +744,9 @@ function createApp(db, opts = {}) {
     const weeks = Math.min(Math.max(int(req.query.weeks) || 4, 1), 26);
     const end = addDays(start, weeks * 7 - 1);
     const settings = getSettings(db);
-    const rows = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ?`).all(start, end);
+    // Payroll counts approved work only; pending requests are reported separately.
+    const rows = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? AND a.approval_status = 'approved'`).all(start, end);
+    const pendingReq = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(planned_hours), 0) AS h FROM assignments WHERE work_date BETWEEN ? AND ? AND approval_status = 'pending'`).get(start, end);
     const costed = costAssignments(rows, rateLookup(allRates()), settings);
 
     const byWeek = new Map(); const byProject = new Map(); const byEmployee = new Map(); const byTrade = new Map(); const grid = new Map();
@@ -672,6 +773,7 @@ function createApp(db, opts = {}) {
       by_trade: [...byTrade.values()].sort((a, b) => b.total - a.total),
       project_week: [...grid.values()],
       missing_rates: [...missing].sort(),
+      pending_requests: { count: pendingReq.n, hours: pendingReq.h },
     });
   });
 

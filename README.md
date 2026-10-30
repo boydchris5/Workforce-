@@ -7,6 +7,8 @@ A web app for scheduling field staff by project. It works in any browser on a co
 | Area | Who can use it | What it does |
 |---|---|---|
 | **Schedule** | Everyone can view. The Workforce Manager and superintendents can edit. | Weekly board organized **by project**: each row is a job and each column is a day. **Who's Where** flips the view to show each person's job for each day. Running totals show people and hours per cell, per project, per day and for the week, plus project-to-date hours against budget. |
+| **Crew requests & approval** | Superintendents request, manager approves | A superintendent requests crew only on the jobs where they are the listed superintendent; those entries are **Pending** (dashed outline). The workforce manager's own entries are approved immediately. The manager approves or rejects from **Requests** (one at a time, selected, or all), and a **reason is required to reject**. Approved entries show a ✓; rejected entries are struck through with ✕ and the reason, and the person is freed for other jobs. If a superintendent changes an approved entry it goes back to Pending. Field staff, hour verification and payroll see approved work only. |
+| **All Jobs board (desktop)** | Everyone views; manager and superintendents drag | One day at a time: every job side by side with its crew, and the crew still available (grouped by trade) on the left. Drag a person onto a job to schedule or request them, between jobs to move them, or back to Available to take them off. Filter and sort by project manager or superintendent. Phones keep the By Project and Who's Where views. |
 | **No double booking, split days allowed** | Automatic | Schedule by **total hours per day** (no start times). A person can split a day across two or more jobs. It is blocked as a double booking when they are already on the same job that day, the day would pass the hard limit (12 h by default), or they are marked off. **Anyone scheduled over 8 hours in a day gets a warning**: it shows when you save, as an orange ⚠ on their chips and Who's Where cell, and in a summary at the top of the schedule. Both numbers are set in Admin → Settings. |
 | **Copy last week** | Manager, superintendents | Rolls a week's crews forward. Anyone who would be double booked is skipped and listed. |
 | **Verify Hours** | Manager, superintendents | Compares projected and actual hours for each person and day. Rows can be confirmed, adjusted or marked as a no-show, or a supervisor can verify everyone as scheduled in one click. Shows variance, the pending count and who verified each row. |
@@ -19,8 +21,8 @@ A web app for scheduling field staff by project. It works in any browser on a co
 
 ## Roles
 
-- **Workforce Manager (admin):** full access, including users, settings, backups and payroll.
-- **Superintendent:** schedules crews, marks time off and verifies hours on any project. No payroll access unless it is granted.
+- **Workforce Manager (admin):** builds the schedule (entries are approved immediately), approves or rejects superintendents' requests, and has full access including users, settings, backups and payroll.
+- **Superintendent:** requests crew on the jobs where they are the listed superintendent (requests need the manager's approval), marks time off and verifies hours. Their login must be linked to their employee record. No payroll access unless it is granted.
 - **Field staff (viewer):** read-only access to the schedule, employees, projects and records. They see their own schedule if their login is linked to an employee record.
 
 Payroll access is a separate checkbox on each user, so you can grant it to an owner or the CFO without making them admins.
