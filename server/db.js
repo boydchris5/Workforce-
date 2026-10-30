@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   customer TEXT,
   address TEXT,
-  superintendent_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  superintendent_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, -- legacy (v1-v2); superintendent_employee_id replaces it
+  superintendent_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  project_manager_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('planned','active','on_hold','complete')),
   start_date TEXT,
   end_date TEXT,
@@ -145,9 +147,10 @@ const DEFAULT_SETTINGS = {
   default_hours: '8',
   default_start_time: '07:00',
   max_daily_hours: '12',
+  warn_daily_hours: '8',
 };
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -173,6 +176,17 @@ function migrate(db) {
       db.exec(`INSERT OR IGNORE INTO employee_pay_rates (employee_id, effective_date, base_rate, fringe_rate, burden_pct, note)
         SELECT employee_id, date(updated_at), base_rate, fringe_rate, burden_pct, 'Carried over from earlier version' FROM employee_pay;`);
       db.exec('DROP TABLE employee_pay;');
+    });
+  }
+  // v3: superintendent and project manager are picked from employees.
+  const projectCols = db.prepare('PRAGMA table_info(projects)').all().map((c) => c.name);
+  if (!projectCols.includes('superintendent_employee_id')) {
+    tx(db, () => {
+      db.exec('ALTER TABLE projects ADD COLUMN superintendent_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL;');
+      db.exec('ALTER TABLE projects ADD COLUMN project_manager_employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL;');
+      // Carry over superintendents whose login is linked to an employee record.
+      db.exec(`UPDATE projects SET superintendent_employee_id =
+        (SELECT u.employee_id FROM users u WHERE u.id = projects.superintendent_user_id) WHERE superintendent_user_id IS NOT NULL;`);
     });
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);

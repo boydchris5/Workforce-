@@ -53,57 +53,75 @@ test('setup projects and employees', async () => {
 });
 
 test('prevents double booking', async () => {
-  const r1 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [MON, '2026-11-03'], planned_hours: 8, start_time: '07:00' });
+  const r1 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1, e2], dates: [MON, '2026-11-03'], planned_hours: 8 });
   assert.equal(r1.status, 200);
   assert.equal(r1.body.created.length, 4);
-
-  // Same person, same day, overlapping time on another job -> rejected
-  const r2 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON], planned_hours: 8, start_time: '07:00' });
-  assert.equal(r2.status, 409);
-  assert.match(r2.body.conflicts[0].message, /overlaps 25-001 \(07:00–15:00\)/);
+  assert.deepEqual(r1.body.warnings, []); // exactly 8 h is not over
 
   // Same person on the same job twice in one day -> rejected
-  const r3 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1], dates: [MON], planned_hours: 2, start_time: '16:00' });
+  const r3 = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e1], dates: [MON], planned_hours: 2 });
   assert.equal(r3.status, 409);
   assert.match(r3.body.conflicts[0].message, /already scheduled on 25-001/);
 
-  // Mixed request: new day goes through, overlapping day is skipped
-  const r4 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON, '2026-11-04'], planned_hours: 8, start_time: '07:00' });
-  assert.equal(r4.body.created.length, 1);
-  assert.equal(r4.body.conflicts.length, 1);
+  // Over the hard daily limit (12) -> rejected
+  const r2 = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: [MON], planned_hours: 6 });
+  assert.equal(r2.status, 409);
+  assert.match(r2.body.conflicts[0].message, /would have 14 hrs \(daily limit 12\)/);
 
-  // Moving an assignment onto an overlapping slot -> rejected
+  // Moving onto a day already on that job -> rejected
+  await sup('POST', '/assignments', { project_id: p2, employee_ids: [e1], dates: ['2026-11-04'], planned_hours: 8 });
   const sched = (await field('GET', `/schedule?start=${MON}`)).body;
   const wed = sched.assignments.find((a) => a.employee_id === e1 && a.work_date === '2026-11-04');
-  const move = await sup('PUT', `/assignments/${wed.id}`, { work_date: MON });
-  assert.equal(move.status, 409);
+  assert.equal((await sup('PUT', `/assignments/${wed.id}`, { work_date: MON, project_id: p1 })).status, 409);
 
   // Database constraint backs up the same-job rule even if app checks were bypassed
   assert.throws(() => conn.prepare('INSERT INTO assignments (employee_id, project_id, work_date) VALUES (?, ?, ?)').run(e1, p1, MON), /UNIQUE/);
 });
 
-test('allows split days within the daily cap', async () => {
+test('split days are allowed and over 8 hours a day is warned, not blocked', async () => {
   const day = '2026-11-12';
-  const a = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [day], planned_hours: 4, start_time: '07:00' });
+  const a = await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [day], planned_hours: 4 });
   assert.equal(a.status, 200);
-  const b = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [day], planned_hours: 4, start_time: '11:30' });
-  assert.equal(b.status, 200, JSON.stringify(b.body));
-  const s = (await field('GET', `/schedule?start=${day}`)).body;
-  assert.equal(s.assignments.filter((x) => x.employee_id === e2 && x.work_date === day).length, 2);
+  const b = await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [day], planned_hours: 4 });
+  assert.equal(b.status, 200);
+  assert.deepEqual(b.body.warnings, []);
+  let s = (await field('GET', `/schedule?start=${day}`)).body;
   assert.equal(s.totals.by_day[day].headcount, 1); // one person, two jobs
   assert.equal(s.totals.by_day[day].hours, 8);
+  assert.deepEqual(s.totals.over_day, []);
 
-  // Third slot that pushes the day past the 12-hour cap -> rejected
-  const c = await sup('POST', '/assignments', { project_id: (await boss('POST', '/projects', { job_number: '25-003', name: 'Plant' })).body.id, employee_ids: [e2], dates: [day], planned_hours: 6, start_time: '16:00' });
-  assert.equal(c.status, 409);
-  assert.match(c.body.conflicts[0].message, /would have 14 hrs \(daily limit 12\)/);
+  // A third job taking the day to 10 h is saved, with a warning
+  const p3 = (await boss('POST', '/projects', { job_number: '25-003', name: 'Plant' })).body.id;
+  const c = await sup('POST', '/assignments', { project_id: p3, employee_ids: [e2], dates: [day], planned_hours: 2 });
+  assert.equal(c.status, 200);
+  assert.equal(c.body.warnings.length, 1);
+  assert.match(c.body.warnings[0].message, /Jose Ramirez is scheduled 10 hrs on 2026-11-12 \(over 8\)/);
+  s = (await field('GET', `/schedule?start=${day}`)).body;
+  assert.deepEqual(s.totals.over_day, [{ employee_id: e2, work_date: day, hours: 10 }]);
 
-  // Without start times only the cap applies
-  const d2 = '2026-11-13';
-  assert.equal((await sup('POST', '/assignments', { project_id: p1, employee_ids: [e2], dates: [d2], planned_hours: 6 })).status, 200);
-  assert.equal((await sup('POST', '/assignments', { project_id: p2, employee_ids: [e2], dates: [d2], planned_hours: 6 })).status, 200);
+  // Editing hours up also warns; threshold follows the admin setting
+  const one = s.assignments.find((x) => x.project_id === p1);
+  assert.equal((await sup('PUT', `/assignments/${one.id}`, { planned_hours: 5 })).body.warnings[0].hours, 11);
+  await boss('PUT', '/settings', { warn_daily_hours: 12 });
+  assert.deepEqual((await sup('PUT', `/assignments/${one.id}`, { planned_hours: 4 })).body.warnings, []);
+  await boss('PUT', '/settings', { warn_daily_hours: 8 });
+
   // Clean up so later tests see the original schedule
   for (const x of (await field('GET', `/schedule?start=${day}`)).body.assignments) await sup('DELETE', `/assignments/${x.id}`);
+});
+
+test('projects list a superintendent and project manager from employees', async () => {
+  const supt = (await boss('POST', '/employees', { first_name: 'Mike', last_name: 'Jones', classification: 'Superintendent' })).body.id;
+  const pm = (await boss('POST', '/employees', { first_name: 'Sarah', last_name: 'Collins', classification: 'Project Manager' })).body.id;
+  assert.equal((await sup('PUT', `/projects/${p1}`, { job_number: '25-001', name: 'School', budget_hours: 100, superintendent_employee_id: supt, project_manager_employee_id: pm })).status, 200);
+  const proj = (await field('GET', '/projects')).body.find((x) => x.id === p1);
+  assert.equal(proj.superintendent_name, 'Mike Jones');
+  assert.equal(proj.project_manager_name, 'Sarah Collins');
+  const sched = (await field('GET', `/schedule?start=${MON}`)).body.projects.find((x) => x.id === p1);
+  assert.equal(sched.project_manager_employee_id, pm);
+  // Removing the employee clears the field rather than breaking the project
+  await boss('DELETE', `/employees/${pm}`);
+  assert.equal((await field('GET', '/projects')).body.find((x) => x.id === p1).project_manager_name, null);
 });
 
 test('blocks scheduling on time off', async () => {
@@ -218,14 +236,14 @@ test('pay rate history: each day is costed at the rate in effect that day', asyn
   assert.equal(f2.by_employee.find((x) => x.employee_id === e1).wages, 40 * 40 + (emp.hours - 40) * 40 * 1.5);
 });
 
-test('upgrades a database from the earlier version without losing data', () => {
+test('upgrades a database from an earlier version without losing data', () => {
   const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
   const { DatabaseSync } = require('node:sqlite');
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-')), 'old.db');
   const old = new DatabaseSync(file);
   old.exec(`
     CREATE TABLE employees (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')));
-    CREATE TABLE projects (id INTEGER PRIMARY KEY, job_number TEXT NOT NULL UNIQUE, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE projects (id INTEGER PRIMARY KEY, job_number TEXT NOT NULL UNIQUE, name TEXT NOT NULL, superintendent_user_id INTEGER, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, can_view_payroll INTEGER NOT NULL DEFAULT 0, employee_id INTEGER, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE TABLE employee_pay (employee_id INTEGER PRIMARY KEY, base_rate REAL NOT NULL DEFAULT 0, fringe_rate REAL NOT NULL DEFAULT 0, burden_pct REAL, updated_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE TABLE assignments (id INTEGER PRIMARY KEY, employee_id INTEGER NOT NULL, project_id INTEGER NOT NULL, work_date TEXT NOT NULL,
@@ -233,14 +251,16 @@ test('upgrades a database from the earlier version without losing data', () => {
       verified_by INTEGER, verified_at TEXT, verify_note TEXT, created_by INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (employee_id, work_date));
     INSERT INTO employees (id, first_name, last_name) VALUES (1, 'Dan', 'Miller');
-    INSERT INTO projects (id, job_number, name) VALUES (1, '24-101', 'School'), (2, '24-115', 'Bridge');
+    INSERT INTO users (id, username, name, password_hash, role, employee_id) VALUES (1, 'mjones', 'Mike Jones', 'x', 'super', 1);
+    INSERT INTO projects (id, job_number, name, superintendent_user_id) VALUES (1, '24-101', 'School', 1), (2, '24-115', 'Bridge', NULL);
     INSERT INTO employee_pay (employee_id, base_rate, fringe_rate, updated_at) VALUES (1, 45.5, 24.5, '2026-05-01 10:00:00');
     INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, status, actual_hours) VALUES (1, 1, '2026-10-26', 8, 'verified', 8);
   `);
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(up.prepare('SELECT superintendent_employee_id AS s FROM projects WHERE id = 1').get().s, 1);
   const a = up.prepare('SELECT * FROM assignments').all();
   assert.equal(a.length, 1);
   assert.equal(a[0].status, 'verified');

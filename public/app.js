@@ -33,12 +33,9 @@ function weekLabel(start) {
   const o = { month: 'short', day: 'numeric', timeZone: 'UTC' };
   return `${new Date(start + 'T12:00:00Z').toLocaleDateString(undefined, o)} – ${new Date(end + 'T12:00:00Z').toLocaleDateString(undefined, { ...o, year: 'numeric' })}`;
 }
-const slotLabel = (a) => {
-  if (!a.start_time) return `${fmtH(a.planned_hours)}h`;
-  const [h, m] = a.start_time.split(':').map(Number);
-  const end = h * 60 + m + Math.round(a.planned_hours * 60);
-  return `${a.start_time}–${String(Math.floor(end / 60) % 24).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
-};
+// Project leads are employees picked by classification.
+const isSuperOrForeman = (e) => /superintendent|foreman/i.test(e.classification || '');
+const isProjectManager = (e) => /project manager/i.test(e.classification || '');
 const fullName = (e) => `${e.first_name} ${e.last_name}`;
 const shortName = (e) => `${e.first_name} ${e.last_name.charAt(0)}.`;
 const isWeekend = (i) => i >= 5;
@@ -122,7 +119,9 @@ const S = {
   week: weekStart(todayStr()),
   view: store('wf_view') || 'project',
   dayIdx: Math.min((new Date().getDay() + 6) % 7, 6),
-  filterSuper: store('wf_super') || '',
+  filterSuper: store('wf_supt') || '',
+  filterPm: store('wf_pm') || '',
+  boardSort: store('wf_sort') || 'job',
   filterTrade: '',
 };
 const canSchedule = () => S.user && ['admin', 'super'].includes(S.user.role);
@@ -216,6 +215,8 @@ window.addEventListener('resize', () => {
 async function loadLookups() {
   const [projects, employees] = await Promise.all([api('GET', '/projects'), api('GET', '/employees')]);
   S.projects = projects; S.employees = employees;
+  // Field crew = everyone except office staff (project managers), who aren't scheduled.
+  S.crew = employees.filter((e) => !isProjectManager(e));
   return { projects, employees };
 }
 
@@ -228,9 +229,12 @@ async function renderSchedule(page) {
   S.sched = data;
   const t = data.totals;
   const today = todayStr();
-  const activeEmployees = S.employees.length;
-  const supers = [...new Map(data.projects.filter((p) => p.superintendent_name).map((p) => [p.superintendent_user_id, p.superintendent_name])).entries()];
-  const trades = [...new Set(S.employees.map((e) => e.trade).filter(Boolean))].sort();
+  const activeEmployees = S.crew.length;
+  const leadList = (idKey, nameKey) => [...new Map(data.projects.filter((p) => p[nameKey]).map((p) => [p[idKey], p[nameKey]])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const supers = leadList('superintendent_employee_id', 'superintendent_name');
+  const pms = leadList('project_manager_employee_id', 'project_manager_name');
+  const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
+  const overDay = t.over_day || [];
 
   const todayIdx = data.days.indexOf(today);
   const todayCount = todayIdx >= 0 ? t.by_day[today].headcount : null;
@@ -251,7 +255,9 @@ async function renderSchedule(page) {
         <button data-view="project" class="${S.view === 'project' ? 'on' : ''}">By Project</button>
         <button data-view="person" class="${S.view === 'person' ? 'on' : ''}">Who's Where</button>
       </div>
-      ${S.view === 'project' && supers.length ? `<select data-act="super"><option value="">All superintendents</option>${supers.map(([id, n]) => opt(id, n, S.filterSuper)).join('')}</select>` : ''}
+      ${S.view === 'project' && pms.length ? `<select data-act="pm" title="Filter by project manager"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, S.filterPm)).join('')}</select>` : ''}
+      ${S.view === 'project' && supers.length ? `<select data-act="super" title="Filter by superintendent / foreman"><option value="">All superintendents</option>${supers.map(([id, n]) => opt(id, n, S.filterSuper)).join('')}</select>` : ''}
+      ${S.view === 'project' ? `<select data-act="sort" title="Sort projects">${[['job', 'Sort: Job #'], ['pm', 'Sort: Project manager'], ['super', 'Sort: Superintendent']].map(([v, l]) => opt(v, l, S.boardSort)).join('')}</select>` : ''}
       ${S.view === 'person' ? `<select data-act="trade"><option value="">All trades</option>${trades.map((x) => opt(x, x, S.filterTrade)).join('')}</select>` : ''}
       ${canSchedule() ? `<button data-act="copy">Copy last week →</button><button data-act="timeoff">Time off</button><button class="primary" data-act="add">+ Schedule crew</button>` : ''}
       <button data-act="print">Print</button>
@@ -262,7 +268,12 @@ async function renderSchedule(page) {
       <div class="stat"><div class="v">${Object.keys(t.by_project).length}</div><div class="l">Projects staffed</div></div>
       ${todayCount !== null ? `<div class="stat"><div class="v">${todayCount}</div><div class="l">On site today</div></div>` : ''}
       ${(() => { const o = Object.values(t.by_employee).filter((h) => h > 40).length; return `<div class="stat ${o ? 'warn' : ''}"><div class="v">${o}</div><div class="l">Over 40 hrs (OT)</div></div>`; })()}
+      <div class="stat ${overDay.length ? 'warn' : ''}"><div class="v">${overDay.length}</div><div class="l">Days over ${fmtH(t.warn_daily_hours || 8)} hrs</div></div>
     </div>
+    ${overDay.length ? `<div class="alert warn-box"><b>⚠ Over ${fmtH(t.warn_daily_hours || 8)} hours in a day:</b> ${overDay.slice(0, 12).map((o) => {
+      const e = S.employees.find((x) => x.id === o.employee_id);
+      return `${esc(e ? fullName(e) : 'Employee')} ${esc(DOW[data.days.indexOf(o.work_date)])} (${fmtH(o.hours)} h)`;
+    }).join(' · ')}${overDay.length > 12 ? ` · and ${overDay.length - 12} more` : ''}</div>` : ''}
     <div class="print-head"><img src="/logo.jpg" alt="Fager-McGee"><div>Weekly Crew Schedule  •  ${weekLabel(data.start)}</div></div>
     <div id="board"></div>`;
 
@@ -273,7 +284,9 @@ async function renderSchedule(page) {
   $('[data-act=pick]', page).onchange = (e) => e.target.value && go(e.target.value);
   $('[data-act=print]', page).onclick = () => window.print();
   $$('[data-view]', page).forEach((b) => (b.onclick = () => { S.view = store('wf_view', b.dataset.view); renderSchedule(page); }));
-  const sup = $('[data-act=super]', page); if (sup) sup.onchange = (e) => { S.filterSuper = store('wf_super', e.target.value); drawBoard(); };
+  const sup = $('[data-act=super]', page); if (sup) sup.onchange = (e) => { S.filterSuper = store('wf_supt', e.target.value); drawBoard(); };
+  const pmSel = $('[data-act=pm]', page); if (pmSel) pmSel.onchange = (e) => { S.filterPm = store('wf_pm', e.target.value); drawBoard(); };
+  const sortSel = $('[data-act=sort]', page); if (sortSel) sortSel.onchange = (e) => { S.boardSort = store('wf_sort', e.target.value); drawBoard(); };
   const tr = $('[data-act=trade]', page); if (tr) tr.onchange = (e) => { S.filterTrade = e.target.value; drawBoard(); };
   if (canSchedule()) {
     $('[data-act=add]', page).onclick = () => assignModal({});
@@ -291,22 +304,40 @@ function drawBoard() {
   bindBoard(el);
 }
 
+function sortProjects(list, by) {
+  const key = { pm: 'project_manager_name', super: 'superintendent_name' }[by];
+  if (!key) return list;
+  // Projects without a name for the sort key go last.
+  return [...list].sort((a, b) => (a[key] || '\uffff').localeCompare(b[key] || '\uffff') || a.job_number.localeCompare(b.job_number));
+}
+
 function visibleProjects() {
   const d = S.sched;
-  return d.projects.filter((p) => !S.filterSuper || String(p.superintendent_user_id) === String(S.filterSuper));
+  return sortProjects(d.projects.filter((p) =>
+    (!S.filterSuper || String(p.superintendent_employee_id) === String(S.filterSuper)) &&
+    (!S.filterPm || String(p.project_manager_employee_id) === String(S.filterPm))), S.boardSort);
+}
+
+// Total hours per person per day, to flag anyone over the daily warning threshold.
+function overDayMap() {
+  const m = {};
+  for (const o of S.sched.totals.over_day || []) m[`${o.employee_id}|${o.work_date}`] = o.hours;
+  return m;
 }
 
 function chip(a, label = shortName(a)) {
   const hrs = a.planned_hours !== 8 ? `<span class="hr">${fmtH(a.planned_hours)}h</span>` : '';
+  const dayTotal = S.sched ? overDayMap()[`${a.employee_id}|${a.work_date}`] : null;
+  const over = dayTotal ? `<span class="over-flag" title="Scheduled ${fmtH(dayTotal)} hrs this day">⚠${fmtH(dayTotal)}</span>` : '';
   const st = a.status === 'scheduled' ? '' : a.status === 'no_show' ? 'no_show' : 'verified';
-  const title = `${fullName(a)} – ${a.trade || ''} ${a.classification || ''}\n${a.job_number} ${a.project_name}\n${fmtH(a.planned_hours)} hrs${a.start_time ? ' @ ' + a.start_time : ''}${a.task ? '\n' + a.task : ''}${a.status !== 'scheduled' ? '\nVerified: ' + fmtH(a.actual_hours) + ' hrs' : ''}`;
-  return `<div class="chip ${st} ${canSchedule() ? 'can' : ''}" data-aid="${a.id}" title="${esc(title)}" style="border-left-color:${esc(a.color || '#F15A22')}">
-    <span class="nm">${esc(label)}</span>${hrs}${st === 'verified' ? '✓' : ''}</div>`;
+  const title = `${fullName(a)} – ${a.trade || ''} ${a.classification || ''}\n${a.job_number} ${a.project_name}\n${fmtH(a.planned_hours)} hrs${dayTotal ? ` (${fmtH(dayTotal)} hrs total this day)` : ''}${a.task ? '\n' + a.task : ''}${a.status !== 'scheduled' ? '\nVerified: ' + fmtH(a.actual_hours) + ' hrs' : ''}`;
+  return `<div class="chip ${st} ${over ? 'over' : ''} ${canSchedule() ? 'can' : ''}" data-aid="${a.id}" title="${esc(title)}" style="border-left-color:${esc(a.color || '#F15A22')}">
+    <span class="nm">${esc(label)}</span>${hrs}${over}${st === 'verified' ? '✓' : ''}</div>`;
 }
 
 function projectSub(p) {
   const pct = p.budget_hours ? Math.round((p.hours_through_week / p.budget_hours) * 100) : null;
-  return `<div class="small muted">${esc(p.superintendent_name || 'No superintendent')}</div>
+  return `<div class="small muted">Supt: ${esc(p.superintendent_name || '—')} · PM: ${esc(p.project_manager_name || '—')}</div>
     ${pct !== null ? `<div class="small muted">${fmtH(p.hours_through_week)} / ${fmtH(p.budget_hours)} budget hrs (${pct}%)</div>
       <div class="bar ${pct > 100 ? 'over' : pct > 85 ? 'near' : ''}"><span style="width:${Math.min(pct, 100)}%"></span></div>` : ''}`;
 }
@@ -345,7 +376,7 @@ function projectBoard() {
       <tr><th class="proj">Daily totals</th>${d.days.map((day) => `<td>${t.by_day[day].headcount} ppl<br>${fmtH(t.by_day[day].hours)} h</td>`).join('')}<td>${fmtH(t.hours)} h</td></tr>
       <tr><th class="proj small">Not scheduled / off</th>${d.days.map((day) => {
         const sched = scheduledByDay[day]?.size || 0; const off = (offByDay[day] || []).length;
-        return `<td class="small" title="${esc((offByDay[day] || []).map((o) => `${o.first_name} ${o.last_name}: ${o.reason || 'off'}`).join('\n'))}">${Math.max(S.employees.length - sched - off, 0)} open${off ? ` · ${off} off` : ''}</td>`;
+        return `<td class="small" title="${esc((offByDay[day] || []).map((o) => `${o.first_name} ${o.last_name}: ${o.reason || 'off'}`).join('\n'))}">${Math.max(S.crew.length - sched - off, 0)} open${off ? ` · ${off} off` : ''}</td>`;
       }).join('')}<td></td></tr>
     </tfoot>
   </table></div>`;
@@ -366,7 +397,7 @@ function projectMobile() {
       <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
         ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
         <div class="right nowrap"><b>${a.length}</b> ppl<br><span class="small muted">${fmtH(a.reduce((s, x) => s + x.planned_hours, 0))} h</span></div></div>
-      <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade, x.start_time].filter(Boolean).join(' · '))).join('') || '<div class="small muted">Nobody scheduled</div>'}
+      <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade].filter(Boolean).join(' · '))).join('') || '<div class="small muted">Nobody scheduled</div>'}
         ${canSchedule() ? `<button class="add-btn" style="margin-top:6px;min-height:36px" data-add="${p.id}|${day}">+ Add crew</button>` : ''}</div>
     </div>`).join('')}
     ${off.length ? `<div class="pcard"><div class="ph"><b>Off</b></div><div class="pb">${off.map((o) => `<div class="chip off">${esc(o.first_name)} ${esc(o.last_name)} <span class="hr">${esc(o.reason || '')}</span></div>`).join('')}</div></div>` : ''}`;
@@ -375,9 +406,9 @@ function projectMobile() {
 function personRows() {
   const d = S.sched;
   const ids = new Set(d.assignments.map((a) => a.employee_id));
-  return S.employees.filter((e) => !S.filterTrade || e.trade === S.filterTrade).concat(
+  return S.crew.filter((e) => !S.filterTrade || e.trade === S.filterTrade).concat(
     // include inactive people who still appear on this week's schedule
-    [...ids].filter((id) => !S.employees.some((e) => e.id === id)).map((id) => {
+    [...ids].filter((id) => !S.crew.some((e) => e.id === id)).map((id) => {
       const a = d.assignments.find((x) => x.employee_id === id);
       return { id, first_name: a.first_name, last_name: a.last_name, trade: a.trade };
     }).filter((e) => !S.filterTrade || e.trade === S.filterTrade));
@@ -397,11 +428,12 @@ function personBoard() {
         ${d.days.map((day, i) => {
           const list = map[`${e.id}|${day}`] || []; const o = off[`${e.id}|${day}`];
           const split = list.length > 1;
-          const inner = list.length ? list.map((a) => chip(a, split ? `${a.job_number} · ${slotLabel(a)}` : `${a.job_number} ${a.project_name}`)).join('')
+          const inner = list.length ? list.map((a) => chip(a, split ? a.job_number : `${a.job_number} ${a.project_name}`)).join('')
               + (canSchedule() ? `<button class="add-btn split" data-emp="${e.id}|${day}" title="Add a second job this day">+ split</button>` : '')
             : o ? `<div class="chip off" data-off="${o.id}" title="${esc(o.reason || '')}">Off${o.reason ? ' – ' + esc(o.reason) : ''}</div>`
             : `<span class="avail">available</span>`;
-          return `<td class="person-cell ${!list.length && !o && canSchedule() ? 'can' : ''} ${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''}" ${!list.length && !o ? `data-emp="${e.id}|${day}"` : ''}>${inner}</td>`;
+          const total = list.reduce((sum, a) => sum + a.planned_hours, 0);
+          return `<td class="person-cell ${total > (d.totals.warn_daily_hours || 8) ? 'over-day' : ''} ${!list.length && !o && canSchedule() ? 'can' : ''} ${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''}" ${!list.length && !o ? `data-emp="${e.id}|${day}"` : ''}>${inner}</td>`;
         }).join('')}
         <td class="tot ${wk > 40 ? 'over40' : ''}">${fmtH(wk)}</td></tr>`;
     }).join('')}</tbody>
@@ -414,9 +446,13 @@ function personMobile() {
   const off = {}; for (const o of d.time_off) if (o.off_date === day) off[o.employee_id] = o;
   return `${dayTabs()}<div class="pcard"><div class="pb">${personRows().map((e) => {
     const list = map[e.id] || []; const o = off[e.id];
+    const total = list.reduce((sum, a) => sum + a.planned_hours, 0);
     return `<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--tint)" ${!list.length && !o ? `data-emp="${e.id}|${day}" class="person-cell ${canSchedule() ? 'can' : ''}"` : ''}>
       <div><b>${esc(fullName(e))}</b><div class="small muted">${esc(e.trade || '')}</div></div>
-      <div class="right" style="max-width:60%;display:grid;gap:4px;justify-items:end;align-content:start">${list.length ? list.map((a) => `<span class="pill job" data-aid="${a.id}">${esc(a.job_number)} ${list.length > 1 ? esc(slotLabel(a)) : esc(a.project_name)}</span>`).join('') : o ? `<span class="pill off">Off</span>` : '<span class="avail">available</span>'}</div>
+      <div class="right" style="max-width:60%;display:grid;gap:4px;justify-items:end;align-content:start">${list.length
+        ? list.map((a) => `<span class="pill job" data-aid="${a.id}">${esc(a.job_number)} ${list.length > 1 ? `${fmtH(a.planned_hours)}h` : esc(a.project_name)}</span>`).join('')
+          + (total > (d.totals.warn_daily_hours || 8) ? `<span class="over-flag">⚠ ${fmtH(total)} h</span>` : '')
+        : o ? '<span class="pill off">Off</span>' : '<span class="avail">available</span>'}</div>
     </div>`;
   }).join('')}</div></div>`;
 }
@@ -446,22 +482,19 @@ function assignModal(pre) {
   const projects = S.projects.filter((p) => p.status !== 'complete');
   const preDates = new Set(pre.dates || [todayStr() >= d.start && todayStr() <= d.end ? todayStr() : d.days[0]]);
   const preEmp = new Set(pre.employee_ids || []);
-  const trades = [...new Set(S.employees.map((e) => e.trade).filter(Boolean))].sort();
-  const skills = [...new Set(S.employees.flatMap((e) => e.skills.map((s) => s.name)))].sort();
+  const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
+  const skills = [...new Set(S.crew.flatMap((e) => e.skills.map((s) => s.name)))].sort();
+  const warnAt = S.settings.warn_daily_hours || 8;
 
-  // Split day: start when the existing job ends, fill the rest of a normal day, pick another job.
-  let defHours = S.settings.default_hours || 8; let defStart = S.settings.default_start_time || ''; let defProject = pre.project_id;
+  // Split day: fill the rest of a normal day on a different job.
+  let defHours = S.settings.default_hours || 8; let defProject = pre.project_id;
   if (pre.splitFor?.length) {
-    const slots = [...pre.splitFor].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
-    const used = slots.reduce((sum, a) => sum + a.planned_hours, 0);
-    defHours = Math.max(1, (S.settings.default_hours || 8) - used);
-    const last = slots[slots.length - 1];
-    defStart = last.start_time ? slotLabel(last).split('–')[1] : '';
-    defProject = projects.find((p) => !slots.some((a) => a.project_id === p.id))?.id;
-    if (used >= (S.settings.default_hours || 8)) defHours = 2;
+    const used = pre.splitFor.reduce((sum, a) => sum + a.planned_hours, 0);
+    defHours = used >= warnAt ? 2 : warnAt - used;
+    defProject = projects.find((p) => !pre.splitFor.some((a) => a.project_id === p.id))?.id;
   }
-  const splitNote = pre.splitFor?.length ? `<div class="alert">${esc(fullName(pre.splitFor[0]))} is on ${esc(pre.splitFor.map((a) => `${a.job_number} ${slotLabel(a)}`).join(', '))}.
-    To split a normal day between two jobs, shorten that job first (click it on the board), then add the second job here. Times can't overlap.</div>` : '';
+  const splitNote = pre.splitFor?.length ? `<div class="alert">${esc(fullName(pre.splitFor[0]))} is on ${esc(pre.splitFor.map((a) => `${a.job_number} (${fmtH(a.planned_hours)} h)`).join(', '))}.
+    To split a normal ${fmtH(warnAt)}-hour day between two jobs, reduce the hours on that job first (click it on the board), then add the second job here.</div>` : '';
 
   const m = modal({
     title: pre.splitFor ? 'Split day – add another job' : 'Schedule crew',
@@ -469,10 +502,7 @@ function assignModal(pre) {
     body: `${splitNote}
       <div class="grid2">
         <label>Project<select name="project_id">${projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, defProject)).join('')}</select></label>
-        <div class="grid2" style="grid-template-columns:1fr 1fr">
-          <label>Hours / day<input name="planned_hours" type="number" step="0.5" min="0" max="24" value="${defHours}"></label>
-          <label>Start time<input name="start_time" type="time" value="${esc(defStart)}"></label>
-        </div>
+        <label>Total hours scheduled per day<input name="planned_hours" type="number" step="0.5" min="0" max="24" value="${defHours}"></label>
       </div>
       <div><div class="small muted" style="margin-bottom:4px">Days <button class="link" data-days="wk">Mon–Fri</button><button class="link" data-days="none">clear</button></div>
         <div class="days-pick">${d.days.map((day, i) => `<label><input type="checkbox" name="dates" data-multi="1" value="${day}" ${preDates.has(day) ? 'checked' : ''}>${DOW[i]} ${day.slice(5).replace('-', '/')}</label>`).join('')}</div></div>
@@ -499,7 +529,8 @@ function assignModal(pre) {
     const checked = new Set($$('#emp-pick input:checked', m.el).map((x) => Number(x.value)));
     for (const id of preEmp) checked.add(id);
     preEmp.clear();
-    const rows = S.employees.filter((e) =>
+    const hrs = Number($('[name=planned_hours]', m.el).value) || 0;
+    const rows = S.crew.filter((e) =>
       (!f.q || fullName(e).toLowerCase().includes(f.q)) &&
       (!f.trade || (e.trade || '').toLowerCase() === f.trade) &&
       (!f.skill || e.skills.some((s) => s.name.toLowerCase() === f.skill)));
@@ -513,9 +544,10 @@ function assignModal(pre) {
       const anyBooked = dates.length > 0 && dates.every((day) => blocked.includes(day) || elsewhere.includes(day));
       if (f.availOnly && anyBooked && !checked.has(e.id)) return '';
       const wk = d.totals.by_employee[e.id] || 0;
+      const dayTotal = (day) => (booked[e.id]?.[day] || []).reduce((sum, a) => sum + a.planned_hours, 0) + hrs;
       const tags = [
         ...blocked.map((day) => `<span class="pill bad">${dow(day)}: ${offMap[e.id]?.[day] ? 'OFF' : 'already on this job'}</span>`),
-        ...elsewhere.map((day) => `<span class="pill warn" title="Can be added as a split day if the times don't overlap">${dow(day)}: ${esc(booked[e.id][day].map((a) => `${a.job_number} ${slotLabel(a)}`).join(', '))}</span>`),
+        ...elsewhere.map((day) => `<span class="pill warn" title="Can be added as a split day">${dow(day)}: ${esc(booked[e.id][day].map((a) => `${a.job_number} ${fmtH(a.planned_hours)}h`).join(', '))}${dayTotal(day) > warnAt ? ` → ⚠ ${fmtH(dayTotal(day))} h` : ''}</span>`),
       ].join(' ');
       return `<label class="${allBlocked ? 'busy' : ''}"><input type="checkbox" value="${e.id}" ${checked.has(e.id) && !allBlocked ? 'checked' : ''} ${allBlocked ? 'disabled' : ''}>
         <span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc([e.trade, e.classification, e.union_local && 'Local ' + e.union_local].filter(Boolean).join(' · '))}</span></span>
@@ -528,6 +560,7 @@ function assignModal(pre) {
   };
   $$('[data-f]', m.el).forEach((x) => (x.oninput = drawList));
   $('[name=project_id]', m.el).onchange = drawList;
+  $('[name=planned_hours]', m.el).oninput = drawList;
   $$('[name=dates]', m.el).forEach((x) => (x.onchange = drawList));
   $$('[data-days]', m.el).forEach((b) => (b.onclick = (e) => {
     e.preventDefault();
@@ -539,18 +572,27 @@ function assignModal(pre) {
   $('[data-act=save]', m.el).onclick = async () => {
     const f = formData(m.el);
     const body = {
-      project_id: Number(f.project_id), dates: f.dates, planned_hours: f.planned_hours, start_time: f.start_time, task: f.task,
+      project_id: Number(f.project_id), dates: f.dates, planned_hours: f.planned_hours, task: f.task,
       employee_ids: $$('#emp-pick input:checked', m.el).map((x) => Number(x.value)),
     };
     try {
       const r = await api('POST', '/assignments', body);
-      if (r.conflicts.length) {
-        errorBox(m.el, `Scheduled ${r.created.length}. These were skipped to prevent double booking:`, r.conflicts.map((c) => c.message));
+      if (r.conflicts.length || r.warnings?.length) {
+        errorBox(m.el, '');
+        if (r.conflicts.length) errorBox(m.el, `Scheduled ${r.created.length}. These were skipped to prevent double booking:`, r.conflicts.map((c) => c.message));
+        if (r.warnings?.length) showWarnings(m.el, r.warnings);
         $('[data-act=save]', m.el).textContent = 'Schedule more';
         renderSchedule($('#page'));
       } else { m.close(); toast(`Scheduled ${r.created.length} crew-day(s)`); renderSchedule($('#page')); }
     } catch (e) { errorBox(m.el, e.message, e.data?.conflicts?.map((c) => c.message)); }
   };
+}
+
+// Over-8-hour days are allowed but called out so they're a deliberate choice.
+function showWarnings(el, warnings) {
+  let box = $('.form-warn', el);
+  if (!box) { box = document.createElement('div'); box.className = 'form-warn'; $('.mb', el).prepend(box); }
+  box.innerHTML = `<div class="alert warn-box"><b>⚠ Scheduled, but over ${fmtH(S.settings.warn_daily_hours || 8)} hours in a day:</b><ul>${warnings.map((w) => `<li>${esc(w.message)}</li>`).join('')}</ul></div>`;
 }
 
 function editAssignmentModal(a) {
@@ -562,14 +604,17 @@ function editAssignmentModal(a) {
       <label>Project<select name="project_id">${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, a.project_id)).join('')}</select></label>
       <div class="grid2">
         <label>Date<input type="date" name="work_date" value="${a.work_date}"></label>
-        <label>Hours<input type="number" step="0.5" min="0" max="24" name="planned_hours" value="${a.planned_hours}"></label>
-        <label>Start time<input type="time" name="start_time" value="${esc(a.start_time || '')}"></label>
+        <label>Total hours<input type="number" step="0.5" min="0" max="24" name="planned_hours" value="${a.planned_hours}"></label>
       </div>
       <label>Task / scope<input name="task" value="${esc(a.task || '')}"></label>`,
     footer: `<button class="danger" data-act="del">Remove</button><span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
   });
   $('[data-act=save]', m.el).onclick = async () => {
-    try { await api('PUT', `/assignments/${a.id}`, formData(m.el)); m.close(); toast('Updated'); renderSchedule($('#page')); } catch (e) { errorBox(m.el, e.message); }
+    try {
+      const r = await api('PUT', `/assignments/${a.id}`, formData(m.el));
+      renderSchedule($('#page'));
+      if (r.warnings?.length) { errorBox(m.el, ''); showWarnings(m.el, r.warnings); $('[data-act=save]', m.el).textContent = 'Save again'; } else { m.close(); toast('Updated'); }
+    } catch (e) { errorBox(m.el, e.message); }
   };
   $('[data-act=del]', m.el).onclick = async () => {
     if (!confirm(`Remove ${fullName(a)} from ${a.job_number} on ${a.work_date}?`)) return;
@@ -591,7 +636,8 @@ function copyWeekModal() {
     try {
       const r = await api('POST', '/assignments/copy-week', formData(m.el));
       if (r.conflicts.length) errorBox(m.el, `Copied ${r.created.length}. Skipped:`, r.conflicts.map((c) => c.message));
-      else { m.close(); toast(`Copied ${r.created.length} assignments`); }
+      if (r.warnings?.length) showWarnings(m.el, r.warnings);
+      if (!r.conflicts.length && !r.warnings?.length) { m.close(); toast(`Copied ${r.created.length} assignments`); }
       S.week = weekStart(formData(m.el).to); renderSchedule($('#page'));
     } catch (e) { errorBox(m.el, e.message); }
   };
@@ -601,7 +647,7 @@ function timeOffModal(pre) {
   const d = S.sched;
   const m = modal({
     title: 'Mark time off',
-    body: `<label>Employee<select name="employee_id">${S.employees.map((e) => opt(e.id, `${e.last_name}, ${e.first_name}`, pre.employee_id)).join('')}</select></label>
+    body: `<label>Employee<select name="employee_id">${S.crew.map((e) => opt(e.id, `${e.last_name}, ${e.first_name}`, pre.employee_id)).join('')}</select></label>
       <div class="days-pick">${d.days.map((day, i) => `<label><input type="checkbox" name="dates" data-multi="1" value="${day}">${DOW[i]} ${day.slice(5).replace('-', '/')}</label>`).join('')}</div>
       <label>Reason<input name="reason" placeholder="Vacation, sick, training, union meeting…"></label>`,
     footer: `<button data-close>Cancel</button><button class="primary" data-act="go">Save</button>`,
@@ -628,7 +674,7 @@ async function renderMy(page) {
       <div class="ph"><div><b>${dayLabel(a.work_date, { weekday: 'long', month: 'short', day: 'numeric' })}</b>${a.work_date === today ? ' <span class="pill warn">Today</span>' : ''}
         <div class="proj-name" style="margin-top:4px"><span class="proj-swatch" style="background:${esc(a.color || '#F15A22')}"></span>${esc(a.job_number)} – ${esc(a.project_name)}</div>
         ${a.task ? `<div class="small muted">${esc(a.task)}</div>` : ''}</div>
-        <div class="right nowrap">${a.start_time ? `<b>${esc(a.start_time)}</b><br>` : ''}<span class="small muted">${fmtH(a.planned_hours)} hrs</span></div></div>
+        <div class="right nowrap"><b>${fmtH(a.planned_hours)} hrs</b></div></div>
     </div>`;
   // Today and upcoming first; past days collapsed underneath.
   const upcoming = r.assignments.filter((a) => a.work_date >= today);
@@ -710,28 +756,52 @@ async function renderVerify(page) {
 // ---------------------------------------------------------------------------
 async function renderProjects(page) {
   const showAll = store('wf_proj_all') === '1';
-  const [projects, users] = await Promise.all([api('GET', `/projects${showAll ? '?all=1' : ''}`), canSchedule() ? api('GET', '/users') : []]);
-  S.projectUsers = users;
+  const [projects, employees] = await Promise.all([api('GET', `/projects${showAll ? '?all=1' : ''}`), api('GET', '/employees?all=1')]);
+  S.allEmployees = employees;
   const statusPill = (s) => `<span class="pill ${s === 'active' ? 'ok' : s === 'on_hold' ? 'warn' : s === 'complete' ? '' : 'job'}">${esc(s.replace('_', ' '))}</span>`;
+  const pms = [...new Map(projects.filter((p) => p.project_manager_name).map((p) => [String(p.project_manager_employee_id), p.project_manager_name])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const sort = S.projSort || { key: 'job_number', dir: 1 };
+  const filterPm = S.projPm || '';
+  const cols = [
+    ['job_number', 'Job #'], ['name', 'Project'], ['project_manager_name', 'Project manager'], ['superintendent_name', 'Superintendent'],
+    ['status', 'Status'], ['start_date', 'Dates'], ['hours_to_date', 'Hours to date', 'right'], ['verified_hours', 'Verified', 'right'], ['budget_pct', 'Budget'],
+  ];
+  const rows = projects
+    .map((p) => ({ ...p, budget_pct: p.budget_hours ? p.hours_to_date / p.budget_hours : null }))
+    .filter((p) => !filterPm || String(p.project_manager_employee_id) === filterPm)
+    .sort((a, b) => {
+      const x = a[sort.key]; const y = b[sort.key];
+      if (x === null || x === undefined || x === '') return 1; // blanks last either way
+      if (y === null || y === undefined || y === '') return -1;
+      return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y))) * sort.dir || a.job_number.localeCompare(b.job_number);
+    });
   page.innerHTML = `
     <div class="toolbar"><h1 style="margin:0">Projects</h1><span class="spacer"></span>
+      <select data-act="pm"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, filterPm)).join('')}</select>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show completed</label>
       ${canSchedule() ? '<button class="primary" data-act="new">+ New project</button>' : ''}</div>
-    <div class="table-wrap"><table class="list">
-      <thead><tr><th>Job #</th><th>Project</th><th>Superintendent</th><th>Status</th><th>Dates</th><th class="right">Hours to date</th><th class="right">Verified</th><th style="width:160px">Budget</th></tr></thead>
-      <tbody>${projects.map((p) => {
-        const pct = p.budget_hours ? Math.round((p.hours_to_date / p.budget_hours) * 100) : null;
+    <div class="table-wrap"><table class="list sortable">
+      <thead><tr>${cols.map(([k, l, cls]) => `<th class="${cls || ''}"><button class="sort-h ${sort.key === k ? 'on' : ''}" data-sort="${k}" aria-label="Sort by ${esc(l)}">${esc(l)}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`).join('')}</tr></thead>
+      <tbody>${rows.map((p) => {
+        const pct = p.budget_pct !== null ? Math.round(p.budget_pct * 100) : null;
         return `<tr class="${canSchedule() ? 'click' : ''}" data-id="${p.id}">
           <td class="nowrap"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span><b>${esc(p.job_number)}</b></td>
           <td>${esc(p.name)}<div class="small muted">${esc([p.customer, p.address].filter(Boolean).join(' · '))}</div></td>
+          <td>${esc(p.project_manager_name || '')}</td>
           <td>${esc(p.superintendent_name || '')}</td><td>${statusPill(p.status)}</td>
           <td class="small nowrap">${esc(p.start_date || '')}${p.end_date ? ' → ' + esc(p.end_date) : ''}</td>
           <td class="right">${fmtH(p.hours_to_date)}</td><td class="right">${fmtH(p.verified_hours)}</td>
           <td>${pct !== null ? `<div class="small">${fmtH(p.budget_hours)} h · ${pct}%</div><div class="bar ${pct > 100 ? 'over' : pct > 85 ? 'near' : ''}"><span style="width:${Math.min(pct, 100)}%"></span></div>` : '<span class="small muted">—</span>'}</td>
         </tr>`;
-      }).join('') || '<tr><td colspan="8" class="muted">No projects yet.</td></tr>'}</tbody>
+      }).join('') || `<tr><td colspan="${cols.length}" class="muted">No projects${filterPm ? ' for this project manager' : ' yet'}.</td></tr>`}</tbody>
     </table></div>`;
   $('[data-act=all]', page).onchange = (e) => { store('wf_proj_all', e.target.checked ? '1' : '0'); renderProjects(page); };
+  $('[data-act=pm]', page).onchange = (e) => { S.projPm = e.target.value; renderProjects(page); };
+  $$('[data-sort]', page).forEach((b) => (b.onclick = () => {
+    const k = b.dataset.sort;
+    S.projSort = { key: k, dir: sort.key === k ? -sort.dir : 1 };
+    renderProjects(page);
+  }));
   if (canSchedule()) {
     $('[data-act=new]', page).onclick = () => projectModal({ status: 'active' });
     $$('tr[data-id]', page).forEach((tr) => (tr.onclick = () => projectModal(projects.find((p) => p.id === Number(tr.dataset.id)))));
@@ -739,20 +809,33 @@ async function renderProjects(page) {
 }
 
 function projectModal(p) {
-  const supers = (S.projectUsers || []).filter((u) => u.role !== 'viewer');
+  // Superintendent: anyone classified Superintendent or Foreman. PM: classified Project Manager.
+  // The person already on the project stays listed even if their classification changed.
+  const emps = (S.allEmployees || []).filter((e) => e.active);
+  const pick = (test, currentId) => {
+    const list = emps.filter(test);
+    const cur = (S.allEmployees || []).find((e) => e.id === currentId);
+    if (cur && !list.includes(cur)) list.push(cur);
+    return list.sort((a, b) => a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name));
+  };
+  const supers = pick(isSuperOrForeman, p.superintendent_employee_id);
+  const pms = pick(isProjectManager, p.project_manager_employee_id);
+  const label = (e) => `${e.last_name}, ${e.first_name}${e.classification ? ` – ${e.classification}` : ''}`;
   const m = modal({
     title: p.id ? `Edit ${p.job_number}` : 'New project',
     body: `<div class="grid2">
         <label>Job number *<input name="job_number" value="${esc(p.job_number || '')}"></label>
         <label>Project name *<input name="name" value="${esc(p.name || '')}"></label>
         <label>Customer / GC<input name="customer" value="${esc(p.customer || '')}"></label>
-        <label>Superintendent<select name="superintendent_user_id"><option value="">—</option>${supers.map((u) => opt(u.id, u.name, p.superintendent_user_id)).join('')}</select></label>
+        <label>Project manager<select name="project_manager_employee_id"><option value="">—</option>${pms.map((e) => opt(e.id, label(e), p.project_manager_employee_id)).join('')}</select></label>
+        <label>Superintendent / foreman<select name="superintendent_employee_id"><option value="">—</option>${supers.map((e) => opt(e.id, label(e), p.superintendent_employee_id)).join('')}</select></label>
         <label>Status<select name="status">${['planned', 'active', 'on_hold', 'complete'].map((s) => opt(s, s.replace('_', ' '), p.status)).join('')}</select></label>
         <label>Budgeted labor hours<input type="number" name="budget_hours" min="0" value="${esc(p.budget_hours ?? '')}"></label>
         <label>Start date<input type="date" name="start_date" value="${esc(p.start_date || '')}"></label>
         <label>End date<input type="date" name="end_date" value="${esc(p.end_date || '')}"></label>
         <label>Board color<input type="color" name="color" value="${esc(p.color || '#F15A22')}"></label>
       </div>
+      ${!supers.length || !pms.length ? `<div class="small muted">The lists come from Employees: superintendents and foremen by their classification, project managers by "Project Manager". ${!pms.length ? 'No one is classified Project Manager yet.' : ''}</div>` : ''}
       <label>Site address<input name="address" value="${esc(p.address || '')}"></label>
       <label>Notes<textarea name="notes">${esc(p.notes || '')}</textarea></label>`,
     footer: `${p.id && isAdmin() ? '<button class="danger" data-act="del">Delete</button>' : ''}<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
@@ -833,7 +916,7 @@ function employeeModal(e, skills) {
         <label>Classification<input name="classification" list="class-list" value="${esc(e.classification || '')}" placeholder="Journeyman, Apprentice, Foreman…" ${dis}></label>
       </div>
       <datalist id="trade-list">${['Carpenter', 'Laborer', 'Operating Engineer', 'Ironworker', 'Cement Mason', 'Millwright', 'Teamster', 'Electrician', 'Pipefitter', 'Plumber'].map((t) => `<option value="${t}">`).join('')}</datalist>
-      <datalist id="class-list">${['General Foreman', 'Foreman', 'Journeyman', 'Apprentice 1st yr', 'Apprentice 2nd yr', 'Apprentice 3rd yr', 'Apprentice 4th yr', 'Operator', 'Laborer Group 1'].map((t) => `<option value="${t}">`).join('')}</datalist>
+      <datalist id="class-list">${['Superintendent', 'General Foreman', 'Foreman', 'Project Manager', 'Journeyman', 'Apprentice 1st yr', 'Apprentice 2nd yr', 'Apprentice 3rd yr', 'Apprentice 4th yr', 'Operator', 'Laborer Group 1'].map((t) => `<option value="${t}">`).join('')}</datalist>
       <div><div class="small muted" style="margin-bottom:4px">Skills &amp; certifications (expiration optional)</div>
         <div class="grid2" id="skill-grid">${skills.map((s) => `<div style="display:flex;gap:6px;align-items:center">
           <label class="check" style="flex:1"><input type="checkbox" data-skill="${esc(s.name)}" ${have.has(s.name) ? 'checked' : ''} ${dis}>${esc(s.name)}</label>
@@ -865,7 +948,7 @@ function employeeModal(e, skills) {
   const off = $('[data-act=off]', m.el);
   if (off) off.onclick = async () => {
     if (!S.sched || S.sched.start !== S.week) S.sched = await api('GET', `/schedule?start=${S.week}`);
-    if (!S.employees) await loadLookups();
+    if (!S.crew) await loadLookups();
     timeOffModal({ employee_id: e.id });
   };
 }
@@ -1143,11 +1226,11 @@ async function adminSettings(el) {
   el.innerHTML = `<div class="card"><div class="grid2" id="set-f">
       <label>Company / app name<input name="company_name" value="${esc(s.company_name)}"></label>
       <label>Default hours per day<input type="number" step="0.5" name="default_hours" value="${esc(s.default_hours)}"></label>
-      <label>Default start time<input type="time" name="default_start_time" value="${esc(s.default_start_time)}"></label>
+      <label>Warn when a person is over (hours / day)<input type="number" step="0.5" min="1" max="24" name="warn_daily_hours" value="${esc(s.warn_daily_hours)}"></label>
       <label>OT after (hours / week)<input type="number" name="ot_threshold_hours" value="${esc(s.ot_threshold_hours)}"></label>
       <label>OT multiplier<input type="number" step="0.1" name="ot_multiplier" value="${esc(s.ot_multiplier)}"></label>
       <label>Default burden % (taxes, WC, GL)<input type="number" step="0.1" name="default_burden_pct" value="${esc(s.default_burden_pct)}"></label>
-      <label>Daily hours limit per person (split days)<input type="number" step="0.5" min="1" max="24" name="max_daily_hours" value="${esc(s.max_daily_hours)}"></label>
+      <label>Hard limit – never schedule over (hours / day)<input type="number" step="0.5" min="1" max="24" name="max_daily_hours" value="${esc(s.max_daily_hours)}"></label>
     </div><div style="margin-top:12px"><button class="primary" data-act="save">Save settings</button></div></div>
     <div class="card"><b>Backup</b><p class="small muted">Download a complete copy of the database (schedule history, employees, projects, pay rates). Store it somewhere secure – it contains payroll data.</p>
       <a class="btn" href="/api/backup">Download database backup</a></div>`;

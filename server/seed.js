@@ -26,13 +26,13 @@ db.tx(conn, () => {
   const s2 = user('tgarcia', 'Tony Garcia', 'super');
 
   const projects = [
-    ['24-101', 'Riverside Elementary Addition', 'USD 259', '1200 River Rd', s1, 6500, '#F15A22'],
-    ['24-115', 'Hwy 54 Bridge Rehab', 'KDOT', 'US-54 & K-96', s2, 9200, '#2D2D2D'],
-    ['25-007', 'Medical Office Building', 'Ascension', '8800 E 21st St N', s1, 4800, '#F7935F'],
-    ['25-012', 'Water Treatment Plant Clarifier', 'City', '2201 N Hydraulic', s2, 7200, '#6B6B6B'],
+    ['24-101', 'Riverside Elementary Addition', 'USD 259', '1200 River Rd', 6500, '#F15A22'],
+    ['24-115', 'Hwy 54 Bridge Rehab', 'KDOT', 'US-54 & K-96', 9200, '#2D2D2D'],
+    ['25-007', 'Medical Office Building', 'Ascension', '8800 E 21st St N', 4800, '#F7935F'],
+    ['25-012', 'Water Treatment Plant Clarifier', 'City', '2201 N Hydraulic', 7200, '#6B6B6B'],
   ];
-  const pid = projects.map((p) => Number(conn.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_user_id, status, budget_hours, color, start_date)
-    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`).run(...p.slice(0, 5), p[5], p[6], addDays(weekStart(new Date().toISOString().slice(0, 10)), -56)).lastInsertRowid));
+  const pid = projects.map((p) => Number(conn.prepare(`INSERT INTO projects (job_number, name, customer, address, status, budget_hours, color, start_date)
+    VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`).run(...p, addDays(weekStart(new Date().toISOString().slice(0, 10)), -56)).lastInsertRowid));
 
   const skills = ['OSHA 10', 'OSHA 30', 'Forklift', 'Aerial Lift', 'Crane Signal Person', 'Rigging', 'Welding Cert', 'First Aid/CPR', 'Confined Space', 'Concrete Finishing'];
   for (const s of skills) conn.prepare('INSERT OR IGNORE INTO skills (name) VALUES (?)').run(s);
@@ -65,11 +65,27 @@ db.tx(conn, () => {
     return id;
   });
 
+  // Superintendents and project managers are employee records, picked on each
+  // project by classification.
+  const lead = (f, l, trade, cls) => Number(conn.prepare(`INSERT INTO employees (first_name, last_name, phone, trade, classification, active)
+    VALUES (?, ?, ?, ?, ?, 1)`).run(f, l, '316-555-0100', trade, cls).lastInsertRowid);
+  const supMike = lead('Mike', 'Jones', 'Carpenter', 'Superintendent');
+  const supTony = lead('Tony', 'Garcia', 'Laborer', 'Superintendent');
+  const pmSarah = lead('Sarah', 'Collins', null, 'Project Manager');
+  const pmBrian = lead('Brian', 'Walsh', null, 'Project Manager');
+  conn.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(supMike, s1);
+  conn.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(supTony, s2);
+  const setLeads = conn.prepare('UPDATE projects SET superintendent_employee_id = ?, project_manager_employee_id = ? WHERE id = ?');
+  setLeads.run(supMike, pmSarah, pid[0]);
+  setLeads.run(supTony, pmBrian, pid[1]);
+  setLeads.run(supMike, pmBrian, pid[2]);
+  setLeads.run(eid[0], pmSarah, pid[3]); // a general foreman running the plant job
+
   // Crews per project, scheduled last week, this week, and next week (Mon–Fri).
   const crews = [[0, 2, 3, 5], [8, 9, 10, 6], [1, 7, 4], [11]];
   const thisWeek = weekStart(new Date().toISOString().slice(0, 10));
-  const ins = conn.prepare(`INSERT OR IGNORE INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, status, actual_hours, verified_at)
-    VALUES (?, ?, ?, ?, '07:00', ?, ?, ?)`);
+  const ins = conn.prepare(`INSERT OR IGNORE INTO assignments (employee_id, project_id, work_date, planned_hours, status, actual_hours, verified_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`);
   for (const wk of [-7, 0, 7]) {
     for (let d = 0; d < 5; d++) {
       const day = addDays(thisWeek, wk + d);
@@ -85,8 +101,8 @@ db.tx(conn, () => {
   // plant and the afternoon at the medical office building.
   const splitDay = addDays(thisWeek, 9);
   conn.prepare("UPDATE assignments SET planned_hours = 4, task = 'Clarifier drive alignment' WHERE employee_id = ? AND work_date = ?").run(eid[11], splitDay);
-  conn.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task)
-    VALUES (?, ?, ?, 4, '11:30', 'Set rooftop unit curbs')`).run(eid[11], pid[2], splitDay);
+  conn.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task)
+    VALUES (?, ?, ?, 4, 'Set rooftop unit curbs')`).run(eid[11], pid[2], splitDay);
 });
 
 console.log(`Demo data loaded into ${DB_FILE}`);

@@ -27,12 +27,6 @@ function hours(v, field = 'Hours') {
   if (Number.isNaN(n) || n < 0 || n > 24) throw bad(`${field} must be between 0 and 24.`);
   return n;
 }
-const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-function time(v) {
-  const s = str(v, 5);
-  if (s && !TIME.test(s)) throw bad('Start time must be HH:MM.');
-  return s;
-}
 
 function toCsv(rows, cols) {
   const esc = (v) => {
@@ -102,7 +96,7 @@ function createApp(db, opts = {}) {
 
   api.get('/me', (req, res) => {
     const s = getSettings(db);
-    res.json({ user: req.user, settings: { company_name: s.company_name, default_hours: Number(s.default_hours), default_start_time: s.default_start_time } });
+    res.json({ user: req.user, settings: { company_name: s.company_name, default_hours: Number(s.default_hours), warn_daily_hours: Number(s.warn_daily_hours) || 8 } });
   });
 
   api.post('/me/password', (req, res) => {
@@ -223,19 +217,24 @@ function createApp(db, opts = {}) {
   });
 
   // ---- projects --------------------------------------------------------------
+  // Superintendent and project manager are employee records (picked by classification).
+  const leadNames = `TRIM(se.first_name || ' ' || se.last_name) AS superintendent_name, TRIM(pm.first_name || ' ' || pm.last_name) AS project_manager_name`;
+  const leadJoins = 'LEFT JOIN employees se ON se.id = p.superintendent_employee_id LEFT JOIN employees pm ON pm.id = p.project_manager_employee_id';
+
   api.get('/projects', (req, res) => {
     const where = req.query.all === '1' ? '' : "WHERE p.status IN ('planned','active','on_hold')";
-    res.json(db.prepare(`SELECT p.*, u.name AS superintendent_name,
+    res.json(db.prepare(`SELECT p.*, ${leadNames},
         (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id) AS hours_to_date,
         (SELECT COALESCE(SUM(a.actual_hours),0) FROM assignments a WHERE a.project_id = p.id AND a.status <> 'scheduled') AS verified_hours
-      FROM projects p LEFT JOIN users u ON u.id = p.superintendent_user_id ${where}
+      FROM projects p ${leadJoins} ${where}
       ORDER BY p.job_number`).all());
   });
 
   function readProject(b) {
     const p = {
       job_number: str(b.job_number, 50), name: str(b.name, 200), customer: str(b.customer, 200), address: str(b.address, 300),
-      superintendent_user_id: int(b.superintendent_user_id), status: str(b.status, 20) || 'active',
+      superintendent_employee_id: int(b.superintendent_employee_id), project_manager_employee_id: int(b.project_manager_employee_id),
+      status: str(b.status, 20) || 'active',
       start_date: date(b.start_date, 'Start date'), end_date: date(b.end_date, 'End date'),
       budget_hours: num(b.budget_hours), color: str(b.color, 20), notes: str(b.notes, 2000),
     };
@@ -252,8 +251,8 @@ function createApp(db, opts = {}) {
     const p = readProject(req.body);
     let r;
     try {
-      r = db.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_user_id, status, start_date, end_date, budget_hours, color, notes)
-        VALUES (:job_number, :name, :customer, :address, :superintendent_user_id, :status, :start_date, :end_date, :budget_hours, :color, :notes)`).run(p);
+      r = db.prepare(`INSERT INTO projects (job_number, name, customer, address, superintendent_employee_id, project_manager_employee_id, status, start_date, end_date, budget_hours, color, notes)
+        VALUES (:job_number, :name, :customer, :address, :superintendent_employee_id, :project_manager_employee_id, :status, :start_date, :end_date, :budget_hours, :color, :notes)`).run(p);
     } catch (e) { uniqueMsg(e, 'That job number already exists.'); }
     const id = Number(r.lastInsertRowid);
     audit(req, 'create', 'project', id, { job_number: p.job_number });
@@ -265,7 +264,7 @@ function createApp(db, opts = {}) {
     const p = readProject(req.body);
     let r;
     try {
-      r = db.prepare(`UPDATE projects SET job_number=:job_number, name=:name, customer=:customer, address=:address, superintendent_user_id=:superintendent_user_id,
+      r = db.prepare(`UPDATE projects SET job_number=:job_number, name=:name, customer=:customer, address=:address, superintendent_employee_id=:superintendent_employee_id, project_manager_employee_id=:project_manager_employee_id,
         status=:status, start_date=:start_date, end_date=:end_date, budget_hours=:budget_hours, color=:color, notes=:notes WHERE id=:id`).run({ ...p, id });
     } catch (e) { uniqueMsg(e, 'That job number already exists.'); }
     if (!r.changes) throw new HttpError(404, 'Project not found.');
@@ -291,19 +290,19 @@ function createApp(db, opts = {}) {
     const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
     const days = weekDates(start);
     const end = days[6];
-    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name, a.start_time`).all(start, end);
+    const assignments = db.prepare(`${assignmentSelect} WHERE a.work_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name, a.id`).all(start, end);
     const timeOff = db.prepare(`SELECT t.*, e.first_name, e.last_name FROM time_off t JOIN employees e ON e.id = t.employee_id
       WHERE t.off_date BETWEEN ? AND ?`).all(start, end);
     const projectIds = new Set(assignments.map((a) => a.project_id));
-    const projects = db.prepare(`SELECT p.*, u.name AS superintendent_name,
+    const projects = db.prepare(`SELECT p.*, ${leadNames},
         (SELECT COALESCE(SUM(CASE WHEN a.status='no_show' THEN 0 ELSE COALESCE(a.actual_hours, a.planned_hours) END),0) FROM assignments a WHERE a.project_id = p.id AND a.work_date <= ?) AS hours_through_week
-      FROM projects p LEFT JOIN users u ON u.id = p.superintendent_user_id ORDER BY p.job_number`).all(end)
+      FROM projects p ${leadJoins} ORDER BY p.job_number`).all(end)
       .filter((p) => projectIds.has(p.id) || ['active', 'planned'].includes(p.status));
 
     // Running totals
     const byProject = {}; const byDay = {}; const byEmployee = {};
     let totalHours = 0;
-    const peopleByDay = {};
+    const peopleByDay = {}; const personDay = {};
     for (const d of days) { byDay[d] = { headcount: 0, hours: 0 }; peopleByDay[d] = new Set(); }
     for (const a of assignments) {
       const h = a.planned_hours;
@@ -315,12 +314,17 @@ function createApp(db, opts = {}) {
       byDay[a.work_date].hours += h; peopleByDay[a.work_date].add(a.employee_id);
       byDay[a.work_date].headcount = peopleByDay[a.work_date].size;
       byEmployee[a.employee_id] = (byEmployee[a.employee_id] || 0) + h;
+      const k = `${a.employee_id}|${a.work_date}`; personDay[k] = (personDay[k] || 0) + h;
     }
     for (const p of Object.values(byProject)) { p.headcount = p.people.size; delete p.people; }
+    // People scheduled over the daily warning threshold (allowed, but flagged).
+    const warnAt = Number(getSettings(db).warn_daily_hours) || 8;
+    const overDay = Object.entries(personDay).filter(([, h]) => h > warnAt)
+      .map(([k, h]) => { const [eid, d] = k.split('|'); return { employee_id: Number(eid), work_date: d, hours: h }; });
 
     res.json({
       start, end, days, projects, assignments, time_off: timeOff,
-      totals: { hours: totalHours, assignments: assignments.length, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee },
+      totals: { hours: totalHours, assignments: assignments.length, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
     });
   });
 
@@ -329,41 +333,47 @@ function createApp(db, opts = {}) {
     const from = weekStart(new Date().toISOString().slice(0, 10));
     res.json({
       linked: true,
-      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? ORDER BY a.work_date, a.start_time LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
+      assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? ORDER BY a.work_date, a.id LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
       time_off: db.prepare('SELECT * FROM time_off WHERE employee_id = ? AND off_date >= ? ORDER BY off_date').all(req.user.employee_id, from),
     });
   });
 
   // ---- assignments (double-booking protected) -------------------------------------
-  const findBookings = db.prepare(`SELECT a.id, a.project_id, a.planned_hours, a.start_time, p.job_number, p.name AS project_name
-    FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? AND a.work_date = ? ORDER BY a.start_time, a.id`);
+  const findBookings = db.prepare(`SELECT a.id, a.project_id, a.planned_hours, p.job_number, p.name AS project_name
+    FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? AND a.work_date = ? ORDER BY a.id`);
   const findOff = db.prepare('SELECT reason FROM time_off WHERE employee_id = ? AND off_date = ?');
   const empName = db.prepare("SELECT first_name || ' ' || last_name AS name, active FROM employees WHERE id = ?");
-
-  const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
-  const fromMin = (n) => `${String(Math.floor(n / 60) % 24).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
-  const slot = (start, hrs) => (start ? `${start}–${fromMin(toMin(start) + Math.round(hrs * 60))}` : `${hrs} h`);
+  const dayHours = db.prepare('SELECT COALESCE(SUM(planned_hours), 0) AS h FROM assignments WHERE employee_id = ? AND work_date = ?');
 
   // A person can split a day across jobs. It is a double booking when they are
-  // off that day, already on the same job that day, their time slots overlap,
-  // or the day's total hours would pass the daily cap.
-  function conflictFor(employeeId, workDate, { projectId, hours = 0, start = null }, ignoreId) {
+  // off that day, already on the same job that day, or the day's total hours
+  // would pass the hard daily limit.
+  function conflictFor(employeeId, workDate, { projectId, hours = 0 }, ignoreId) {
     const off = findOff.get(employeeId, workDate);
     if (off) return { type: 'time_off', message: `is off${off.reason ? ` (${off.reason})` : ''}` };
     const others = findBookings.all(employeeId, workDate).filter((b) => b.id !== ignoreId);
     const same = others.find((b) => b.project_id === projectId);
     if (same) return { type: 'booked', message: `is already scheduled on ${same.job_number} – ${same.project_name}`, project_id: same.project_id };
-    if (start) {
-      const s0 = toMin(start); const s1 = s0 + hours * 60;
-      const hit = others.find((b) => b.start_time && toMin(b.start_time) < s1 && s0 < toMin(b.start_time) + b.planned_hours * 60);
-      if (hit) return { type: 'overlap', message: `overlaps ${hit.job_number} (${slot(hit.start_time, hit.planned_hours)})`, project_id: hit.project_id };
-    }
     const cap = Number(getSettings(db).max_daily_hours) || 24;
     const total = others.reduce((sum, b) => sum + b.planned_hours, 0) + hours;
     if (others.length && total > cap) {
-      return { type: 'over_cap', message: `would have ${total} hrs (daily limit ${cap}) – already on ${others.map((b) => `${b.job_number} ${slot(b.start_time, b.planned_hours)}`).join(', ')}` };
+      return { type: 'over_cap', message: `would have ${total} hrs (daily limit ${cap}) – already on ${others.map((b) => `${b.job_number} (${b.planned_hours} h)`).join(', ')}` };
     }
     return null;
+  }
+
+  // Scheduling over the warning threshold (default 8 h/day) is allowed but reported.
+  function overWarnings(pairs) {
+    const warn = Number(getSettings(db).warn_daily_hours) || 8;
+    const seen = new Set(); const out = [];
+    for (const [eid, d] of pairs) {
+      const key = `${eid}|${d}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const h = dayHours.get(eid, d).h;
+      if (h > warn) out.push({ employee_id: eid, work_date: d, hours: h, message: `${empName.get(eid)?.name} is scheduled ${h} hrs on ${d} (over ${warn})` });
+    }
+    return out;
   }
 
   api.post('/assignments', canSchedule, (req, res) => {
@@ -378,22 +388,23 @@ function createApp(db, opts = {}) {
     if (employeeIds.length * dates.length > 1000) throw bad('Too many assignments in one request.');
     const settings = getSettings(db);
     const planned = hours(b.planned_hours) ?? Number(settings.default_hours);
-    const startTime = time(b.start_time);
     const task = str(b.task, 500);
 
     const created = []; const conflicts = [];
-    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by)
+      VALUES (?, ?, ?, ?, ?, ?)`);
+    const touched = [];
     tx(db, () => {
       for (const eid of employeeIds) {
         const emp = empName.get(eid);
         if (!emp) { conflicts.push({ employee_id: eid, message: 'Employee not found' }); continue; }
         for (const d of dates) {
-          const c = conflictFor(eid, d, { projectId, hours: planned, start: startTime });
+          const c = conflictFor(eid, d, { projectId, hours: planned });
           if (c) { conflicts.push({ employee_id: eid, work_date: d, name: emp.name, ...c, message: `${emp.name} ${c.message} on ${d}` }); continue; }
           try {
-            const r = ins.run(eid, projectId, d, planned, startTime, task, req.user.id);
+            const r = ins.run(eid, projectId, d, planned, task, req.user.id);
             created.push(Number(r.lastInsertRowid));
+            touched.push([eid, d]);
           } catch (e) {
             if (/UNIQUE/.test(e.message)) conflicts.push({ employee_id: eid, work_date: d, name: emp.name, type: 'booked', message: `${emp.name} is already scheduled on ${project.job_number} on ${d}` });
             else throw e;
@@ -402,7 +413,7 @@ function createApp(db, opts = {}) {
       }
     });
     if (created.length) audit(req, 'schedule', 'assignment', null, { project: project.job_number, count: created.length, dates });
-    res.status(created.length ? 200 : 409).json({ created, conflicts, error: created.length ? undefined : conflicts[0]?.message });
+    res.status(created.length ? 200 : 409).json({ created, conflicts, warnings: overWarnings(touched), error: created.length ? undefined : conflicts[0]?.message });
   });
 
   api.put('/assignments/:id', canSchedule, (req, res) => {
@@ -416,21 +427,20 @@ function createApp(db, opts = {}) {
       project_id: b.project_id !== undefined ? int(b.project_id) : cur.project_id,
       work_date: b.work_date !== undefined ? date(b.work_date, 'Date', true) : cur.work_date,
       planned_hours: b.planned_hours !== undefined ? hours(b.planned_hours) ?? cur.planned_hours : cur.planned_hours,
-      start_time: b.start_time !== undefined ? time(b.start_time) : cur.start_time,
       task: b.task !== undefined ? str(b.task, 500) : cur.task,
     };
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(next.project_id)) throw bad('Project not found.');
-    const c = conflictFor(next.employee_id, next.work_date, { projectId: next.project_id, hours: next.planned_hours, start: next.start_time }, id);
+    const c = conflictFor(next.employee_id, next.work_date, { projectId: next.project_id, hours: next.planned_hours }, id);
     if (c) throw new HttpError(409, `${empName.get(next.employee_id)?.name || 'Employee'} ${c.message} on ${next.work_date}.`);
     try {
       db.prepare(`UPDATE assignments SET employee_id=:employee_id, project_id=:project_id, work_date=:work_date, planned_hours=:planned_hours,
-        start_time=:start_time, task=:task, updated_at=datetime('now') WHERE id=:id`).run(next);
+        task=:task, updated_at=datetime('now') WHERE id=:id`).run(next);
     } catch (e) {
       if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That person is already scheduled on that job that day.');
       throw e;
     }
     audit(req, 'update', 'assignment', id, { from: { project_id: cur.project_id, date: cur.work_date }, to: { project_id: next.project_id, date: next.work_date } });
-    res.json({ id });
+    res.json({ id, warnings: overWarnings([[next.employee_id, next.work_date]]) });
   });
 
   api.delete('/assignments/:id', canSchedule, (req, res) => {
@@ -449,21 +459,23 @@ function createApp(db, opts = {}) {
     if (from === to) throw bad('Pick a different target week.');
     const projectId = int(req.body.project_id);
     const offset = daysBetween(from, to);
-    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? ${projectId ? 'AND project_id = ?' : ''} ORDER BY work_date, start_time, id`)
+    const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? ${projectId ? 'AND project_id = ?' : ''} ORDER BY work_date, id`)
       .all(...[from, addDays(from, 6), ...(projectId ? [projectId] : [])]);
     const created = []; const conflicts = [];
-    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, start_time, task, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by) VALUES (?, ?, ?, ?, ?, ?)`);
+    const touched = [];
     tx(db, () => {
       for (const a of src) {
         const d = addDays(a.work_date, offset);
-        const c = conflictFor(a.employee_id, d, { projectId: a.project_id, hours: a.planned_hours, start: a.start_time });
+        const c = conflictFor(a.employee_id, d, { projectId: a.project_id, hours: a.planned_hours });
         if (c) { conflicts.push({ employee_id: a.employee_id, work_date: d, message: `${empName.get(a.employee_id)?.name} ${c.message} on ${d}` }); continue; }
         if (!empName.get(a.employee_id)?.active) continue;
-        created.push(Number(ins.run(a.employee_id, a.project_id, d, a.planned_hours, a.start_time, a.task, req.user.id).lastInsertRowid));
+        created.push(Number(ins.run(a.employee_id, a.project_id, d, a.planned_hours, a.task, req.user.id).lastInsertRowid));
+        touched.push([a.employee_id, d]);
       }
     });
     audit(req, 'copy_week', 'assignment', null, { from, to, project_id: projectId, created: created.length });
-    res.json({ created, conflicts });
+    res.json({ created, conflicts, warnings: overWarnings(touched) });
   });
 
   // ---- time off --------------------------------------------------------------------
@@ -569,7 +581,7 @@ function createApp(db, opts = {}) {
       return res.send(toCsv(rows, [
         { key: 'work_date', label: 'Date' }, { key: 'job_number', label: 'Job #' }, { key: 'project_name', label: 'Project' },
         { key: 'last_name', label: 'Last' }, { key: 'first_name', label: 'First' }, { key: 'trade', label: 'Trade' },
-        { key: 'classification', label: 'Classification' }, { key: 'start_time', label: 'Start' }, { key: 'planned_hours', label: 'Planned Hrs' },
+        { key: 'classification', label: 'Classification' }, { key: 'planned_hours', label: 'Planned Hrs' },
         { key: 'actual_hours', label: 'Actual Hrs' }, { key: 'status', label: 'Status' }, { key: 'task', label: 'Task' },
       ]));
     }
@@ -711,7 +723,7 @@ function createApp(db, opts = {}) {
 
   api.get('/settings', adminOnly, (_req, res) => res.json(getSettings(db)));
   api.put('/settings', adminOnly, (req, res) => {
-    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'default_start_time', 'max_daily_hours'];
+    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours'];
     const up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     for (const k of allowed) if (req.body[k] !== undefined && req.body[k] !== null && String(req.body[k]).trim() !== '') up.run(String(req.body[k]).trim().slice(0, 200), k);
     audit(req, 'update', 'settings', null, req.body);
