@@ -121,6 +121,7 @@ const S = {
   dayIdx: Math.min((new Date().getDay() + 6) % 7, 6),
   filterSuper: store('wf_supt') || '',
   filterPm: store('wf_pm') || '',
+  onlyWithHours: store('wf_only_hours') !== '0', // hide jobs with no crew scheduled (on by default)
   boardSort: store('wf_sort') || 'job',
   filterTrade: '',
 };
@@ -269,6 +270,7 @@ async function renderSchedule(page) {
       </div>
       ${S.view !== 'person' && pms.length ? `<select data-act="pm" title="Filter by project manager"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, S.filterPm)).join('')}</select>` : ''}
       ${S.view !== 'person' && supers.length ? `<select data-act="super" title="Filter by superintendent / foreman"><option value="">All superintendents</option>${supers.map(([id, n]) => opt(id, n, S.filterSuper)).join('')}</select>` : ''}
+      ${S.view !== 'person' ? `<label class="check toggle-hours" title="Hide jobs with no crew scheduled, to shorten the list"><input type="checkbox" data-act="only-hours" ${S.onlyWithHours ? 'checked' : ''}> Only jobs with hours</label>` : ''}
       ${S.view !== 'person' ? `<select data-act="sort" title="Sort projects">${[['job', 'Sort: Job #'], ['pm', 'Sort: Project manager'], ['super', 'Sort: Superintendent']].map(([v, l]) => opt(v, l, S.boardSort)).join('')}</select>` : ''}
       ${S.view === 'person' ? `<select data-act="trade"><option value="">All trades</option>${trades.map((x) => opt(x, x, S.filterTrade)).join('')}</select>` : ''}
       ${canSchedule() ? `<button data-act="requests" class="${appr.pending ? 'attn' : ''}">${isAdmin() ? `Requests${appr.pending ? ` (${appr.pending})` : ''}` : `My requests${appr.pending || appr.rejected ? ` (${appr.pending + appr.rejected})` : ''}`}</button>
@@ -305,6 +307,8 @@ async function renderSchedule(page) {
   const sup = $('[data-act=super]', page); if (sup) sup.onchange = (e) => { S.filterSuper = store('wf_supt', e.target.value); drawBoard(); };
   const pmSel = $('[data-act=pm]', page); if (pmSel) pmSel.onchange = (e) => { S.filterPm = store('wf_pm', e.target.value); drawBoard(); };
   const sortSel = $('[data-act=sort]', page); if (sortSel) sortSel.onchange = (e) => { S.boardSort = store('wf_sort', e.target.value); drawBoard(); };
+  const onlyHours = $('[data-act=only-hours]', page);
+  if (onlyHours) onlyHours.onchange = (e) => { S.onlyWithHours = e.target.checked; store('wf_only_hours', e.target.checked ? '1' : '0'); drawBoard(); };
   const tr = $('[data-act=trade]', page); if (tr) tr.onchange = (e) => { S.filterTrade = e.target.value; drawBoard(); };
   if (canSchedule()) {
     $('[data-act=requests]', page).onclick = requestsModal;
@@ -319,10 +323,17 @@ async function renderSchedule(page) {
 function drawBoard() {
   const el = $('#board');
   if (!el) return;
-  if (S.view === 'dispatch' && !mobile()) { dispatchBoard(el); return; }
-  if (S.view === 'person') el.innerHTML = mobile() ? personMobile() : personBoard();
-  else el.innerHTML = mobile() ? projectMobile() : projectBoard();
-  bindBoard(el);
+  if (S.view === 'dispatch' && !mobile()) dispatchBoard(el);
+  else {
+    if (S.view === 'person') el.innerHTML = mobile() ? personMobile() : personBoard();
+    else el.innerHTML = mobile() ? projectMobile() : projectBoard();
+    bindBoard(el);
+  }
+  $$('[data-act=show-all-jobs]', el).forEach((b) => (b.onclick = () => {
+    S.onlyWithHours = false; store('wf_only_hours', '0');
+    const box = $('[data-act=only-hours]'); if (box) box.checked = false;
+    drawBoard();
+  }));
 }
 
 function sortProjects(list, by) {
@@ -332,11 +343,26 @@ function sortProjects(list, by) {
   return [...list].sort((a, b) => (a[key] || '\uffff').localeCompare(b[key] || '\uffff') || a.job_number.localeCompare(b.job_number));
 }
 
-function visibleProjects() {
+// Projects for the board after the superintendent / PM filters. With "Only jobs
+// with hours" on, jobs with no crew scheduled that week (or that day, for the
+// day views) are left out so the list stays short.
+function visibleProjects(day) {
   const d = S.sched;
-  return sortProjects(d.projects.filter((p) =>
+  const filtered = d.projects.filter((p) =>
     (!S.filterSuper || String(p.superintendent_employee_id) === String(S.filterSuper)) &&
-    (!S.filterPm || String(p.project_manager_employee_id) === String(S.filterPm))), S.boardSort);
+    (!S.filterPm || String(p.project_manager_employee_id) === String(S.filterPm)));
+  const withHours = new Set(d.assignments.filter((a) => a.approval_status !== 'rejected' && (!day || a.work_date === day)).map((a) => a.project_id));
+  const shown = S.onlyWithHours ? filtered.filter((p) => withHours.has(p.id)) : filtered;
+  S.boardCounts = { shown: shown.length, total: filtered.length, day };
+  return sortProjects(shown, S.boardSort);
+}
+
+// "Showing 8 of 51 jobs" line with a one-click way to see them all.
+function hiddenJobsNote() {
+  const c = S.boardCounts;
+  if (!S.onlyWithHours || !c || c.shown === c.total) return '';
+  return `<div class="hidden-note small">Showing <b>${c.shown}</b> of ${c.total} jobs – ${c.total - c.shown} with no crew scheduled ${c.day ? 'this day' : 'this week'} are hidden.
+    <button class="link" data-act="show-all-jobs">Show all jobs</button></div>`;
 }
 
 // Total hours per person per day, to flag anyone over the daily warning threshold.
@@ -373,6 +399,7 @@ function projectSub(p) {
 function projectBoard() {
   const d = S.sched; const t = d.totals; const today = todayStr();
   const projects = visibleProjects();
+  const note = hiddenJobsNote();
   const byCell = {};
   for (const a of d.assignments) (byCell[`${a.project_id}|${a.work_date}`] ||= []).push(a);
   const offByDay = {};
@@ -380,9 +407,12 @@ function projectBoard() {
   const scheduledByDay = {};
   for (const a of d.assignments) (scheduledByDay[a.work_date] ||= new Set()).add(a.employee_id);
 
-  if (!projects.length) return `<div class="card muted">No active projects. ${canSchedule() ? '<a href="#/projects">Add a project</a> to start scheduling.' : ''}</div>`;
+  if (!projects.length) {
+    if (S.onlyWithHours && S.boardCounts.total) return `<div class="card muted">No jobs have crew scheduled this week. <button class="link" data-act="show-all-jobs">Show all ${S.boardCounts.total} jobs</button> to start scheduling.</div>`;
+    return `<div class="card muted">No active projects. ${canSchedule() ? '<a href="#/projects">Add a project</a> to start scheduling.' : ''}</div>`;
+  }
 
-  return `<div class="table-wrap"><table class="board">
+  return `${note}<div class="table-wrap"><table class="board">
     <thead><tr><th class="proj">Project</th>${d.days.map((day, i) => `<th class="${day === today ? 'today' : ''}">${dayLabel(day)}</th>`).join('')}<th class="tot">Week</th></tr></thead>
     <tbody>${projects.map((p) => {
       const pt = t.by_project[p.id] || { hours: 0, headcount: 0, days: {} };
@@ -417,10 +447,12 @@ function dayTabs() {
 
 function projectMobile() {
   const d = S.sched; const day = d.days[S.dayIdx];
-  const list = visibleProjects().map((p) => ({ p, a: d.assignments.filter((a) => a.project_id === p.id && a.work_date === day) }));
+  const list = visibleProjects(day).map((p) => ({ p, a: d.assignments.filter((a) => a.project_id === p.id && a.work_date === day) }));
   const off = d.time_off.filter((o) => o.off_date === day);
   return `${dayTabs()}
     <div class="muted small" style="margin-bottom:8px">${dayLabel(day, { weekday: 'long', month: 'long', day: 'numeric' })} · ${d.totals.by_day[day].headcount} people · ${fmtH(d.totals.by_day[day].hours)} hrs</div>
+    ${hiddenJobsNote()}
+    ${!list.length && S.onlyWithHours ? `<div class="card muted">No jobs have crew this day. <button class="link" data-act="show-all-jobs">Show all jobs</button></div>` : ''}
     ${list.map(({ p, a }) => `<div class="pcard">
       <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
         ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
@@ -500,7 +532,7 @@ function dispatchBoard(el) {
   const pool = S.crew.filter((e) => !byPerson[e.id] && !off.has(e.id) && (!trade || e.trade === trade));
   const groups = {};
   for (const e of pool) (groups[e.trade || 'No trade'] ||= []).push(e);
-  const projects = visibleProjects();
+  const projects = visibleProjects(day);
   const dropHours = S.dropHours || S.settings.default_hours || 8;
 
   const card = (a) => {
@@ -522,9 +554,11 @@ function dispatchBoard(el) {
       <div class="toolbar" style="margin:0">
         <span class="small muted">${dayLabel(day, { weekday: 'long', month: 'long', day: 'numeric' })} · ${d.totals.by_day[day].headcount} on jobs · ${pool.length} available · ${off.size} off</span>
         <span class="spacer"></span>
+        ${S.onlyWithHours && S.boardCounts.shown < S.boardCounts.total ? '<span class="small muted">Turn off “Only jobs with hours” to drop crew onto an empty job.</span>' : ''}
         <label class="check">Hours when dropped <input type="number" step="0.5" min="0.5" max="24" data-act="drop-hours" value="${dropHours}" style="width:70px"></label>
       </div>
     </div>
+    ${hiddenJobsNote()}
     <div class="dispatch">
       <aside class="dpool" data-drop="pool">
         <div class="dpool-h"><b>Available (${pool.length})</b>
@@ -547,7 +581,7 @@ function dispatchBoard(el) {
               ${isAdmin() && pending.length ? `<button class="ok mini-btn" data-approve-job="${p.id}">✓ Approve ${pending.length}</button>` : ''}</div></header>
           <div class="djob-body">${list.map(card).join('') || `<div class="djob-empty">${editable ? 'Drop crew here' : 'No crew'}</div>`}</div>
         </section>`;
-      }).join('') || '<div class="card muted">No projects match the filters.</div>'}</div>
+      }).join('') || (S.onlyWithHours && S.boardCounts.total ? '<div class="card muted">No jobs have crew this day. <button class="link" data-act="show-all-jobs">Show all jobs</button></div>' : '<div class="card muted">No projects match the filters.</div>')}</div>
     </div>`;
 
   // ---- interactions
