@@ -1,0 +1,16 @@
+# One-click deploy on Render (https://render.com): New > Blueprint > pick this repo.
+services:
+  - type: web
+    name: workforce-scheduler
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false   # Render prompts for this on first deploy
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
