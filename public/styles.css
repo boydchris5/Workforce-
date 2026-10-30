@@ -173,6 +173,13 @@ td:hover .add-btn.split, .add-btn.split:focus-visible { opacity: 1; }
 .person-cell.can { cursor: pointer; }
 .person-cell.can:hover { background: var(--orange-tint); }
 .avail { font-size: 11px; color: #A0A0A0; }
+.chip.over { box-shadow: inset 0 0 0 1px var(--orange); }
+.over-flag { font-size: 11px; font-weight: 700; color: var(--orange-dk); white-space: nowrap; }
+td.over-day { background: var(--orange-tint) !important; }
+.alert.warn-box { background: var(--orange-tint); border-left-color: var(--orange); margin-bottom: 12px; }
+table.list th .sort-h { all: unset; cursor: pointer; font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
+table.list th .sort-h:hover, table.list th .sort-h.on { color: var(--orange); }
+table.list th .sort-h:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 .over40 { color: var(--orange-dk); font-weight: 700; }
 
 /* mobile day view */
