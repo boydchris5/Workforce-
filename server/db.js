@@ -126,6 +126,40 @@ CREATE TABLE IF NOT EXISTS project_change_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_co_project ON project_change_orders(project_id);
 
+-- Weekly time card imports (e.g. Procore). Lines are kept as imported; the
+-- per person/day/job totals are written to assignments.timecard_hours and
+-- assignments.actual_hours, where they can still be adjusted by hand.
+CREATE TABLE IF NOT EXISTS timecard_imports (
+  id INTEGER PRIMARY KEY,
+  filename TEXT,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  line_count INTEGER NOT NULL DEFAULT 0,
+  total_hours REAL NOT NULL DEFAULT 0,
+  imported_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS timecard_entries (
+  id INTEGER PRIMARY KEY,
+  import_id INTEGER REFERENCES timecard_imports(id) ON DELETE CASCADE,
+  work_date TEXT NOT NULL,
+  employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  employee_no TEXT,
+  employee_name TEXT,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  job_number TEXT,
+  project_name TEXT,
+  cost_code TEXT,
+  cost_code_name TEXT,
+  description TEXT,
+  time_type TEXT,
+  billable TEXT,
+  hours REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_tc_date ON timecard_entries(work_date);
+CREATE INDEX IF NOT EXISTS idx_tc_match ON timecard_entries(employee_id, project_id, work_date);
+
 CREATE TABLE IF NOT EXISTS time_off (
   id INTEGER PRIMARY KEY,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -160,10 +194,11 @@ const DEFAULT_SETTINGS = {
   default_hours: '8',
   default_start_time: '07:00',
   max_daily_hours: '12',
+  payroll_week_start: '3', // 0 = Sunday … 3 = Wednesday (payroll week Wed–Tue)
   warn_daily_hours: '8',
 };
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -218,6 +253,13 @@ function migrate(db) {
   // v5: hours already used on a job before it came into this app.
   if (!db.prepare('PRAGMA table_info(projects)').all().some((c) => c.name === 'starting_hours')) {
     db.exec('ALTER TABLE projects ADD COLUMN starting_hours REAL NOT NULL DEFAULT 0;');
+  }
+  // v6: time card import. source = 'schedule' or 'timecard' (worked but not
+  // scheduled); timecard_hours = hours from the imported time card.
+  const asg6 = db.prepare('PRAGMA table_info(assignments)').all().map((c) => c.name);
+  if (!asg6.includes('source')) {
+    db.exec("ALTER TABLE assignments ADD COLUMN source TEXT NOT NULL DEFAULT 'schedule';");
+    db.exec('ALTER TABLE assignments ADD COLUMN timecard_hours REAL;');
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

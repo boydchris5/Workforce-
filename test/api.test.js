@@ -41,6 +41,8 @@ test('rejects unauthenticated access and bad passwords', async () => {
 
 test('setup projects and employees', async () => {
   boss = await login('boss'); sup = await login('super'); field = await login('field');
+  // Earlier tests were written for a Monday payroll week; the time card tests switch to Wed–Tue.
+  await boss('PUT', '/settings', { payroll_week_start: 1 });
   p1 = (await boss('POST', '/projects', { job_number: '25-001', name: 'School', budget_hours: 100 })).body.id;
   p2 = (await sup('POST', '/projects', { job_number: '25-002', name: 'Bridge' })).body.id;
   assert.ok(p1 && p2);
@@ -260,7 +262,8 @@ test('upgrades a database from an earlier version without losing data', () => {
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(up.prepare('SELECT source AS s FROM assignments').get().s, 'schedule');
   assert.equal(up.prepare('SELECT starting_hours AS h FROM projects WHERE id = 1').get().h, 0);
   assert.equal(up.prepare('SELECT approval_status AS s FROM assignments').get().s, 'approved'); // existing work counts as approved
   assert.equal(up.prepare('SELECT superintendent_employee_id AS s FROM projects WHERE id = 1').get().s, 1);
@@ -462,4 +465,90 @@ test('project import: stages map to status, leads matched by name, re-import upd
   assert.equal(t2.name, 'Apple Festival Stage');
   assert.equal(t2.total_budget_hours, 460);
   assert.equal(t2.starting_hours, 120);
+});
+
+test('time card import: Wed–Tue payroll week, matches the schedule, adds unscheduled work, flags missing', async () => {
+  await boss('PUT', '/settings', { payroll_week_start: 3 });
+  // Employees / job matching Procore's Employee ID and Project Number
+  const kyle = (await boss('POST', '/employees', { first_name: 'Kyle', last_name: 'Tester', employee_no: '7001' })).body.id;
+  const greg = (await boss('POST', '/employees', { first_name: 'Greg', last_name: 'Tester', employee_no: '7002' })).body.id;
+  const lou = (await boss('POST', '/employees', { first_name: 'Lou', last_name: 'Tester', employee_no: '7003' })).body.id;
+  const job = (await boss('POST', '/projects', { job_number: '7440', name: 'Plant Expansion' })).body.id;
+  // Schedule (payroll week Wed 2026-12-02 … Tue 2026-12-08)
+  await boss('POST', '/assignments', { project_id: job, employee_ids: [kyle, greg], dates: ['2026-12-02'], planned_hours: 8 });
+  await boss('POST', '/assignments', { project_id: job, employee_ids: [lou], dates: ['2026-12-03'], planned_hours: 8 });
+  const rows = [
+    { DATE: '2026-12-02', 'EMPLOYEE NAME': 'Kyle Tester', 'EMPLOYEE ID': '7001', 'PROJECT NAME': 'Plant Expansion', 'PROJECT NUMBER': '7440', 'COST CODE LONG NUMBER': '1-0200', 'COST CODE NAME': 'Supervision', HOURS: '8.0', 'FORMATTED TIME TYPE': 'Regular Time' },
+    // Greg: split across two cost codes, 2 + 5 = 7 (variance vs 8 scheduled)
+    { DATE: '2026-12-02', 'EMPLOYEE NAME': 'Greg Tester', 'EMPLOYEE ID': '7002', 'PROJECT NUMBER': '7440', 'COST CODE LONG NUMBER': '6-0135', 'COST CODE NAME': 'Wall Blocking', DESCRIPTION: 'handrail blocking', HOURS: '2.0' },
+    { DATE: '2026-12-02', 'EMPLOYEE NAME': 'Greg Tester', 'EMPLOYEE ID': '7002', 'PROJECT NUMBER': '7440', 'COST CODE LONG NUMBER': '1-0300', 'COST CODE NAME': 'General Clean-Up', HOURS: '5.0' },
+    // Greg also worked Thursday – not scheduled
+    { DATE: '2026-12-03', 'EMPLOYEE NAME': 'Greg Tester', 'EMPLOYEE ID': '7002', 'PROJECT NUMBER': '7440', 'COST CODE LONG NUMBER': '1-0300', HOURS: '6.0' },
+    // Unknown employee and unknown job
+    { DATE: '2026-12-03', 'EMPLOYEE NAME': 'New Guy', 'EMPLOYEE ID': '7999', 'PROJECT NUMBER': '7440', HOURS: '8.0' },
+    { DATE: '2026-12-03', 'EMPLOYEE NAME': 'Kyle Tester', 'EMPLOYEE ID': '7001', 'PROJECT NUMBER': 'Z999', 'PROJECT NAME': 'Mystery Job', HOURS: '4.0' },
+  ];
+  assert.equal((await sup('POST', '/timecards/import', { rows })).status, 403);
+  const pre = (await boss('POST', '/timecards/import', { rows, filename: 'timecards.csv' })).body.preview;
+  assert.deepEqual(pre.period, { from: '2026-12-02', to: '2026-12-03' });
+  assert.equal(pre.lines, 6);
+  assert.equal(pre.matched, 1);
+  assert.equal(pre.variances, 1);
+  assert.equal(pre.unscheduled, 1);
+  assert.equal(pre.no_timecard, 1); // Lou scheduled Thursday, no time card
+  assert.equal(pre.unmatched_lines, 2);
+  // Nothing saved by the preview
+  assert.equal((await boss('GET', '/verification?start=2026-12-04')).body.imports.length, 0);
+
+  const done = (await boss('POST', '/timecards/import', { rows, filename: 'timecards.csv', commit: true })).body;
+  assert.equal(done.committed, true);
+  const v = (await boss('GET', '/verification?start=2026-12-06')).body; // any day in the week → Wed start
+  assert.equal(v.start, '2026-12-02');
+  assert.equal(v.end, '2026-12-08');
+  const row = (eid, d) => v.rows.find((r) => r.employee_id === eid && r.work_date === d);
+  assert.equal(row(kyle, '2026-12-02').recon, 'matched');
+  assert.equal(row(kyle, '2026-12-02').status, 'verified');
+  const g = row(greg, '2026-12-02');
+  assert.equal(g.recon, 'variance');
+  assert.equal(g.actual_hours, 7);
+  assert.equal(g.timecard_lines.length, 2);
+  const un = row(greg, '2026-12-03');
+  assert.equal(un.recon, 'unscheduled');
+  assert.equal(un.source, 'timecard');
+  assert.equal(un.planned_hours, 0);
+  assert.equal(un.actual_hours, 6);
+  assert.equal(row(lou, '2026-12-03').recon, 'no_timecard');
+  assert.equal(v.unmatched.length, 2);
+  assert.match(v.unmatched.map((u) => u.reason).join(' '), /Employee #7999 New Guy is not in Employees/);
+  assert.equal(v.imports.length, 1);
+
+  // Numbers can still be changed by hand afterwards, and the time card total is kept
+  await boss('POST', `/assignments/${g.id}/verify`, { status: 'verified', actual_hours: 8 });
+  const g2 = (await boss('GET', '/verification?start=2026-12-02')).body.rows.find((r) => r.id === g.id);
+  assert.equal(g2.actual_hours, 8);
+  assert.equal(g2.timecard_hours, 7);
+  assert.match(g2.verify_note, /Adjusted by hand \(time card 7 h\)/);
+
+  // Unscheduled hours count toward the job
+  const p = (await boss('GET', '/projects')).body.find((x) => x.id === job);
+  assert.equal(p.hours_to_date, 8 + 8 + 6 + 8); // Kyle 8, Greg Wed 8 (hand-adjusted), Greg Thu 6 unscheduled, Lou 8 still scheduled
+
+  // Add the missing employee, re-match: the line links and becomes an unscheduled entry
+  await boss('POST', '/employees', { first_name: 'New', last_name: 'Guy', employee_no: '7999' });
+  const rm = (await boss('POST', '/timecards/rematch', { from: '2026-12-02', to: '2026-12-08' })).body;
+  assert.equal(rm.linked, 1);
+  const v3 = (await boss('GET', '/verification?start=2026-12-02')).body;
+  assert.equal(v3.unmatched.length, 1);
+  assert.equal(v3.summary.unscheduled, 2);
+
+  // Re-importing the same period replaces lines instead of doubling them
+  await boss('POST', '/timecards/import', { rows, filename: 'timecards-again.csv', commit: true });
+  const v4 = (await boss('GET', '/verification?start=2026-12-02')).body;
+  assert.equal(v4.rows.find((r) => r.employee_id === greg && r.work_date === '2026-12-03').actual_hours, 6);
+  assert.equal(v4.rows.filter((r) => r.source === 'timecard').length, 2);
+
+  // Payroll overtime follows the Wed–Tue payroll week
+  const f = (await boss('GET', '/payroll/forecast?start=2026-12-07&weeks=1')).body;
+  assert.equal(f.start, '2026-12-02');
+  await boss('PUT', '/settings', { payroll_week_start: 1 });
 });

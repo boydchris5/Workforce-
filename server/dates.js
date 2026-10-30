@@ -23,6 +23,12 @@ function weekStart(s) {
   return addDays(s, -dow);
 }
 
+// Start of the payroll week containing s (startDow: 0 = Sunday … 6 = Saturday).
+function periodStart(s, startDow) {
+  const dow = new Date(s + 'T00:00:00Z').getUTCDay();
+  return addDays(s, -((dow - startDow + 7) % 7));
+}
+
 function weekDates(start) {
   return Array.from({ length: 7 }, (_, i) => addDays(start, i));
 }
@@ -31,4 +37,4 @@ function daysBetween(a, b) {
   return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 864e5);
 }
 
-module.exports = { isDate, addDays, weekStart, weekDates, daysBetween };
+module.exports = { isDate, addDays, weekStart, periodStart, weekDates, daysBetween };
