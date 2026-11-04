@@ -545,6 +545,11 @@ function createApp(db, opts = {}) {
     FROM assignments a JOIN employees e ON e.id = a.employee_id JOIN projects p ON p.id = a.project_id
     LEFT JOIN users cu ON cu.id = a.created_by LEFT JOIN users au ON au.id = a.approved_by`;
 
+  const slotSelect = `SELECT s.*, p.job_number, p.name AS project_name, p.color, p.superintendent_employee_id,
+      cu.name AS requested_by_name, du.name AS decided_by_name
+    FROM crew_request_slots s JOIN projects p ON p.id = s.project_id
+    LEFT JOIN users cu ON cu.id = s.created_by LEFT JOIN users du ON du.id = s.decided_by`;
+
   // Approval workflow: superintendents request crew on the projects they run
   // (pending); the workforce manager (admin) approves or rejects with a reason.
   // Admin-entered work is approved immediately. Rejected rows stay for the
@@ -605,9 +610,12 @@ function createApp(db, opts = {}) {
     const overDay = Object.entries(personDay).filter(([, h]) => h > warnAt)
       .map(([k, h]) => { const [eid, d] = k.split('|'); return { employee_id: Number(eid), work_date: d, hours: h }; });
 
+    // Trade requests not yet filled (and recent rejections, so supers see why).
+    const slots = req.user.role === 'viewer' ? [] : db.prepare(`${slotSelect} WHERE s.work_date BETWEEN ? AND ? AND s.status IN ('open','rejected')
+      ORDER BY s.work_date, s.trade, s.id`).all(start, end);
     res.json({
-      start, end, days, projects, assignments, time_off: timeOff,
-      totals: { approval, hours: totalHours, assignments: assignments.length - approval.rejected, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
+      start, end, days, projects, assignments, time_off: timeOff, slots,
+      totals: { approval, open_slots: slots.filter((x) => x.status === 'open').length, hours: totalHours, assignments: assignments.length - approval.rejected, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
     });
   });
 
@@ -747,6 +755,8 @@ function createApp(db, opts = {}) {
     const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
     if (!cur) throw new HttpError(404, 'Assignment not found.');
     assertCanEdit(req, cur.project_id);
+    // If this person filled a trade request, the request goes back to open.
+    db.prepare("UPDATE crew_request_slots SET status = 'open', assignment_id = NULL, decided_by = NULL, decided_at = NULL WHERE assignment_id = ?").run(id);
     db.prepare('DELETE FROM assignments WHERE id = ?').run(id);
     audit(req, 'delete', 'assignment', id, { employee_id: cur.employee_id, project_id: cur.project_id, date: cur.work_date });
     res.json({ ok: true });
@@ -792,7 +802,72 @@ function createApp(db, opts = {}) {
     res.json({
       pending: db.prepare(`${assignmentSelect} WHERE a.approval_status = 'pending' ${mine} ORDER BY a.work_date, p.job_number, e.last_name`).all(...args),
       rejected: db.prepare(`${assignmentSelect} WHERE a.approval_status = 'rejected' AND a.work_date >= ? ${mine} ORDER BY a.work_date, p.job_number`).all(since, ...args),
+      open_slots: db.prepare(`${slotSelect} WHERE s.status = 'open' ${mine} ORDER BY s.work_date, p.job_number, s.trade, s.id`).all(...args),
+      rejected_slots: db.prepare(`${slotSelect} WHERE s.status = 'rejected' AND s.work_date >= ? ${mine} ORDER BY s.work_date, p.job_number`).all(since, ...args),
     });
+  });
+
+  // ---- trade requests ("2 carpenters Tuesday"), filled with names by the manager ----
+  api.post('/crew-requests', canSchedule, (req, res) => {
+    const b = req.body;
+    const projectId = int(b.project_id);
+    if (!projectRow.get(projectId)) throw bad('Pick a project.');
+    assertCanEdit(req, projectId);
+    const trade = str(b.trade, 100);
+    if (!trade) throw bad('Pick a trade (e.g. Carpenter, Laborer, Operator).');
+    const qty = int(b.quantity) ?? 1;
+    if (qty < 1 || qty > 30) throw bad('How many must be between 1 and 30.');
+    const dates = [...new Set(Array.isArray(b.dates) ? b.dates : [b.work_date])].map((d) => date(d, 'Date', true));
+    if (!dates.length) throw bad('Pick at least one day.');
+    const planned = hours(b.planned_hours) ?? Number(getSettings(db).default_hours);
+    const ins = db.prepare('INSERT INTO crew_request_slots (project_id, work_date, trade, planned_hours, task, created_by) VALUES (?, ?, ?, ?, ?, ?)');
+    const created = tx(db, () => dates.flatMap((d) => Array.from({ length: qty }, () => Number(ins.run(projectId, d, trade, planned, str(b.task, 500), req.user.id).lastInsertRowid))));
+    audit(req, 'request_trade', 'crew_request', null, { project_id: projectId, trade, quantity: qty, dates });
+    res.json({ created });
+  });
+
+  // Manager puts a named employee on a trade request: creates the (approved) schedule entry.
+  api.post('/crew-requests/:id/fill', adminOnly, (req, res) => {
+    const slot = db.prepare('SELECT * FROM crew_request_slots WHERE id = ?').get(int(req.params.id));
+    if (!slot) throw new HttpError(404, 'Request not found.');
+    if (slot.status !== 'open') throw bad('That request is no longer open.');
+    const eid = int(req.body.employee_id);
+    const emp = empName.get(eid);
+    if (!emp) throw bad('Pick an employee.');
+    const hrs = hours(req.body.planned_hours) ?? slot.planned_hours;
+    const c = conflictFor(eid, slot.work_date, { projectId: slot.project_id, hours: hrs });
+    if (c) throw new HttpError(409, `${emp.name} ${c.message} on ${slot.work_date}.`);
+    const id = tx(db, () => {
+      clearRejected.run(eid, slot.project_id, slot.work_date);
+      const aid = Number(db.prepare(`INSERT INTO assignments (employee_id, project_id, work_date, planned_hours, task, created_by, approval_status, approved_by, approved_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'))`).run(eid, slot.project_id, slot.work_date, hrs, slot.task, slot.created_by ?? req.user.id, req.user.id).lastInsertRowid);
+      db.prepare("UPDATE crew_request_slots SET status = 'filled', assignment_id = ?, decided_by = ?, decided_at = datetime('now') WHERE id = ?").run(aid, req.user.id, slot.id);
+      return aid;
+    });
+    audit(req, 'fill_trade', 'crew_request', slot.id, { employee_id: eid, trade: slot.trade, date: slot.work_date });
+    res.json({ assignment_id: id, warnings: overWarnings([[eid, slot.work_date]]) });
+  });
+
+  api.post('/crew-requests/reject', adminOnly, (req, res) => {
+    const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
+    const reason = str(req.body.reason, 300);
+    if (!ids.length) throw bad('Nothing selected.');
+    if (!reason) throw bad('Give a reason for the rejection so the superintendent knows why.');
+    let rejected = 0;
+    tx(db, () => { for (const id of ids) rejected += db.prepare(`UPDATE crew_request_slots SET status = 'rejected', reject_reason = ?, decided_by = ?, decided_at = datetime('now') WHERE id = ? AND status = 'open'`).run(reason, req.user.id, id).changes; });
+    audit(req, 'reject_trade', 'crew_request', null, { count: rejected, reason });
+    res.json({ rejected });
+  });
+
+  // The requesting superintendent (or the manager) withdraws an open or rejected request.
+  api.delete('/crew-requests/:id', canSchedule, (req, res) => {
+    const slot = db.prepare('SELECT * FROM crew_request_slots WHERE id = ?').get(int(req.params.id));
+    if (!slot) throw new HttpError(404, 'Request not found.');
+    assertCanEdit(req, slot.project_id);
+    if (slot.status === 'filled') throw bad('That request was already filled. Remove the person from the schedule instead.');
+    db.prepare('DELETE FROM crew_request_slots WHERE id = ?').run(slot.id);
+    audit(req, 'cancel_trade', 'crew_request', slot.id, { trade: slot.trade, date: slot.work_date });
+    res.json({ ok: true });
   });
 
   api.post('/assignments/approve', adminOnly, (req, res) => {

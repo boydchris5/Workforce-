@@ -262,7 +262,8 @@ test('upgrades a database from an earlier version without losing data', () => {
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'crew_request_slots'").get());
   assert.equal(up.prepare('SELECT source AS s FROM assignments').get().s, 'schedule');
   assert.equal(up.prepare('SELECT starting_hours AS h FROM projects WHERE id = 1').get().h, 0);
   assert.equal(up.prepare('SELECT approval_status AS s FROM assignments').get().s, 'approved'); // existing work counts as approved
@@ -551,4 +552,54 @@ test('time card import: Wed–Tue payroll week, matches the schedule, adds unsch
   const f = (await boss('GET', '/payroll/forecast?start=2026-12-07&weeks=1')).body;
   assert.equal(f.start, '2026-12-02');
   await boss('PUT', '/settings', { payroll_week_start: 1 });
+});
+
+test('trade requests: a superintendent asks for "2 carpenters", the manager fills them with names', async () => {
+  const day = '2026-12-14';
+  const mike = (await boss('GET', '/employees')).body.find((e) => e.first_name === 'Mike' && e.last_name === 'Jones');
+  await boss('PUT', '/users/2', { username: 'super', name: 'Super', role: 'super', employee_id: mike.id });
+  const supNow = await login('super');
+  const c1 = (await boss('POST', '/employees', { first_name: 'Carl', last_name: 'Carpenter', trade: 'Carpenter' })).body.id;
+  const c2 = (await boss('POST', '/employees', { first_name: 'Cora', last_name: 'Carpenter', trade: 'Carpenter' })).body.id;
+
+  // Superintendent requests by trade on their own job, with a note about the work
+  const r = await supNow('POST', '/crew-requests', { project_id: p1, trade: 'Carpenter', quantity: 2, dates: [day], planned_hours: 8, task: 'Frame gym mezzanine walls' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.created.length, 2);
+  assert.equal((await supNow('POST', '/crew-requests', { project_id: p2, trade: 'Laborer', quantity: 1, dates: [day] })).status, 403);
+  assert.equal((await supNow('POST', '/crew-requests', { project_id: p1, quantity: 1, dates: [day] })).status, 400);
+  assert.equal((await supNow('POST', `/crew-requests/${r.body.created[0]}/fill`, { employee_id: c1 })).status, 403);
+
+  // Shows on the schedule and in the manager's request list with the note; field staff don't see it
+  const s = (await boss('GET', `/schedule?start=${day}`)).body;
+  assert.equal(s.slots.length, 2);
+  assert.equal(s.slots[0].task, 'Frame gym mezzanine walls');
+  assert.equal(s.totals.open_slots, 2);
+  assert.equal((await field('GET', `/schedule?start=${day}`)).body.slots.length, 0);
+  assert.equal((await boss('GET', '/requests')).body.open_slots.length, 2);
+
+  // Manager fills one with a named carpenter: an approved schedule entry with the note
+  const f = await boss('POST', `/crew-requests/${r.body.created[0]}/fill`, { employee_id: c1 });
+  assert.equal(f.status, 200);
+  const a = (await boss('GET', `/schedule?start=${day}`)).body.assignments.find((x) => x.id === f.body.assignment_id);
+  assert.equal(a.approval_status, 'approved');
+  assert.equal(a.task, 'Frame gym mezzanine walls');
+  assert.equal(a.employee_id, c1);
+  // Double booking still applies when filling
+  assert.equal((await boss('POST', `/crew-requests/${r.body.created[1]}/fill`, { employee_id: c1 })).status, 409);
+  // Reject the other one with a reason; superintendent sees it
+  assert.equal((await boss('POST', '/crew-requests/reject', { ids: [r.body.created[1]] })).status, 400);
+  await boss('POST', '/crew-requests/reject', { ids: [r.body.created[1]], reason: 'No carpenters free – use Sam from 24-115' });
+  const mine = (await supNow('GET', '/requests')).body;
+  assert.equal(mine.rejected_slots[0].reject_reason, 'No carpenters free – use Sam from 24-115');
+  assert.equal(mine.open_slots.length, 0);
+
+  // Removing the filled person reopens the request
+  await boss('DELETE', `/assignments/${f.body.assignment_id}`);
+  assert.equal((await boss('GET', '/requests')).body.open_slots.length, 1);
+  // The superintendent can withdraw it
+  const open = (await supNow('GET', '/requests')).body.open_slots[0];
+  assert.equal((await supNow('DELETE', `/crew-requests/${open.id}`)).status, 200);
+  assert.equal((await boss('GET', '/requests')).body.open_slots.length, 0);
+  void c2;
 });

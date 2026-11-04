@@ -247,6 +247,16 @@ table.verify tr.recon-no_timecard td:first-child { box-shadow: inset 4px 0 0 var
 table.verify input[data-actual] { width: 86px; }
 .var-up { color: var(--orange-dk); }
 .var-down { color: var(--charcoal); }
+.req-mode { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.modal .trade-only { display: none; }
+.modal.mode-trade .trade-only { display: grid; }
+.modal.mode-trade div.trade-only.small { display: block; }
+.modal.mode-trade .people-only { display: none !important; }
+.chip.slot { background: #fff; border: 1px dashed var(--orange); border-left: 3px solid var(--orange); color: var(--orange-dk); font-weight: 700; }
+.chip.slot.rej { color: #9A9A9A; text-decoration: line-through; border-color: var(--light); font-weight: 400; }
+.chip.slot .note { font-weight: 400; color: var(--muted); font-size: 11px; }
+.dcard.slot { background: #fff; border: 1px dashed var(--orange); border-left: 3px solid var(--orange); color: var(--orange-dk); font-weight: 700; cursor: pointer; }
+.slot-note { background: var(--tint); border-left: 4px solid var(--orange); padding: 8px 12px; border-radius: 0 6px 6px 0; }
 .over40 { color: var(--orange-dk); font-weight: 700; }
 
 /* mobile day view */
