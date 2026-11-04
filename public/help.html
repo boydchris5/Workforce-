@@ -67,6 +67,7 @@
     .flow div b::before { content: counter(f) ". "; }
     .chip { display: inline-block; font-size: 13px; padding: 1px 8px; border-radius: 5px; background: var(--tint); border-left: 3px solid var(--orange); white-space: nowrap; }
     .chip.pend { background: #fff; outline: 1px dashed var(--orange); outline-offset: -1px; }
+    .chip.slot { background: #fff; border: 1px dashed var(--orange); border-left: 3px solid var(--orange); color: var(--orange-dk, #C2410C); font-weight: 700; }
     .chip.rej { color: #9A9A9A; text-decoration: line-through; border-left-color: var(--light); background: transparent; }
     .chip.off { background: repeating-linear-gradient(45deg, #fff, #fff 4px, var(--tint) 4px, var(--tint) 8px); border-left-color: var(--soft); color: var(--soft); }
     details { border: 1px solid var(--light); border-radius: 6px; margin: 8px 0; max-width: 900px; }
@@ -400,6 +401,16 @@
 <section id="approvals" data-s>
   <h2>Crew requests &amp; approvals</h2>
   <p>Superintendents <b>request</b> crew for their jobs. The Workforce Manager <b>approves</b> or <b>rejects</b> them. The manager's own scheduling is approved right away.</p>
+  <p>A superintendent can ask in two ways: by <b>trade</b> (“2 carpenters Tuesday”) when any qualified person will do, or by <b>specific people</b> when they want someone by name.</p>
+  <h3 id="trade-requests">Requesting by trade (carpenter, laborer, operator…)</h3>
+  <ol class="steps">
+    <li>Click <span class="ui">+ Request crew</span> and choose <span class="ui">Request by: Trade</span> (the app remembers your choice).</li>
+    <li>Pick the job, the day(s) and the hours per day.</li>
+    <li>Pick the <b>Trade needed</b> and <b>How many people</b>.</li>
+    <li>In <b>Notes – what's the work?</b> give a brief description, e.g. “Frame gym mezzanine walls; one needs a lift card”. The manager sees it when filling the request, and it carries onto each person's schedule entry as their task.</li>
+    <li>Click <span class="ui">Send trade request</span>. It shows on your job as <span class="chip slot">2 × Carpenter needed</span> until the manager fills in names.</li>
+  </ol>
+  <p>Click an open request to see it or <span class="ui">Withdraw request</span>. When the manager fills it, the names appear on your job as approved entries. If it's rejected you'll see <span class="chip slot rej">2 × Carpenter ✕</span> and the reason.</p>
   <h3>For superintendents</h3>
   <ul>
     <li>You can request crew only on jobs where you are the listed superintendent, and your login must be linked to your employee record. If <span class="ui">+ Request crew</span> says you have no projects, ask the manager.</li>
@@ -415,6 +426,14 @@
     <li>To reject, tick them, click <span class="ui">✕ Reject selected…</span> and type a <b>reason</b> (required) – the superintendent sees it.</li>
   </ol>
   <figure class="half"><img src="help/img/requests.jpg" alt="Requests window" loading="lazy"><figcaption>The approval queue.</figcaption></figure>
+  <h3 id="fill-trade">Filling a trade request (Workforce Manager)</h3>
+  <ol class="steps">
+    <li>Open <span class="ui">Requests</span> → <b>Trade requests to fill</b> and click <span class="ui">Fill…</span>, or click the <span class="chip slot">2 × Carpenter needed</span> chip on the schedule or the card in All Jobs.</li>
+    <li>Read the superintendent's <b>Notes</b> at the top. The list shows people in that trade (untick <span class="ui">Only Carpenters</span> to see everyone) with where they already are that day. Anyone off, already on this job, or who would pass the daily hour limit is greyed out.</li>
+    <li>Tick up to the number requested, adjust the hours if needed, and click <span class="ui">Fill</span>. Each person is scheduled and approved, with the notes as their task.</li>
+    <li>Can't fill it? Click <span class="ui">✕ Reject…</span> and type a reason – the superintendent sees it.</li>
+  </ol>
+  <p>Shortcut in All Jobs: drag a person of the matching trade onto the job and it fills the open request instead of adding a separate entry. If you later remove a person who filled a request, the request opens up again so the job isn't left short.</p>
   <p>You can also approve or reject from an entry itself (click its chip), or with <span class="ui">✓ Approve N</span> on a job in All Jobs.</p>
   <figure class="half"><img src="help/img/edit-pending.jpg" alt="Pending entry with approve and reject buttons" loading="lazy"><figcaption>A pending entry: type a reason and click Reject, or click Approve.</figcaption></figure>
   <div class="note">Pending and rejected entries are not shown to field staff and don't count in payroll or hour verification. A rejected person is freed up for other jobs that day.</div>
@@ -633,6 +652,7 @@
     <tr><td><span class="chip">Kyle B. ✓</span></td><td>Approved schedule entry</td></tr>
     <tr><td><span class="chip">Kyle B. ✓✓</span></td><td>Approved, and hours verified</td></tr>
     <tr><td><span class="chip pend">Kyle B. PENDING</span></td><td>Requested by a superintendent, waiting for approval</td></tr>
+    <tr><td><span class="chip slot">2 × Carpenter needed</span></td><td>Trade request – a superintendent needs that many people; the manager fills in names</td></tr>
     <tr><td><span class="chip rej">Kyle B. ✕</span></td><td>Rejected (click to see the reason)</td></tr>
     <tr><td><span class="chip off">Off – Vacation</span></td><td>Time off – can't be scheduled</td></tr>
     <tr><td><span class="chip">Kyle B. 10h</span></td><td>Hours other than 8</td></tr>
@@ -684,6 +704,8 @@
   <details><summary>My crew can't see the schedule I made.</summary><div>Field staff only see <b>approved</b> entries. If a superintendent made them, the manager needs to approve them. Also ask them to refresh the page.</div></details>
   <details><summary>I'm a superintendent and it says I have no projects to request crew for.</summary><div>Two things must be set by the manager: your login is linked to your employee record (Admin → Users), and you are set as Superintendent on your jobs (Projects → open the job).</div></details>
   <details><summary>My request was rejected. What now?</summary><div>Click <b>My requests</b> to see the reason. Click the struck-through entry, adjust it and click <b>Resubmit</b>, or request someone else.</div></details>
+  <details><summary>I just need two laborers – I don't care who. How do I ask?</summary><div>Use <span class="ui">+ Request crew</span> → <b>Request by: Trade</b>, pick Laborer and 2, and add a short note on the work. The manager picks the people. See <a href="#trade-requests">Requesting by trade</a>.</div></details>
+  <details><summary>Why can't I pick someone when filling a trade request?</summary><div>They're off, already on that job that day, or the extra hours would put them over the daily limit. The tag beside their name says which.</div></details>
   <details><summary>Why did my approved entry go back to Pending?</summary><div>When a superintendent changes an approved entry, it goes back to the manager for approval.</div></details>
   <details><summary>The schedule list is too long.</summary><div>Tick <b>Only jobs with hours</b> to hide empty jobs, and use the PM or superintendent filters.</div></details>
   <details><summary>How do I print the week for the job trailer?</summary><div>On a computer, click <b>Print</b> on the Schedule page.</div></details>

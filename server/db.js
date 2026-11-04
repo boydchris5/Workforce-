@@ -160,6 +160,26 @@ CREATE TABLE IF NOT EXISTS timecard_entries (
 CREATE INDEX IF NOT EXISTS idx_tc_date ON timecard_entries(work_date);
 CREATE INDEX IF NOT EXISTS idx_tc_match ON timecard_entries(employee_id, project_id, work_date);
 
+-- Trade requests: a superintendent asks for "a carpenter" (one row per person
+-- needed per day) and the workforce manager fills it with a named employee,
+-- which creates the schedule entry (assignment_id), or rejects it.
+CREATE TABLE IF NOT EXISTS crew_request_slots (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  work_date TEXT NOT NULL,
+  trade TEXT NOT NULL,
+  planned_hours REAL NOT NULL DEFAULT 8,
+  task TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','filled','rejected','cancelled')),
+  reject_reason TEXT,
+  assignment_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_slots_date ON crew_request_slots(work_date, status);
+
 CREATE TABLE IF NOT EXISTS time_off (
   id INTEGER PRIMARY KEY,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -198,7 +218,7 @@ const DEFAULT_SETTINGS = {
   warn_daily_hours: '8',
 };
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {

@@ -33,6 +33,9 @@ function weekLabel(start) {
   const o = { month: 'short', day: 'numeric', timeZone: 'UTC' };
   return `${new Date(start + 'T12:00:00Z').toLocaleDateString(undefined, o)} – ${new Date(end + 'T12:00:00Z').toLocaleDateString(undefined, { ...o, year: 'numeric' })}`;
 }
+// Trades offered for trade requests: the trades on file, plus the common ones.
+const tradeChoices = () => [...new Set(['Carpenter', 'Laborer', 'Operating Engineer', ...(S.crew || []).map((e) => e.trade).filter(Boolean)])].sort();
+
 // Project leads are employees picked by classification.
 const isSuperOrForeman = (e) => /superintendent|foreman/i.test(e.classification || '');
 const isProjectManager = (e) => /project manager/i.test(e.classification || '');
@@ -252,6 +255,8 @@ async function renderSchedule(page) {
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
   const overDay = t.over_day || [];
   const appr = t.approval || { pending: 0, rejected: 0 };
+  const openSlots = (data.slots || []).filter((x) => x.status === 'open').length;
+  const rejSlots = (data.slots || []).filter((x) => x.status === 'rejected').length;
   if (S.view === 'dispatch' && mobile()) S.view = 'project';
 
   const todayIdx = data.days.indexOf(today);
@@ -279,7 +284,7 @@ async function renderSchedule(page) {
       ${S.view !== 'person' ? `<label class="check toggle-hours" title="Hide jobs with no crew scheduled, to shorten the list"><input type="checkbox" data-act="only-hours" ${S.onlyWithHours ? 'checked' : ''}> Only jobs with hours</label>` : ''}
       ${S.view !== 'person' ? `<select data-act="sort" title="Sort projects">${[['job', 'Sort: Job #'], ['pm', 'Sort: Project manager'], ['super', 'Sort: Superintendent']].map(([v, l]) => opt(v, l, S.boardSort)).join('')}</select>` : ''}
       ${S.view === 'person' ? `<select data-act="trade"><option value="">All trades</option>${trades.map((x) => opt(x, x, S.filterTrade)).join('')}</select>` : ''}
-      ${canSchedule() ? `<button data-act="requests" class="${appr.pending ? 'attn' : ''}">${isAdmin() ? `Requests${appr.pending ? ` (${appr.pending})` : ''}` : `My requests${appr.pending || appr.rejected ? ` (${appr.pending + appr.rejected})` : ''}`}</button>
+      ${canSchedule() ? `<button data-act="requests" class="${appr.pending + openSlots ? 'attn' : ''}">${isAdmin() ? `Requests${appr.pending + openSlots ? ` (${appr.pending + openSlots})` : ''}` : `My requests${appr.pending + openSlots + appr.rejected + rejSlots ? ` (${appr.pending + openSlots + appr.rejected + rejSlots})` : ''}`}</button>
         <button data-act="copy">Copy last week →</button><button data-act="timeoff">Time off</button>
         <button class="primary" data-act="add">${isAdmin() ? '+ Schedule crew' : '+ Request crew'}</button>` : ''}
       <button data-act="print">Print</button>
@@ -292,10 +297,11 @@ async function renderSchedule(page) {
       ${(() => { const o = Object.values(t.by_employee).filter((h) => h > 40).length; return `<div class="stat ${o ? 'warn' : ''}"><div class="v">${o}</div><div class="l">Over 40 hrs (OT)</div></div>`; })()}
       <div class="stat ${overDay.length ? 'warn' : ''}"><div class="v">${overDay.length}</div><div class="l">Days over ${fmtH(t.warn_daily_hours || 8)} hrs</div></div>
       ${canSchedule() ? `<div class="stat ${appr.pending ? 'warn' : ''}"><div class="v">${appr.pending}</div><div class="l">Awaiting approval</div></div>` : ''}
+      ${canSchedule() && openSlots ? `<div class="stat warn"><div class="v">${openSlots}</div><div class="l">Trade requests to fill</div></div>` : ''}
     </div>
     ${canSchedule() ? `<div class="legend small"><span class="chip mini approved">✓ Approved</span><span class="chip mini pending">Pending approval</span><span class="chip mini rejected">✕ Rejected</span><span class="chip mini verified">✓✓ Hours verified</span>
       ${S.user.role === 'super' ? '<span class="muted">You can request crew on the jobs where you are the superintendent. The workforce manager approves them.</span>' : ''}</div>` : ''}
-    ${S.user.role === 'super' && appr.rejected ? `<div class="alert warn-box"><b>${appr.rejected} request${appr.rejected > 1 ? 's were' : ' was'} rejected this week.</b> Click a struck-through name, or <button class="link" data-act="requests2">see the reasons</button>.</div>` : ''}
+    ${S.user.role === 'super' && appr.rejected + rejSlots ? `<div class="alert warn-box"><b>${appr.rejected + rejSlots} request${appr.rejected + rejSlots > 1 ? 's were' : ' was'} rejected this week.</b> Click a struck-through name, or <button class="link" data-act="requests2">see the reasons</button>.</div>` : ''}
     ${overDay.length ? `<div class="alert warn-box"><b>⚠ Over ${fmtH(t.warn_daily_hours || 8)} hours in a day:</b> ${overDay.slice(0, 12).map((o) => {
       const e = S.employees.find((x) => x.id === o.employee_id);
       return `${esc(e ? fullName(e) : 'Employee')} ${esc(DOW[data.days.indexOf(o.work_date)])} (${fmtH(o.hours)} h)`;
@@ -358,6 +364,7 @@ function visibleProjects(day) {
     (!S.filterSuper || String(p.superintendent_employee_id) === String(S.filterSuper)) &&
     (!S.filterPm || String(p.project_manager_employee_id) === String(S.filterPm)));
   const withHours = new Set(d.assignments.filter((a) => a.approval_status !== 'rejected' && (!day || a.work_date === day)).map((a) => a.project_id));
+  for (const sl of d.slots || []) if (sl.status === 'open' && (!day || sl.work_date === day)) withHours.add(sl.project_id);
   const shown = S.onlyWithHours ? filtered.filter((p) => withHours.has(p.id)) : filtered;
   S.boardCounts = { shown: shown.length, total: filtered.length, day };
   return sortProjects(shown, S.boardSort);
@@ -430,7 +437,7 @@ function projectBoard() {
           const ct = pt.days[day];
           return `<td class="${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''}">
             ${ct ? `<div class="cell-tot"><span>${ct.headcount} ppl</span><span>${fmtH(ct.hours)} h</span></div>` : ''}
-            ${list.map((a) => chip(a)).join('')}
+            ${list.map((a) => chip(a)).join('')}${slotChips(p.id, day)}
             ${canEditProject(p.id) ? `<button class="add-btn" data-add="${p.id}|${day}">+</button>` : ''}
           </td>`;
         }).join('')}
@@ -464,7 +471,7 @@ function projectMobile() {
       <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
         ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
         <div class="right nowrap"><b>${a.filter((x) => x.approval_status !== 'rejected').length}</b> ppl<br><span class="small muted">${fmtH(a.filter((x) => x.approval_status !== 'rejected').reduce((sum, x) => sum + x.planned_hours, 0))} h</span></div></div>
-      <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade].filter(Boolean).join(' · '))).join('') || '<div class="small muted">Nobody scheduled</div>'}
+      <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade].filter(Boolean).join(' · '))).join('')}${slotChips(p.id, day)}${a.length || slotGroups(p.id, day).length ? '' : '<div class="small muted">Nobody scheduled</div>'}
         ${canEditProject(p.id) ? `<button class="add-btn" style="margin-top:6px;min-height:36px" data-add="${p.id}|${day}">${isAdmin() ? '+ Add crew' : '+ Request crew'}</button>` : ''}</div>
     </div>`).join('')}
     ${off.length ? `<div class="pcard"><div class="ph"><b>Off</b></div><div class="pb">${off.map((o) => `<div class="chip off">${esc(o.first_name)} ${esc(o.last_name)} <span class="hr">${esc(o.reason || '')}</span></div>`).join('')}</div></div>` : ''}`;
@@ -586,7 +593,7 @@ function dispatchBoard(el) {
             <div class="small muted">Supt: ${esc(p.superintendent_name || '—')} · PM: ${esc(p.project_manager_name || '—')}</div>
             <div class="djob-tot"><b>${new Set(liveList.map((a) => a.employee_id)).size}</b> ppl · <b>${fmtH(liveList.reduce((sum, a) => sum + a.planned_hours, 0))}</b> h
               ${isAdmin() && pending.length ? `<button class="ok mini-btn" data-approve-job="${p.id}">✓ Approve ${pending.length}</button>` : ''}</div></header>
-          <div class="djob-body">${list.map(card).join('') || `<div class="djob-empty">${editable ? 'Drop crew here' : 'No crew'}</div>`}</div>
+          <div class="djob-body">${list.map(card).join('')}${slotGroups(p.id, day).map((g) => `<div class="dcard slot" data-slot="${esc(g.key)}" title="${esc(g.note || '')}">${g.slots.length} × ${esc(g.trade)} ${g.status === 'rejected' ? 'rejected' : 'needed'}${g.note ? `<span class="small muted"> – ${esc(g.note)}</span>` : ''}</div>`).join('')}${list.length || slotGroups(p.id, day).length ? '' : `<div class="djob-empty">${editable ? 'Drop crew here' : 'No crew'}</div>`}</div>
         </section>`;
       }).join('') || (S.onlyWithHours && S.boardCounts.total ? '<div class="card muted">No jobs have crew this day. <button class="link" data-act="show-all-jobs">Show all jobs</button></div>' : '<div class="card muted">No projects match the filters.</div>')}</div>
     </div>`;
@@ -596,6 +603,7 @@ function dispatchBoard(el) {
   $('[data-act=dtrade]', el).onchange = (e) => { S.dispatchTrade = e.target.value; drawBoard(); };
   $('[data-act=drop-hours]', el).onchange = (e) => { S.dropHours = Number(e.target.value) || 8; };
   $$('.dcard[data-aid]', el).forEach((c) => (c.onclick = () => canSchedule() && editAssignmentModal(d.assignments.find((a) => a.id === Number(c.dataset.aid)))));
+  $$('[data-slot]', el).forEach((c) => (c.onclick = () => slotModal(c.dataset.slot)));
   $$('[data-pick]', el).forEach((c) => (c.onclick = () => assignModal({ employee_ids: [Number(c.dataset.pick)], dates: [day] })));
   $$('[data-approve-job]', el).forEach((b) => (b.onclick = async () => {
     const ids = dayAsg.filter((a) => a.project_id === Number(b.dataset.approveJob) && a.approval_status === 'pending').map((a) => a.id);
@@ -633,7 +641,12 @@ function dispatchBoard(el) {
           await api('DELETE', `/assignments/${id}`); toast('Taken off the job');
         } else {
           const pid = Number(target.split(':')[1]);
-          if (kind === 'emp') {
+          const emp = kind === 'emp' ? S.crew.find((e) => e.id === Number(id)) : null;
+          const slot = emp && isAdmin() ? (d.slots || []).find((sl) => sl.status === 'open' && sl.project_id === pid && sl.work_date === day && sl.trade.toLowerCase() === (emp.trade || '').toLowerCase()) : null;
+          if (slot) {
+            r = await api('POST', `/crew-requests/${slot.id}/fill`, { employee_id: emp.id });
+            toast(`Filled the ${slot.trade} request with ${fullName(emp)}`);
+          } else if (kind === 'emp') {
             r = await api('POST', '/assignments', { project_id: pid, employee_ids: [Number(id)], dates: [day], planned_hours: S.dropHours || S.settings.default_hours || 8 });
             if (r.conflicts.length) toast(r.conflicts[0].message, true);
             else toast(r.approval_status === 'pending' ? 'Requested – waiting for approval' : 'Scheduled');
@@ -654,6 +667,7 @@ function bindBoard(el) {
   if (!canSchedule()) return;
   $$('[data-add]', el).forEach((b) => (b.onclick = () => { const [pid, day] = b.dataset.add.split('|'); assignModal({ project_id: Number(pid), dates: [day] }); }));
   $$('[data-aid]', el).forEach((c) => (c.onclick = (ev) => { ev.stopPropagation(); editAssignmentModal(S.sched.assignments.find((a) => a.id === Number(c.dataset.aid))); }));
+  $$('[data-slot]', el).forEach((c) => (c.onclick = (ev) => { ev.stopPropagation(); slotModal(c.dataset.slot); }));
   $$('[data-emp]', el).forEach((c) => (c.onclick = (ev) => {
     ev.stopPropagation();
     const [eid, day] = c.dataset.emp.split('|');
@@ -681,6 +695,8 @@ function assignModal(pre) {
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
   const skills = [...new Set(S.crew.flatMap((e) => e.skills.map((s) => s.name)))].sort();
   const warnAt = S.settings.warn_daily_hours || 8;
+  // Superintendents usually request by trade; the manager usually names people.
+  let mode = pre.splitFor || pre.employee_ids?.length ? 'people' : (store('wf_req_mode') || (isAdmin() ? 'people' : 'trade'));
 
   // Split day: fill the rest of a normal day on a different job.
   let defHours = S.settings.default_hours || 8; let defProject = pre.project_id;
@@ -696,21 +712,28 @@ function assignModal(pre) {
     title: pre.splitFor ? 'Split day – add another job' : isAdmin() ? 'Schedule crew' : 'Request crew',
     wide: true,
     body: `${splitNote}
+      ${pre.splitFor || pre.employee_ids?.length ? '' : `<div class="req-mode"><span class="small muted">Request by</span>
+        <div class="seg"><button type="button" data-mode="trade" class="${mode === 'trade' ? 'on' : ''}">Trade (any carpenter, laborer, operator…)</button><button type="button" data-mode="people" class="${mode === 'people' ? 'on' : ''}">Specific people</button></div></div>`}
       <div class="grid2">
         <label>Project<select name="project_id">${projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, defProject)).join('')}</select></label>
         <label>Total hours scheduled per day<input name="planned_hours" type="number" step="0.5" min="0" max="24" value="${defHours}"></label>
       </div>
       <div><div class="small muted" style="margin-bottom:4px">Days <button class="link" data-days="wk">Mon–Fri</button><button class="link" data-days="none">clear</button></div>
         <div class="days-pick">${d.days.map((day, i) => `<label><input type="checkbox" name="dates" data-multi="1" value="${day}" ${preDates.has(day) ? 'checked' : ''}>${DOW[i]} ${day.slice(5).replace('-', '/')}</label>`).join('')}</div></div>
-      <label>Task / scope (optional)<input name="task" maxlength="500" placeholder="e.g. Level 2 framing, pour prep"></label>
-      <div class="toolbar" style="margin:0">
+      <div class="trade-only grid2">
+        <label>Trade needed<select name="trade">${tradeChoices().map((t) => opt(t, t)).join('')}</select></label>
+        <label>How many people<input name="quantity" type="number" min="1" max="30" value="1"></label>
+      </div>
+      <label>Notes – what's the work?<textarea name="task" maxlength="500" rows="2" placeholder="e.g. Frame gym mezzanine walls; need someone with a lift card"></textarea></label>
+      <div class="people-only toolbar" style="margin:0">
         <input type="search" data-f="q" placeholder="Search name…" style="flex:1;min-width:140px">
         <select data-f="trade"><option value="">All trades</option>${trades.map((x) => opt(x, x)).join('')}</select>
         <select data-f="skill"><option value="">Any skill</option>${skills.map((x) => opt(x, x)).join('')}</select>
         <label class="check" title="Uncheck to show people already on another job, for a split day"><input type="checkbox" data-f="availOnly" ${pre.splitFor ? '' : 'checked'}> Open only</label>
       </div>
-      <div class="emp-pick" id="emp-pick"></div>
-      <div class="small muted" id="pick-count"></div>`,
+      <div class="people-only emp-pick" id="emp-pick"></div>
+      <div class="people-only small muted" id="pick-count"></div>
+      <div class="trade-only small muted">The workforce manager picks the actual people and fills in the names. You'll see them on the schedule once filled.</div>`,
     footer: `${isAdmin() ? '' : '<span class="small muted" style="margin-right:auto">Requests go to the workforce manager for approval.</span>'}<button data-close>Cancel</button><button class="primary" data-act="save">${isAdmin() ? 'Schedule' : 'Send request'}</button>`,
   });
 
@@ -765,8 +788,25 @@ function assignModal(pre) {
   }));
   drawList();
 
+  // Trade requests vs. naming specific people.
+  const setMode = (md) => {
+    mode = md; store('wf_req_mode', md);
+    m.el.classList.toggle('mode-trade', md === 'trade');
+    $$('[data-mode]', m.el).forEach((b) => b.classList.toggle('on', b.dataset.mode === md));
+    $('[data-act=save]', m.el).textContent = md === 'trade' ? 'Send trade request' : isAdmin() ? 'Schedule' : 'Send request';
+  };
+  $$('[data-mode]', m.el).forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+  setMode(mode);
+
   $('[data-act=save]', m.el).onclick = async () => {
     const f = formData(m.el);
+    if (mode === 'trade') {
+      try {
+        const r = await api('POST', '/crew-requests', { project_id: Number(f.project_id), trade: f.trade, quantity: f.quantity, dates: f.dates, planned_hours: f.planned_hours, task: f.task });
+        m.close(); toast(`Requested ${f.quantity} ${f.trade}${Number(f.quantity) > 1 ? 's' : ''} for ${f.dates.length} day(s) – ${r.created.length} slot(s) to fill`); renderSchedule($('#page'));
+      } catch (e) { errorBox(m.el, e.message); }
+      return;
+    }
     const body = {
       project_id: Number(f.project_id), dates: f.dates, planned_hours: f.planned_hours, task: f.task,
       employee_ids: $$('#emp-pick input:checked', m.el).map((x) => Number(x.value)),
@@ -877,12 +917,22 @@ async function requestsModal() {
     <td class="nowrap">${esc(dayLabel(a.work_date))}</td><td>${esc(a.job_number)}<div class="small muted">${esc(a.project_name)}</div></td>
     <td>${esc(fullName(a))}<div class="small muted">${esc(a.trade || '')}</div></td><td class="right">${fmtH(a.planned_hours)} h</td>
     <td class="small">${esc(a.requested_by_name || '')}</td>
+    ${a.approval_status !== 'rejected' ? `<td class="small">${esc(a.task || '')}</td>` : ''}
     ${a.approval_status === 'rejected' ? `<td class="small"><b>Rejected:</b> ${esc(a.reject_reason || '')}${a.approved_by_name ? `<div class="muted">by ${esc(a.approved_by_name)}</div>` : ''}</td>` : ''}</tr>`;
+  const tradeGroups = groupSlots([...r.open_slots, ...r.rejected_slots]);
+  const tradeRows = tradeGroups.map((g) => `<tr><td class="nowrap">${esc(dayLabel(g.work_date))}</td><td>${esc(g.job_number)}<div class="small muted">${esc(g.project_name)}</div></td>
+    <td><b>${g.slots.length} × ${esc(g.trade)}</b><div class="small muted">${fmtH(g.planned_hours)} h each</div></td>
+    <td class="small">${esc(g.note || '')}</td><td class="small">${esc(g.requested_by_name || '')}</td>
+    <td class="nowrap">${g.status === 'rejected' ? `<span class="pill bad">Rejected</span><div class="small">${esc(g.reject_reason || '')}</div>`
+      : `<button class="${admin ? 'primary' : ''}" data-open-slot="${esc(g.key)}">${admin ? 'Fill…' : 'View'}</button>`}</td></tr>`).join('');
   const m = modal({
     title: admin ? 'Crew requests to approve' : 'My crew requests',
     wide: true,
-    body: `<h2 style="margin-top:0">Pending (${r.pending.length})</h2>
-      ${r.pending.length ? `<div class="table-wrap" style="max-height:340px"><table class="list"><thead><tr>${admin ? '<th><input type="checkbox" class="rq-all" aria-label="Select all"></th>' : ''}<th>Day</th><th>Job</th><th>Employee</th><th class="right">Hours</th><th>Requested by</th></tr></thead>
+    body: `<h2 style="margin-top:0">Trade requests ${admin ? 'to fill' : ''} (${r.open_slots.length} open)</h2>
+      ${tradeGroups.length ? `<div class="table-wrap" style="max-height:300px"><table class="list"><thead><tr><th>Day</th><th>Job</th><th>Needed</th><th>Notes</th><th>Requested by</th><th></th></tr></thead><tbody>${tradeRows}</tbody></table></div>`
+        : '<div class="muted">No trade requests waiting.</div>'}
+      <h2>Requests for specific people – pending (${r.pending.length})</h2>
+      ${r.pending.length ? `<div class="table-wrap" style="max-height:340px"><table class="list"><thead><tr>${admin ? '<th><input type="checkbox" class="rq-all" aria-label="Select all"></th>' : ''}<th>Day</th><th>Job</th><th>Employee</th><th class="right">Hours</th><th>Requested by</th><th>Notes</th></tr></thead>
         <tbody>${r.pending.map((a) => row(a, admin)).join('')}</tbody></table></div>` : '<div class="muted">Nothing waiting for approval.</div>'}
       ${r.rejected.length ? `<h2>Rejected, last 2 weeks (${r.rejected.length})</h2><div class="table-wrap" style="max-height:240px"><table class="list"><thead><tr>${admin ? '<th></th>' : ''}<th>Day</th><th>Job</th><th>Employee</th><th class="right">Hours</th><th>Requested by</th><th>Reason</th></tr></thead>
         <tbody>${r.rejected.map((a) => row(a, admin)).join('')}</tbody></table></div>
@@ -891,6 +941,7 @@ async function requestsModal() {
       <button class="danger" data-act="reject" disabled>✕ Reject selected…</button><button class="ok" data-act="approve" disabled>✓ Approve selected</button>
       ${r.pending.length ? `<button class="primary" data-act="all">✓ Approve all ${r.pending.length}</button>` : ''}` : '<button data-close>Close</button>',
   });
+  $$('[data-open-slot]', m.el).forEach((b) => (b.onclick = () => { m.close(); slotModal(b.dataset.openSlot, tradeGroups); }));
   if (!admin) return;
   const all = [...r.pending, ...r.rejected];
   const picked = () => $$('.rq:checked', m.el).map((x) => all.find((a) => a.id === Number(x.value)));
@@ -917,6 +968,127 @@ async function requestsModal() {
   $('[data-act=approve]', m.el).onclick = () => approve(picked().map((a) => a.id));
   const allBtn = $('[data-act=all]', m.el); if (allBtn) allBtn.onclick = () => approve(r.pending.map((a) => a.id));
   $('[data-act=reject]', m.el).onclick = () => { const list = picked(); m.close(); rejectModal(list); };
+}
+
+// ---- Trade requests ("2 carpenters") -------------------------------------------
+// Group open/rejected slots that share a job, day, trade, status and notes.
+function groupSlots(slots) {
+  const map = new Map();
+  for (const sl of slots) {
+    const key = [sl.project_id, sl.work_date, sl.trade, sl.status, sl.task || ''].join('|');
+    if (!map.has(key)) map.set(key, { key, ...sl, note: sl.task, slots: [] });
+    map.get(key).slots.push(sl);
+  }
+  return [...map.values()];
+}
+// Superintendents also see their rejected requests (with the reason); the manager sees open ones.
+function slotGroups(pid, day) {
+  const all = (S.sched?.slots || []).filter((sl) => sl.project_id === pid && sl.work_date === day && (sl.status === 'open' || !isAdmin()));
+  return groupSlots(all);
+}
+function slotChips(pid, day) {
+  return slotGroups(pid, day).map((g) => `<div class="chip slot ${g.status === 'rejected' ? 'rej' : ''} ${canSchedule() ? 'can' : ''}" data-slot="${esc(g.key)}"
+    title="${esc(`${g.slots.length} × ${g.trade} ${g.status === 'rejected' ? `rejected: ${g.reject_reason || ''}` : 'requested'} by ${g.requested_by_name || ''}${g.note ? `\n${g.note}` : ''}`)}">
+    <span class="nm">${g.slots.length} × ${esc(g.trade)} ${g.status === 'rejected' ? '✕' : 'needed'}</span></div>`).join('');
+}
+
+// Click a trade request: the manager fills it with names; the superintendent can view or withdraw it.
+async function slotModal(key, groups) {
+  const g = (groups || groupSlots(S.sched?.slots || [])).find((x) => x.key === key);
+  if (!g) return;
+  const head = `<div class="small muted">${esc(g.job_number)} ${esc(g.project_name)} · ${esc(dayLabel(g.work_date, { weekday: 'long', month: 'short', day: 'numeric' }))} · ${fmtH(g.planned_hours)} h each · requested by ${esc(g.requested_by_name || '')}</div>
+    ${g.note ? `<div class="slot-note"><b>Notes:</b> ${esc(g.note)}</div>` : ''}`;
+  const after = () => { if (currentRoute().path === 'schedule') renderSchedule($('#page')); };
+  if (!isAdmin() || g.status !== 'open') {
+    const canWithdraw = canEditProject(g.project_id);
+    const m = modal({
+      title: `${g.slots.length} × ${g.trade} ${g.status === 'rejected' ? '– rejected' : 'requested'}`,
+      body: `${head}${g.status === 'rejected' ? `<div class="alert bad"><b>Rejected:</b> ${esc(g.reject_reason || '')}${g.decided_by_name ? ` <span class="muted">– ${esc(g.decided_by_name)}</span>` : ''}</div>`
+        : '<div class="small muted">Waiting for the workforce manager to fill in names.</div>'}`,
+      footer: `${canWithdraw ? `<button class="danger" data-act="withdraw">${g.status === 'rejected' ? 'Clear' : 'Withdraw request'}</button>` : ''}<span class="spacer"></span><button data-close>Close</button>`,
+    });
+    const w = $('[data-act=withdraw]', m.el);
+    if (w) w.onclick = async () => {
+      try { for (const sl of g.slots) await api('DELETE', `/crew-requests/${sl.id}`); m.close(); toast('Request withdrawn'); after(); } catch (e) { errorBox(m.el, e.message); }
+    };
+    return;
+  }
+  // Manager: pick up to N people for the slots.
+  const wk = await api('GET', `/schedule?start=${g.work_date}`);
+  if (!S.crew) await loadLookups();
+  const booked = {}; for (const a of wk.assignments) if (a.work_date === g.work_date && a.approval_status !== 'rejected') (booked[a.employee_id] ||= []).push(a);
+  const off = new Set(wk.time_off.filter((o) => o.off_date === g.work_date).map((o) => o.employee_id));
+  const warnAt = S.settings.warn_daily_hours || 8;
+  const m = modal({
+    title: `Fill ${g.slots.length} × ${g.trade}`,
+    wide: true,
+    body: `${head}
+      <div class="toolbar" style="margin:0">
+        <label class="check"><input type="checkbox" data-f="match" checked> Only ${esc(g.trade)}s</label>
+        <input type="search" data-f="q" placeholder="Search name…" style="flex:1;min-width:140px">
+        <label class="check">Hours <input type="number" step="0.5" min="0" max="24" data-f="hours" value="${g.planned_hours}" style="width:80px"></label>
+      </div>
+      <div class="emp-pick" id="fill-pick"></div>
+      <div class="small muted" id="fill-count"></div>`,
+    footer: `<button class="danger" data-act="reject">✕ Reject…</button><span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="fill" disabled>Fill</button>`,
+  });
+  const box = $('#fill-pick', m.el); const btn = $('[data-act=fill]', m.el);
+  const picked = () => $$('#fill-pick input:checked', m.el).map((x) => Number(x.value));
+  const sync = () => {
+    const n = picked().length;
+    $$('#fill-pick input:not(:checked)', m.el).forEach((x) => { if (!x.dataset.blocked) x.disabled = n >= g.slots.length; });
+    btn.disabled = !n; btn.textContent = `Fill ${n || ''} of ${g.slots.length}`;
+    $('#fill-count', m.el).textContent = `${n} of ${g.slots.length} selected`;
+  };
+  const draw = () => {
+    const match = $('[data-f=match]', m.el).checked; const q = $('[data-f=q]', m.el).value.toLowerCase();
+    const hrs = Number($('[data-f=hours]', m.el).value) || 0;
+    const keep = new Set(picked());
+    const rows = S.crew.filter((e) => (!match || (e.trade || '').toLowerCase() === g.trade.toLowerCase()) && (!q || fullName(e).toLowerCase().includes(q)))
+      .sort((a, b) => (booked[a.id] ? 1 : 0) - (booked[b.id] ? 1 : 0) || a.last_name.localeCompare(b.last_name));
+    box.innerHTML = rows.map((e) => {
+      const jobs = booked[e.id] || [];
+      const same = jobs.some((a) => a.project_id === g.project_id);
+      const total = jobs.reduce((x, a) => x + a.planned_hours, 0) + hrs;
+      const over = total > (Number(S.settings.max_daily_hours) || 24);
+      const blocked = off.has(e.id) || same || over;
+      const tag = off.has(e.id) ? '<span class="pill bad">OFF</span>' : same ? '<span class="pill bad">already on this job</span>'
+        : over ? `<span class="pill bad">${esc(jobs.map((a) => `${a.job_number} ${fmtH(a.planned_hours)}h`).join(', '))} – would be ${fmtH(total)} h, over the limit</span>`
+        : jobs.length ? `<span class="pill warn">${esc(jobs.map((a) => `${a.job_number} ${fmtH(a.planned_hours)}h`).join(', '))}${total > warnAt ? ` → ⚠ ${fmtH(total)} h` : ''}</span>` : '<span class="pill job">open</span>';
+      return `<label class="${blocked ? 'busy' : ''}"><input type="checkbox" value="${e.id}" ${keep.has(e.id) && !blocked ? 'checked' : ''} ${blocked ? 'disabled data-blocked="1"' : ''}>
+        <span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc([e.trade, e.classification].filter(Boolean).join(' · '))}</span></span><span class="meta">${tag}</span></label>`;
+    }).join('') || `<div class="muted" style="padding:12px">No ${match ? esc(g.trade) + 's' : 'employees'} found. Untick “Only ${esc(g.trade)}s” to see everyone.</div>`;
+    $$('#fill-pick input', m.el).forEach((x) => (x.onchange = sync));
+    sync();
+  };
+  $$('[data-f]', m.el).forEach((x) => (x.oninput = draw));
+  draw();
+  btn.onclick = async () => {
+    const ids = picked(); const hrs = $('[data-f=hours]', m.el).value;
+    const errors = []; const warnings = []; let filled = 0;
+    for (let i = 0; i < ids.length; i++) {
+      try { const r = await api('POST', `/crew-requests/${g.slots[i].id}/fill`, { employee_id: ids[i], planned_hours: hrs }); filled += 1; warnings.push(...(r.warnings || [])); } catch (e) { errors.push(e.message); }
+    }
+    after();
+    if (errors.length || warnings.length) {
+      errorBox(m.el, '');
+      if (errors.length) errorBox(m.el, `Filled ${filled}. Not filled:`, errors);
+      if (warnings.length) showWarnings(m.el, warnings);
+      btn.disabled = true;
+    } else { m.close(); toast(`Filled ${filled} ${g.trade} request${filled === 1 ? '' : 's'}`); }
+  };
+  $('[data-act=reject]', m.el).onclick = () => {
+    m.close();
+    const r = modal({
+      title: `Reject ${g.slots.length} × ${g.trade}`,
+      body: `${head}<label>Reason for rejection *<textarea name="reason" maxlength="300" placeholder="e.g. No carpenters free Tuesday – can we move this to Wednesday?"></textarea></label>
+        <div class="small muted">The superintendent sees this reason.</div>`,
+      footer: '<button data-close>Cancel</button><button class="danger" data-act="go">✕ Reject</button>',
+    });
+    $('[data-act=go]', r.el).onclick = async () => {
+      try { await api('POST', '/crew-requests/reject', { ids: g.slots.map((x) => x.id), reason: $('[name=reason]', r.el).value }); r.close(); toast('Rejected – the superintendent will see the reason'); after(); } catch (e) { errorBox(r.el, e.message); }
+    };
+  };
 }
 
 function copyWeekModal() {
