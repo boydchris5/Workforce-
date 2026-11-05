@@ -32,9 +32,10 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin','super','viewer')),
+  role TEXT NOT NULL CHECK (role IN ('admin','super','viewer','office','office_admin')),
   can_view_payroll INTEGER NOT NULL DEFAULT 0,
   employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  office_staff_id INTEGER REFERENCES office_staff(id) ON DELETE SET NULL,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -204,6 +205,38 @@ CREATE TABLE IF NOT EXISTS audit_log (
   at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+
+-- Office staff (estimators, PM/accounting/admin) are a separate lightweight
+-- roster from field employees() -- no trades/union/classification fields apply.
+CREATE TABLE IF NOT EXISTS office_staff (
+  id INTEGER PRIMARY KEY,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  email TEXT,
+  department TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- No PTO balance/accrual tracking yet -- just request -> decide -> log.
+-- calendar_event_id is unused until Phase 2 (M365 calendar sync).
+CREATE TABLE IF NOT EXISTS office_time_off_requests (
+  id INTEGER PRIMARY KEY,
+  office_staff_id INTEGER NOT NULL REFERENCES office_staff(id) ON DELETE CASCADE,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'pto' CHECK (type IN ('pto','sick','personal','other')),
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','denied','cancelled')),
+  requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at TEXT,
+  decision_note TEXT,
+  calendar_event_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_otor_staff ON office_time_off_requests(office_staff_id, start_date);
+CREATE INDEX IF NOT EXISTS idx_otor_status ON office_time_off_requests(status, start_date);
 `;
 
 const DEFAULT_SETTINGS = {
@@ -218,7 +251,7 @@ const DEFAULT_SETTINGS = {
   warn_daily_hours: '8',
 };
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -280,6 +313,30 @@ function migrate(db) {
   if (!asg6.includes('source')) {
     db.exec("ALTER TABLE assignments ADD COLUMN source TEXT NOT NULL DEFAULT 'schedule';");
     db.exec('ALTER TABLE assignments ADD COLUMN timecard_hours REAL;');
+  }
+  // v8: office staff logins (role 'office'/'office_admin') and their link to
+  // an office_staff roster row. SQLite can't ALTER a CHECK constraint, so
+  // rebuild users the same way the v2 assignments migration did.
+  if (!/'office'/.test(tableSql('users'))) {
+    db.exec('PRAGMA foreign_keys = OFF;');
+    tx(db, () => {
+      db.exec(`CREATE TABLE users_v2 (
+        id INTEGER PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        name TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin','super','viewer','office','office_admin')),
+        can_view_payroll INTEGER NOT NULL DEFAULT 0,
+        employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+        office_staff_id INTEGER REFERENCES office_staff(id) ON DELETE SET NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );`);
+      const cols = 'id, username, name, password_hash, role, can_view_payroll, employee_id, active, created_at';
+      db.exec(`INSERT INTO users_v2 (${cols}) SELECT ${cols} FROM users;`);
+      db.exec('DROP TABLE users; ALTER TABLE users_v2 RENAME TO users;');
+    });
+    db.exec('PRAGMA foreign_keys = ON;');
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

@@ -262,8 +262,15 @@ test('upgrades a database from an earlier version without losing data', () => {
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 8);
   assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'crew_request_slots'").get());
+  assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'office_staff'").get());
+  assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'office_time_off_requests'").get());
+  // The old role-restricted users table is rebuilt to accept the new roles without losing data
+  assert.equal(up.prepare('SELECT role, employee_id FROM users WHERE id = 1').get().role, 'super');
+  assert.doesNotThrow(() => up.prepare(
+    "INSERT INTO users (username, name, password_hash, role) VALUES ('officeperson', 'Office Person', 'x', 'office')"
+  ).run());
   assert.equal(up.prepare('SELECT source AS s FROM assignments').get().s, 'schedule');
   assert.equal(up.prepare('SELECT starting_hours AS h FROM projects WHERE id = 1').get().h, 0);
   assert.equal(up.prepare('SELECT approval_status AS s FROM assignments').get().s, 'approved'); // existing work counts as approved

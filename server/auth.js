@@ -42,7 +42,7 @@ function cookieHeader(token, secure) {
 
 function sessionMiddleware(db) {
   const find = db.prepare(`
-    SELECT u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id
+    SELECT u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token = ? AND s.expires_at > ? AND u.active = 1`);
   return (req, _res, next) => {
