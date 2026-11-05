@@ -141,29 +141,35 @@ const myProjects = () => (S.projects || []).filter((p) => p.status !== 'complete
 const isAdmin = () => S.user && S.user.role === 'admin';
 const mobile = () => window.innerWidth < 760;
 
+const isOfficeRole = () => S.user && ['office', 'office_admin'].includes(S.user.role);
+
 const ROUTES = [
-  { path: 'schedule', label: 'Schedule', render: renderSchedule },
-  { path: 'my', label: 'My Schedule', render: renderMy, show: () => S.user.employee_id },
+  { path: 'schedule', label: 'Schedule', render: renderSchedule, show: () => !isOfficeRole() },
+  { path: 'my', label: 'My Schedule', render: renderMy, show: () => !isOfficeRole() && S.user.employee_id },
   { path: 'verify', label: 'Verify Hours', render: renderVerify, show: canSchedule },
-  { path: 'projects', label: 'Projects', render: renderProjects },
-  { path: 'employees', label: 'Employees', render: renderEmployees },
-  { path: 'records', label: 'Records', render: renderRecords },
+  { path: 'projects', label: 'Projects', render: renderProjects, show: () => !isOfficeRole() },
+  { path: 'employees', label: 'Employees', render: renderEmployees, show: () => !isOfficeRole() },
+  { path: 'records', label: 'Records', render: renderRecords, show: () => !isOfficeRole() },
   { path: 'payroll', label: '🔒 Payroll', render: renderPayroll, show: () => S.user.can_view_payroll, cls: 'private' },
+  // Distinct from the field scheduler above: office staff request their own time off,
+  // an Office Manager approves everyone's. The Workforce Manager (admin) sees it too.
+  { path: 'timeoff', label: 'Time Off', render: renderTimeOff, show: () => ['admin', 'office', 'office_admin'].includes(S.user.role) },
   { path: 'admin', label: 'Admin', render: renderAdmin, show: isAdmin },
 ];
 
 function currentRoute() {
-  const p = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'schedule';
-  return ROUTES.find((r) => r.path === p && (!r.show || r.show())) || ROUTES[0];
+  const visible = ROUTES.filter((r) => !r.show || r.show());
+  const p = (location.hash.replace(/^#\/?/, '').split('?')[0]) || visible[0].path;
+  return visible.find((r) => r.path === p) || visible[0];
 }
 
 // The user guide opens at the section for the page you're on.
-const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', admin: 'admin' };
+const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', timeoff: 'timeoff', admin: 'admin' };
 const helpLink = (path) => `/help.html#${HELP_SECTIONS[path] || 'welcome'}`;
 
 function shell() {
   const r = currentRoute();
-  const roleName = { admin: 'Workforce Manager', super: 'Superintendent', viewer: 'Field' }[S.user.role];
+  const roleName = { admin: 'Workforce Manager', super: 'Superintendent', viewer: 'Field', office: 'Office Staff', office_admin: 'Office Manager' }[S.user.role];
   $('#app').innerHTML = `
     <header class="top">
       <button class="menu-btn" aria-label="Menu">☰</button>
@@ -2042,6 +2048,145 @@ async function payRates(el) {
 // Admin: users, settings, audit log
 // ---------------------------------------------------------------------------
 S.adminTab = 'users';
+// ---------------------------------------------------------------------------
+// Office time off -- distinct from the field scheduler above. 'office' logins
+// request their own; 'office_admin' (and 'admin') approve/deny and manage the
+// office roster. See server/app.js's "office time off" section for the API.
+// ---------------------------------------------------------------------------
+const TIME_OFF_TYPE_LABEL = { pto: 'PTO', sick: 'Sick', personal: 'Personal', other: 'Other' };
+const TIME_OFF_STATUS = { pending: ['Pending', 'warn'], approved: ['Approved', 'ok'], denied: ['Denied', 'bad'], cancelled: ['Cancelled', ''] };
+const timeOffStatusPill = (s) => `<span class="pill ${TIME_OFF_STATUS[s][1]}">${TIME_OFF_STATUS[s][0]}</span>`;
+const timeOffDates = (r) => `${esc(dayLabel(r.start_date))}${r.start_date !== r.end_date ? ` – ${esc(dayLabel(r.end_date))}` : ''}`;
+
+async function renderTimeOff(page) {
+  if (['admin', 'office_admin'].includes(S.user.role)) return renderTimeOffApprover(page);
+  return renderTimeOffSelf(page);
+}
+
+async function renderTimeOffSelf(page) {
+  const [mine, upcoming] = await Promise.all([api('GET', '/time-off-requests'), api('GET', '/time-off-requests/upcoming')]);
+  page.innerHTML = `
+    <div class="toolbar"><h1 style="margin:0">Time Off</h1><span class="spacer"></span>
+      <button class="primary" data-act="new">+ Request time off</button></div>
+    <h2>My requests</h2>
+    ${mine.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Dates</th><th>Type</th><th>Status</th><th>Note</th><th></th></tr></thead>
+      <tbody>${mine.map((r) => `<tr>
+        <td class="nowrap">${timeOffDates(r)}</td>
+        <td>${esc(TIME_OFF_TYPE_LABEL[r.type] || r.type)}</td>
+        <td>${timeOffStatusPill(r.status)}${r.decision_note ? `<div class="small muted">${esc(r.decision_note)}</div>` : ''}</td>
+        <td class="small muted">${esc(r.note || '')}</td>
+        <td>${['pending', 'approved'].includes(r.status) ? `<button class="link" data-cancel="${r.id}">Cancel</button>` : ''}</td>
+      </tr>`).join('')}</tbody></table></div>` : '<div class="card muted">No requests yet.</div>'}
+    <h2>Who's out (approved)</h2>
+    ${upcoming.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th></tr></thead>
+      <tbody>${upcoming.map((u) => `<tr><td>${esc(u.first_name)} ${esc(u.last_name)}</td><td class="nowrap">${timeOffDates(u)}</td><td>${esc(TIME_OFF_TYPE_LABEL[u.type] || u.type)}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="card muted">Nobody has upcoming approved time off.</div>'}`;
+  $('[data-act=new]', page).onclick = () => requestTimeOffModal(page);
+  $$('[data-cancel]', page).forEach((b) => (b.onclick = async () => {
+    if (!confirm('Cancel this time off request?')) return;
+    try { await api('POST', `/time-off-requests/${b.dataset.cancel}/cancel`, {}); toast('Cancelled'); renderTimeOffSelf(page); }
+    catch (e) { toast(e.message, true); }
+  }));
+}
+
+function requestTimeOffModal(page) {
+  const m = modal({
+    title: 'Request time off',
+    body: `<div class="grid2">
+        <label>Start date<input type="date" name="start_date" required></label>
+        <label>End date<input type="date" name="end_date" required></label>
+      </div>
+      <label>Type<select name="type">${Object.entries(TIME_OFF_TYPE_LABEL).map(([k, v]) => opt(k, v)).join('')}</select></label>
+      <label>Note (optional)<textarea name="note" maxlength="500"></textarea></label>`,
+    footer: '<button data-close>Cancel</button><button class="primary" data-act="go">Submit request</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    try { await api('POST', '/time-off-requests', formData(m.el)); m.close(); toast('Request submitted'); renderTimeOffSelf(page); }
+    catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+async function renderTimeOffApprover(page) {
+  page.innerHTML = `<div class="toolbar"><h1 style="margin:0">Time Off</h1><span class="spacer"></span>
+    <div class="seg">${[['requests', 'Requests'], ['staff', 'Staff']].map(([k, l]) => `<button data-tab="${k}" class="${(S.timeOffTab || 'requests') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div id="to-body"></div>`;
+  $$('[data-tab]', page).forEach((b) => (b.onclick = () => { S.timeOffTab = b.dataset.tab; renderTimeOffApprover(page); }));
+  const el = $('#to-body', page);
+  if ((S.timeOffTab || 'requests') === 'staff') return timeOffStaffTab(el);
+  return timeOffRequestsTab(el);
+}
+
+async function timeOffRequestsTab(el) {
+  const requests = await api('GET', '/time-off-requests');
+  const pending = requests.filter((r) => r.status === 'pending');
+  el.innerHTML = `
+    ${pending.length ? `<h2>Pending (${pending.length})</h2>
+      <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th><th>Note</th><th></th></tr></thead>
+      <tbody>${pending.map((r) => `<tr>
+        <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+        <td class="nowrap">${timeOffDates(r)}</td>
+        <td>${esc(TIME_OFF_TYPE_LABEL[r.type] || r.type)}</td>
+        <td class="small muted">${esc(r.note || '')}</td>
+        <td class="nowrap"><button class="ok" data-approve="${r.id}">✓ Approve</button> <button class="danger" data-deny="${r.id}">✕ Deny</button></td>
+      </tr>`).join('')}</tbody></table></div>` : '<div class="card muted">No pending requests.</div>'}
+    <h2>All requests</h2>
+    <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th><th>Status</th><th>Decided by</th></tr></thead>
+    <tbody>${requests.map((r) => `<tr>
+      <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+      <td class="nowrap">${timeOffDates(r)}</td>
+      <td>${esc(TIME_OFF_TYPE_LABEL[r.type] || r.type)}</td>
+      <td>${timeOffStatusPill(r.status)}${r.decision_note ? `<div class="small muted">${esc(r.decision_note)}</div>` : ''}</td>
+      <td class="small muted">${esc(r.decided_by_name || '')}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+  $$('[data-approve]', el).forEach((b) => (b.onclick = async () => {
+    try { await api('POST', `/time-off-requests/${b.dataset.approve}/decide`, { status: 'approved' }); toast('Approved'); timeOffRequestsTab(el); }
+    catch (e) { toast(e.message, true); }
+  }));
+  $$('[data-deny]', el).forEach((b) => (b.onclick = () => denyTimeOffModal(Number(b.dataset.deny), el)));
+}
+
+function denyTimeOffModal(id, el) {
+  const m = modal({
+    title: 'Deny time off request',
+    body: '<label>Reason (optional, shown to the requester)<textarea name="decision_note" maxlength="500"></textarea></label>',
+    footer: '<button data-close>Cancel</button><button class="danger" data-act="go">✕ Deny</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    try {
+      await api('POST', `/time-off-requests/${id}/decide`, { status: 'denied', decision_note: $('[name=decision_note]', m.el).value });
+      m.close(); toast('Denied'); timeOffRequestsTab(el);
+    } catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+async function timeOffStaffTab(el) {
+  const roster = await api('GET', '/office-staff');
+  el.innerHTML = `<div class="toolbar"><span class="spacer"></span><button class="primary" data-act="new">+ Add office staff</button></div>
+    <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Status</th></tr></thead>
+    <tbody>${roster.map((s) => `<tr class="click" data-id="${s.id}"><td>${esc(s.first_name)} ${esc(s.last_name)}</td>
+      <td>${esc(s.email || '')}</td><td>${esc(s.department || '')}</td>
+      <td>${s.active ? '<span class="pill ok">active</span>' : '<span class="pill">disabled</span>'}</td></tr>`).join('')}</tbody></table></div>`;
+  const edit = (s) => {
+    const m = modal({
+      title: s.id ? `Edit ${s.first_name} ${s.last_name}` : 'Add office staff',
+      body: `<div class="grid2">
+          <label>First name<input name="first_name" value="${esc(s.first_name || '')}"></label>
+          <label>Last name<input name="last_name" value="${esc(s.last_name || '')}"></label>
+          <label>Email<input name="email" type="email" value="${esc(s.email || '')}"></label>
+          <label>Department<input name="department" value="${esc(s.department || '')}"></label>
+        </div>
+        <label class="check"><input type="checkbox" name="active" ${s.active !== 0 ? 'checked' : ''}> Active</label>`,
+      footer: '<button data-close>Cancel</button><button class="primary" data-act="save">Save</button>',
+    });
+    $('[data-act=save]', m.el).onclick = async () => {
+      try { await api(s.id ? 'PUT' : 'POST', s.id ? `/office-staff/${s.id}` : '/office-staff', formData(m.el)); m.close(); toast('Saved'); timeOffStaffTab(el); }
+      catch (e) { errorBox(m.el, e.message); }
+    };
+  };
+  $('[data-act=new]', el).onclick = () => edit({ active: 1 });
+  $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => edit(roster.find((s) => s.id === Number(tr.dataset.id)))));
+}
+
 async function renderAdmin(page) {
   page.innerHTML = `<div class="toolbar"><h1 style="margin:0">Admin</h1><span class="spacer"></span>
     <div class="seg">${[['users', 'Users'], ['settings', 'Settings'], ['audit', 'Activity log']].map(([k, l]) => `<button data-tab="${k}" class="${S.adminTab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div><div id="admin-body"></div>`;
@@ -2055,13 +2200,17 @@ async function renderAdmin(page) {
 }
 
 async function adminUsers(el) {
-  const [users, emps] = await Promise.all([api('GET', '/users'), api('GET', '/employees')]);
-  const roleName = { admin: 'Workforce Manager (admin)', super: 'Superintendent', viewer: 'Field staff (view only)' };
-  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Field staff can view the schedule and their own assignments. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
-    <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Payroll</th><th>Linked employee</th><th>Status</th></tr></thead>
+  const [users, emps, officeRoster] = await Promise.all([api('GET', '/users'), api('GET', '/employees'), api('GET', '/office-staff')]);
+  const roleName = { admin: 'Workforce Manager (admin)', super: 'Superintendent', viewer: 'Field staff (view only)', office: 'Office Staff', office_admin: 'Office Manager' };
+  const linkedName = (u) => {
+    if (['office', 'office_admin'].includes(u.role)) { const s = officeRoster.find((x) => x.id === u.office_staff_id); return s ? `${s.first_name} ${s.last_name}` : ''; }
+    const e = emps.find((x) => x.id === u.employee_id); return e ? fullName(e) : '';
+  };
+  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Field staff can view the schedule and their own assignments. Office Staff/Office Manager only see Time Off. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
+    <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Payroll</th><th>Linked</th><th>Status</th></tr></thead>
     <tbody>${users.map((u) => `<tr class="click" data-id="${u.id}"><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(roleName[u.role])}</td>
       <td>${u.role === 'admin' || u.can_view_payroll ? '<span class="pill warn">🔒 Yes</span>' : ''}</td>
-      <td>${esc((emps.find((e) => e.id === u.employee_id) && fullName(emps.find((e) => e.id === u.employee_id))) || '')}</td>
+      <td>${esc(linkedName(u))}</td>
       <td>${u.active ? '<span class="pill ok">active</span>' : '<span class="pill">disabled</span>'}</td></tr>`).join('')}</tbody></table></div>`;
   const edit = (u) => {
     const m = modal({
@@ -2070,13 +2219,22 @@ async function adminUsers(el) {
           <label>Full name<input name="name" value="${esc(u.name || '')}"></label>
           <label>Username<input name="username" value="${esc(u.username || '')}" autocapitalize="none"></label>
           <label>Role<select name="role">${Object.entries(roleName).map(([k, v]) => opt(k, v, u.role || 'viewer')).join('')}</select></label>
-          <label>Linked employee (for "My Schedule")<select name="employee_id"><option value="">—</option>${emps.map((e) => opt(e.id, `${e.last_name}, ${e.first_name}`, u.employee_id)).join('')}</select></label>
+          <div data-link="employee"><label>Linked employee (for "My Schedule")<select name="employee_id"><option value="">—</option>${emps.map((e) => opt(e.id, `${e.last_name}, ${e.first_name}`, u.employee_id)).join('')}</select></label></div>
+          <div data-link="office"><label>Linked office staff<select name="office_staff_id"><option value="">—</option>${officeRoster.map((s) => opt(s.id, `${s.last_name}, ${s.first_name}`, u.office_staff_id)).join('')}</select></label></div>
           <label>${u.id ? 'Reset password (leave blank to keep)' : 'Password (8+ characters)'}<input name="password" type="text" autocomplete="new-password"></label>
         </div>
         <label class="check"><input type="checkbox" name="can_view_payroll" ${u.can_view_payroll ? 'checked' : ''}> 🔒 Can view private payroll forecast &amp; pay rates</label>
         <label class="check"><input type="checkbox" name="active" ${u.active !== 0 ? 'checked' : ''}> Account active</label>`,
       footer: '<button data-close>Cancel</button><button class="primary" data-act="save">Save</button>',
     });
+    const roleSel = $('[name=role]', m.el);
+    const syncLinkFields = () => {
+      const isOffice = ['office', 'office_admin'].includes(roleSel.value);
+      $('[data-link=employee]', m.el).style.display = isOffice ? 'none' : '';
+      $('[data-link=office]', m.el).style.display = isOffice ? '' : 'none';
+    };
+    roleSel.onchange = syncLinkFields;
+    syncLinkFields();
     $('[data-act=save]', m.el).onclick = async () => {
       try { await api(u.id ? 'PUT' : 'POST', u.id ? `/users/${u.id}` : '/users', formData(m.el)); m.close(); toast('Saved'); adminUsers(el); } catch (e) { errorBox(m.el, e.message); }
     };

@@ -62,6 +62,8 @@ function createApp(db, opts = {}) {
   const api = express.Router();
   const canSchedule = auth.requireRole('admin', 'super');
   const adminOnly = auth.requireRole('admin');
+  const officeApprover = auth.requireRole('admin', 'office_admin');
+  const officeAny = auth.requireRole('admin', 'office', 'office_admin');
 
   api.get('/health', (_req, res) => res.json({ ok: true }));
 
@@ -947,6 +949,114 @@ function createApp(db, opts = {}) {
     res.json({ ok: true });
   });
 
+  // ---- office time off (request/approve -- separate from field scheduling above) ---
+  const TIME_OFF_TYPES = ['pto', 'sick', 'personal', 'other'];
+  const officeStaffRow = db.prepare('SELECT * FROM office_staff WHERE id = ?');
+
+  api.get('/office-staff', officeAny, (_req, res) => {
+    res.json(db.prepare('SELECT * FROM office_staff ORDER BY active DESC, last_name, first_name').all());
+  });
+
+  function readOfficeStaff(b) {
+    const first_name = str(b.first_name, 100); const last_name = str(b.last_name, 100);
+    if (!first_name || !last_name) throw bad('First and last name are required.');
+    return {
+      first_name, last_name,
+      email: str(b.email, 200), department: str(b.department, 100),
+      active: b.active === undefined ? 1 : bool(b.active),
+    };
+  }
+
+  api.post('/office-staff', officeApprover, (req, res) => {
+    const s = readOfficeStaff(req.body);
+    const r = db.prepare('INSERT INTO office_staff (first_name, last_name, email, department, active) VALUES (?, ?, ?, ?, ?)')
+      .run(s.first_name, s.last_name, s.email, s.department, s.active);
+    audit(req, 'create', 'office_staff', Number(r.lastInsertRowid), { name: `${s.first_name} ${s.last_name}` });
+    res.json({ id: Number(r.lastInsertRowid) });
+  });
+
+  api.put('/office-staff/:id', officeApprover, (req, res) => {
+    const id = int(req.params.id);
+    const s = readOfficeStaff(req.body);
+    const r = db.prepare('UPDATE office_staff SET first_name=?, last_name=?, email=?, department=?, active=? WHERE id=?')
+      .run(s.first_name, s.last_name, s.email, s.department, s.active, id);
+    if (!r.changes) throw new HttpError(404, 'Office staff member not found.');
+    audit(req, 'update', 'office_staff', id, { name: `${s.first_name} ${s.last_name}`, active: s.active });
+    res.json({ id });
+  });
+
+  const timeOffRequestSelect = `SELECT r.*, os.first_name, os.last_name, u.name AS decided_by_name
+    FROM office_time_off_requests r JOIN office_staff os ON os.id = r.office_staff_id
+    LEFT JOIN users u ON u.id = r.decided_by`;
+
+  // Minimal, privacy-safe view for the 'office' role's "who's out" context when
+  // picking dates -- names and dates of already-approved time off only, never
+  // pending requests or decision notes (the main endpoint below keeps those
+  // restricted to the requester themselves and the approver).
+  api.get('/time-off-requests/upcoming', officeAny, (req, res) => {
+    const today = date(req.query.since, 'since') || new Date().toISOString().slice(0, 10);
+    res.json(db.prepare(`SELECT r.id, r.office_staff_id, os.first_name, os.last_name, r.start_date, r.end_date, r.type
+      FROM office_time_off_requests r JOIN office_staff os ON os.id = r.office_staff_id
+      WHERE r.status = 'approved' AND r.end_date >= ? ORDER BY r.start_date`).all(today));
+  });
+
+  api.get('/time-off-requests', officeAny, (req, res) => {
+    if (req.user.role === 'office') {
+      if (!req.user.office_staff_id) throw new HttpError(403, 'Your login is not linked to an office staff record. Ask the office manager.');
+      return res.json(db.prepare(`${timeOffRequestSelect} WHERE r.office_staff_id = ? ORDER BY r.start_date DESC`).all(req.user.office_staff_id));
+    }
+    const status = str(req.query.status, 20);
+    const rows = db.prepare(`${timeOffRequestSelect} ${status ? 'WHERE r.status = ?' : ''}
+      ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END, r.start_date DESC`).all(...(status ? [status] : []));
+    res.json(rows);
+  });
+
+  api.post('/time-off-requests', officeAny, (req, res) => {
+    let officeStaffId;
+    if (req.user.role === 'office') {
+      if (!req.user.office_staff_id) throw new HttpError(403, 'Your login is not linked to an office staff record. Ask the office manager.');
+      officeStaffId = req.user.office_staff_id;
+    } else {
+      officeStaffId = int(req.body.office_staff_id);
+      if (!officeStaffId || !officeStaffRow.get(officeStaffId)) throw bad('Pick a valid office staff member.');
+    }
+    const start = date(req.body.start_date, 'Start date', true);
+    const end = date(req.body.end_date, 'End date', true);
+    if (end < start) throw bad('The end date is before the start date.');
+    const type = str(req.body.type, 20) || 'pto';
+    if (!TIME_OFF_TYPES.includes(type)) throw bad('Invalid time off type.');
+    const note = str(req.body.note, 500);
+    const r = db.prepare(`INSERT INTO office_time_off_requests (office_staff_id, start_date, end_date, type, note, requested_by)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(officeStaffId, start, end, type, note, req.user.id);
+    audit(req, 'create', 'office_time_off_request', Number(r.lastInsertRowid), { office_staff_id: officeStaffId, start, end, type });
+    res.json({ id: Number(r.lastInsertRowid) });
+  });
+
+  api.post('/time-off-requests/:id/decide', officeApprover, (req, res) => {
+    const id = int(req.params.id);
+    const cur = db.prepare('SELECT * FROM office_time_off_requests WHERE id = ?').get(id);
+    if (!cur) throw new HttpError(404, 'Request not found.');
+    if (cur.status !== 'pending') throw bad('Only a pending request can be approved or denied.');
+    const status = str(req.body.status, 20);
+    if (!['approved', 'denied'].includes(status)) throw bad('Status must be approved or denied.');
+    const note = str(req.body.decision_note, 500);
+    db.prepare(`UPDATE office_time_off_requests SET status=?, decided_by=?, decided_at=datetime('now'), decision_note=? WHERE id=?`)
+      .run(status, req.user.id, note, id);
+    audit(req, status === 'approved' ? 'approve' : 'deny', 'office_time_off_request', id, { note });
+    res.json({ id, status });
+  });
+
+  api.post('/time-off-requests/:id/cancel', officeAny, (req, res) => {
+    const id = int(req.params.id);
+    const cur = db.prepare('SELECT * FROM office_time_off_requests WHERE id = ?').get(id);
+    if (!cur) throw new HttpError(404, 'Request not found.');
+    if (req.user.role === 'office' && cur.office_staff_id !== req.user.office_staff_id) throw new HttpError(403, 'You can only cancel your own requests.');
+    if (!['pending', 'approved'].includes(cur.status)) throw bad('That request can no longer be cancelled.');
+    db.prepare(`UPDATE office_time_off_requests SET status='cancelled', decided_by=?, decided_at=datetime('now') WHERE id=?`).run(req.user.id, id);
+    audit(req, 'cancel', 'office_time_off_request', id);
+    res.json({ id });
+  });
+
   // ---- hour verification -----------------------------------------------------------
   // Verify Hours works on the payroll week (settings.payroll_week_start, e.g. Wed–Tue).
   const payrollStart = (d) => periodStart(d || new Date().toISOString().slice(0, 10), Number(getSettings(db).payroll_week_start ?? 1));
@@ -1342,17 +1452,19 @@ function createApp(db, opts = {}) {
 
   // ---- users & settings (admin) -----------------------------------------------------
   api.get('/users', canSchedule, (req, res) => {
-    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.active, u.created_at' : 'u.id, u.name, u.role';
+    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at' : 'u.id, u.name, u.role';
     res.json(db.prepare(`SELECT ${cols} FROM users u WHERE u.active = 1 OR ? ORDER BY u.name`).all(req.user.role === 'admin' ? 1 : 0));
   });
 
+  const USER_ROLES = ['admin', 'super', 'viewer', 'office', 'office_admin'];
   function readUser(b, isNew) {
     const u = {
       username: str(b.username, 100), name: str(b.name, 200), role: str(b.role, 20) || 'viewer',
-      can_view_payroll: bool(b.can_view_payroll), employee_id: int(b.employee_id), active: b.active === undefined ? 1 : bool(b.active),
+      can_view_payroll: bool(b.can_view_payroll), employee_id: int(b.employee_id), office_staff_id: int(b.office_staff_id),
+      active: b.active === undefined ? 1 : bool(b.active),
     };
     if (!u.username || !u.name) throw bad('Username and name are required.');
-    if (!['admin', 'super', 'viewer'].includes(u.role)) throw bad('Invalid role.');
+    if (!USER_ROLES.includes(u.role)) throw bad('Invalid role.');
     const pw = b.password ? String(b.password) : '';
     if ((isNew || pw) && pw.length < 8) throw bad('Password must be at least 8 characters.');
     return { u, pw };
@@ -1362,8 +1474,8 @@ function createApp(db, opts = {}) {
     const { u, pw } = readUser(req.body, true);
     let r;
     try {
-      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.active);
+      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, office_staff_id, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active);
     } catch (e) { uniqueMsg(e, 'That username is taken.'); }
     audit(req, 'create', 'user', Number(r.lastInsertRowid), { username: u.username, role: u.role });
     res.json({ id: Number(r.lastInsertRowid) });
@@ -1374,8 +1486,8 @@ function createApp(db, opts = {}) {
     const { u, pw } = readUser(req.body, false);
     if (id === req.user.id && (u.role !== 'admin' || !u.active)) throw bad('You cannot remove your own admin access.');
     try {
-      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, active=? WHERE id=?`)
-        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.active, id);
+      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, office_staff_id=?, active=? WHERE id=?`)
+        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, id);
     } catch (e) { uniqueMsg(e, 'That username is taken.'); }
     if (pw) {
       db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(pw), id);
