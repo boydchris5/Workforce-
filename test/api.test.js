@@ -554,6 +554,53 @@ test('time card import: Wed–Tue payroll week, matches the schedule, adds unsch
   await boss('PUT', '/settings', { payroll_week_start: 1 });
 });
 
+test('procore sync: pulls rows from the Procore API and reuses the same import path', async () => {
+  const procore = require('../server/procore');
+  const origConfigured = procore.configured; const origPull = procore.pullTimecardRows;
+  try {
+    procore.configured = () => false;
+    const unconfigured = await boss('POST', '/timecards/procore-sync', { start_date: '2026-11-02', end_date: '2026-11-02' });
+    assert.equal(unconfigured.status, 400);
+    assert.match(unconfigured.body.error, /not configured/);
+
+    procore.configured = () => true;
+    const zed = (await boss('POST', '/employees', { first_name: 'Zed', last_name: 'Tester', employee_no: '9501' })).body.id;
+    const job2 = (await boss('POST', '/projects', { job_number: '9500', name: 'Procore Sync Job' })).body.id;
+    await boss('POST', '/assignments', { project_id: job2, employee_ids: [zed], dates: ['2026-11-02'], planned_hours: 8 });
+
+    let capturedArgs;
+    procore.pullTimecardRows = async (args) => {
+      capturedArgs = args;
+      return {
+        rows: [{
+          work_date: '2026-11-02', employee_no: '9501', employee_name: 'Zed Tester',
+          job_number: '9500', project_name: 'Procore Sync Job',
+          cost_code: '01-012', cost_code_name: 'Superintendent', hours: 8, time_type: 'Regular Time',
+        }],
+        projectCount: 1,
+      };
+    };
+
+    assert.equal((await sup('POST', '/timecards/procore-sync', { start_date: '2026-11-02', end_date: '2026-11-02' })).status, 403);
+
+    const pre = (await boss('POST', '/timecards/procore-sync', { start_date: '2026-11-02', end_date: '2026-11-02' })).body;
+    assert.equal(pre.committed, false);
+    assert.equal(pre.preview.matched, 1);
+    assert.deepEqual(capturedArgs, { start_date: '2026-11-02', end_date: '2026-11-02', project_id: null });
+
+    const done = (await boss('POST', '/timecards/procore-sync', { start_date: '2026-11-02', end_date: '2026-11-02', commit: true })).body;
+    assert.equal(done.committed, true);
+    assert.equal(done.result.matched, 1);
+    assert.match((await boss('GET', '/verification?start=2026-11-02')).body.imports[0].filename, /^procore-sync_2026-11-02_to_2026-11-02/);
+
+    procore.pullTimecardRows = async () => ({ rows: [], projectCount: 1 });
+    const empty = (await boss('POST', '/timecards/procore-sync', { start_date: '2026-11-02', end_date: '2026-11-02' })).body;
+    assert.equal(empty.no_data, true);
+  } finally {
+    procore.configured = origConfigured; procore.pullTimecardRows = origPull;
+  }
+});
+
 test('trade requests: a superintendent asks for "2 carpenters", the manager fills them with names', async () => {
   const day = '2026-12-14';
   const mike = (await boss('GET', '/employees')).body.find((e) => e.first_name === 'Mike' && e.last_name === 'Jones');

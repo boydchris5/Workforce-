@@ -1197,6 +1197,7 @@ async function renderVerify(page) {
       <button data-act="prev" aria-label="Previous payroll week">‹</button><strong>Payroll week ${periodLabel}</strong><button data-act="next" aria-label="Next payroll week">›</button></div>
     <div class="toolbar">
       ${isAdmin() ? '<button class="primary" data-act="import-tc">Import Procore time cards…</button>' : ''}
+      ${isAdmin() ? '<button data-act="procore-sync">Sync from Procore…</button>' : ''}
       <select data-act="proj"><option value="">All projects</option>${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, S.verifyProject)).join('')}</select>
       <span class="spacer"></span>
       ${pastPending.length ? `<button class="ok" data-act="all">✓ Verify ${pastPending.length} remaining as scheduled</button>` : ''}
@@ -1251,6 +1252,7 @@ async function renderVerify(page) {
   $('[data-act=proj]', page).onchange = (e) => { S.verifyProject = e.target.value; renderVerify(page); };
   $$('[data-filter]', page).forEach((b) => (b.onclick = () => { S.verifyFilter = b.dataset.filter; renderVerify(page); }));
   const imp = $('[data-act=import-tc]', page); if (imp) imp.onclick = () => importTimecardsModal(page);
+  const psync = $('[data-act=procore-sync]', page); if (psync) psync.onclick = () => procoreSyncModal(page, r.start, r.end);
   const all = $('[data-act=all]', page);
   if (all) all.onclick = async () => {
     if (!confirm(`Confirm ${pastPending.length} entries worked as scheduled?`)) return;
@@ -1343,6 +1345,63 @@ function importTimecardsModal(page) {
       const res = await api('POST', '/timecards/import', { rows, filename, commit: true });
       m.close();
       toast(`Imported ${res.preview.lines} lines: ${res.result.matched} match, ${res.result.variances} differ, ${res.result.unscheduled} not scheduled`);
+      S.verifyWeek = res.preview.period.from; S.verifyFilter = 'all';
+      renderVerify(page);
+    } catch (e) { errorBox(m.el, e.message); go.disabled = false; }
+  };
+}
+
+// Pull time cards straight from the Procore API instead of uploading a CSV:
+// preview against the schedule, then sync. Same server-side import path (and
+// the same replace-on-re-run behavior) as the CSV import above.
+function procoreSyncModal(page, periodStart, periodEnd) {
+  let preview = null; let busy = false;
+  const m = modal({
+    title: 'Sync from Procore',
+    wide: true,
+    body: `<div class="small muted">Pulls time card entries directly from the Procore API for the date range below and matches them
+        the same way as a CSV import, by <b>Employee ID</b> and <b>Project Number</b>. Syncing the same dates again replaces those time card lines.</div>
+      <div class="grid2">
+        <label>Start date<input type="date" name="start_date" value="${esc(periodStart)}"></label>
+        <label>End date<input type="date" name="end_date" value="${esc(periodEnd)}"></label>
+      </div>
+      <div class="toolbar" style="margin-top:8px"><button data-act="preview">Preview</button></div>
+      <div id="ps-out"></div>`,
+    footer: '<button data-close>Cancel</button><button class="primary" data-act="go" disabled>Sync</button>',
+  });
+  const out = $('#ps-out', m.el); const go = $('[data-act=go]', m.el); const prev = $('[data-act=preview]', m.el);
+  const range = () => ({ start_date: $('[name=start_date]', m.el).value, end_date: $('[name=end_date]', m.el).value });
+
+  const renderPreview = (p) => {
+    if (!p) { out.innerHTML = `<div class="alert">No time card entries found in Procore for this range.</div>`; go.disabled = true; return; }
+    out.innerHTML = `<div class="small" style="margin:8px 0">Dates <b>${esc(p.period.from)}</b> to <b>${esc(p.period.to)}</b> · ${p.lines} lines · ${p.people} people · <b>${fmtH(p.total_hours)} h</b></div>
+      <div class="stats">
+        <div class="stat ok"><div class="v">${p.matched}</div><div class="l">Match the schedule</div></div>
+        <div class="stat ${p.variances ? 'warn' : ''}"><div class="v">${p.variances}</div><div class="l">Differ from schedule</div></div>
+        <div class="stat ${p.unscheduled ? 'warn' : ''}"><div class="v">${p.unscheduled}</div><div class="l">Worked, not scheduled</div></div>
+        <div class="stat ${p.no_timecard ? 'warn' : ''}"><div class="v">${p.no_timecard}</div><div class="l">Scheduled, no time card</div></div>
+        <div class="stat ${p.unmatched_lines ? 'bad' : ''}"><div class="v">${p.unmatched_lines}</div><div class="l">Lines not matched</div></div>
+      </div>
+      ${p.replaces ? `<div class="alert warn-box">${p.replaces} time card lines already imported for these dates will be replaced.</div>` : ''}
+      ${p.unmatched.length ? `<div class="alert">Not in the app yet (these lines are kept and can be linked later):<ul>${p.unmatched.map((u) => `<li>${[u.employee && `Employee ${esc(u.employee)}`, u.job && `Job ${esc(u.job)}`].filter(Boolean).join(' · ')}</li>`).join('')}</ul></div>` : ''}
+      ${p.errors.length ? `<div class="alert bad">${p.errors.length} line(s) couldn't be read and will be skipped:<ul>${p.errors.slice(0, 10).map((x) => `<li>Row ${x.line}: ${esc(x.reason)}</li>`).join('')}</ul></div>` : ''}`;
+    go.disabled = false; go.textContent = `Sync ${p.lines} lines`;
+  };
+
+  prev.onclick = async () => {
+    if (busy) return; busy = true; errorBox(m.el, ''); prev.disabled = true; out.innerHTML = '<div class="small muted">Pulling from Procore…</div>';
+    try {
+      const res = await api('POST', '/timecards/procore-sync', { ...range() });
+      preview = res.no_data ? null : res.preview;
+      renderPreview(preview);
+    } catch (e) { out.innerHTML = ''; go.disabled = true; errorBox(m.el, e.message); } finally { busy = false; prev.disabled = false; }
+  };
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const res = await api('POST', '/timecards/procore-sync', { ...range(), commit: true });
+      m.close();
+      toast(`Synced ${res.preview.lines} lines: ${res.result.matched} match, ${res.result.variances} differ, ${res.result.unscheduled} not scheduled`);
       S.verifyWeek = res.preview.period.from; S.verifyFilter = 'all';
       renderVerify(page);
     } catch (e) { errorBox(m.el, e.message); go.disabled = false; }

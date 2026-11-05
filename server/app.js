@@ -5,6 +5,7 @@ const { tx, getSettings } = require('./db');
 const auth = require('./auth');
 const { isDate, addDays, weekStart, periodStart, weekDates, daysBetween } = require('./dates');
 const { costAssignments, rateLookup, sumInto, round2 } = require('./payroll');
+const procore = require('./procore');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -1059,11 +1060,12 @@ function createApp(db, opts = {}) {
     return out;
   }
 
-  api.post('/timecards/import', adminOnly, (req, res) => {
-    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
-    if (!rows.length) throw bad('The file has no rows.');
+  // Shared by the manual CSV import and the Procore API sync: given already-parsed
+  // row objects (keyed by canonical field name or any TC_FIELDS alias), preview or
+  // commit them. `filename` is only used for the audit trail / timecard_imports log.
+  function importTimecardRows(req, rows, commit, filename) {
+    if (!rows.length) throw bad('No time card rows to import.');
     if (rows.length > 20000) throw bad('That file is too large (over 20,000 lines).');
-    const commit = req.body.commit === true;
     const lines = []; const errors = [];
     rows.forEach((raw, idx) => {
       const r = {};
@@ -1112,12 +1114,12 @@ function createApp(db, opts = {}) {
       unmatched_lines: unmatched.length,
       replaces: db.prepare('SELECT COUNT(*) AS n FROM timecard_entries WHERE work_date BETWEEN ? AND ?').get(from, to).n,
     };
-    if (!commit) return res.json({ committed: false, preview });
+    if (!commit) return { committed: false, preview };
     const result = tx(db, () => {
       // Re-importing a period replaces the time card lines for those dates.
       db.prepare('DELETE FROM timecard_entries WHERE work_date BETWEEN ? AND ?').run(from, to);
       const imp = Number(db.prepare('INSERT INTO timecard_imports (filename, period_start, period_end, line_count, total_hours, imported_by) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(str(req.body.filename, 200), from, to, lines.length, preview.total_hours, req.user.id).lastInsertRowid);
+        .run(str(filename, 200), from, to, lines.length, preview.total_hours, req.user.id).lastInsertRowid);
       const ins = db.prepare(`INSERT INTO timecard_entries (import_id, work_date, employee_id, employee_no, employee_name, project_id, job_number, project_name,
         cost_code, cost_code_name, description, time_type, billable, hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       for (const l of lines) ins.run(imp, l.work_date, l.employee_id, l.employee_no, l.employee_name, l.project_id, l.job_number, l.project_name,
@@ -1125,7 +1127,36 @@ function createApp(db, opts = {}) {
       return reconcileTimecards(req, from, to);
     });
     audit(req, 'import', 'timecards', null, { from, to, lines: lines.length, ...result });
-    res.json({ committed: true, preview, result });
+    return { committed: true, preview, result };
+  }
+
+  api.post('/timecards/import', adminOnly, (req, res) => {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+    const commit = req.body.commit === true;
+    res.json(importTimecardRows(req, rows, commit, str(req.body.filename, 200)));
+  });
+
+  // Same import, but the rows come straight from the Procore API instead of a
+  // hand-uploaded CSV. Requires PROCORE_CLIENT_ID / PROCORE_CLIENT_SECRET to be
+  // set on the server, and a DMSA configured for the Procore app (see
+  // procore-sync/README.md).
+  api.post('/timecards/procore-sync', adminOnly, async (req, res) => {
+    if (!procore.configured()) {
+      throw bad('Procore is not configured on this server (PROCORE_CLIENT_ID / PROCORE_CLIENT_SECRET are not set).');
+    }
+    const start = date(req.body.start_date, 'Start date', true);
+    const end = date(req.body.end_date, 'End date', true);
+    const projectId = int(req.body.project_id);
+    const commit = req.body.commit === true;
+    let rows;
+    try {
+      ({ rows } = await procore.pullTimecardRows({ start_date: start, end_date: end, project_id: projectId }));
+    } catch (e) {
+      throw new HttpError(502, `Could not reach Procore: ${e.message}`);
+    }
+    if (!rows.length) return res.json({ committed: false, preview: null, no_data: true, period: { from: start, to: end } });
+    const filename = `procore-sync_${start}_to_${end}.json`;
+    res.json(importTimecardRows(req, rows, commit, filename));
   });
 
   // After adding a missing employee or job, link the leftover time card lines.
