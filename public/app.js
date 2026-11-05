@@ -33,6 +33,29 @@ function weekLabel(start) {
   const o = { month: 'short', day: 'numeric', timeZone: 'UTC' };
   return `${new Date(start + 'T12:00:00Z').toLocaleDateString(undefined, o)} – ${new Date(end + 'T12:00:00Z').toLocaleDateString(undefined, { ...o, year: 'numeric' })}`;
 }
+// Month helpers for the time off calendar (ym = 'YYYY-MM').
+function addMonths(ym, n) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+function monthLabel(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+// Full Monday-start weeks covering the month, so the grid always has complete rows.
+function monthGrid(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const start = weekStart(`${ym}-01`);
+  const end = addDays(weekStart(`${ym}-${String(daysInMonth).padStart(2, '0')}`), 6);
+  const weeks = [];
+  for (let cur = start; cur <= end; ) {
+    const week = []; for (let i = 0; i < 7; i++) { week.push(cur); cur = addDays(cur, 1); }
+    weeks.push(week);
+  }
+  return weeks;
+}
 // Trades offered for trade requests: the trades on file, plus the common ones.
 const tradeChoices = () => [...new Set(['Carpenter', 'Laborer', 'Operating Engineer', ...(S.crew || []).map((e) => e.trade).filter(Boolean)])].sort();
 
@@ -153,7 +176,9 @@ const ROUTES = [
   { path: 'payroll', label: '🔒 Payroll', render: renderPayroll, show: () => S.user.can_view_payroll, cls: 'private' },
   // Distinct from the field scheduler above: office staff request their own time off,
   // an Office Manager approves everyone's. The Workforce Manager (admin) sees it too.
-  { path: 'timeoff', label: 'Time Off', render: renderTimeOff, show: () => ['admin', 'office', 'office_admin'].includes(S.user.role) },
+  // Open to every role -- field staff/supers get read-only calendar visibility
+  // into who's out; only office/office_admin/admin can request or approve.
+  { path: 'timeoff', label: 'Time Off', render: renderTimeOff },
   { path: 'admin', label: 'Admin', render: renderAdmin, show: isAdmin },
 ];
 
@@ -2060,11 +2085,48 @@ const timeOffDates = (r) => `${esc(dayLabel(r.start_date))}${r.start_date !== r.
 
 async function renderTimeOff(page) {
   if (['admin', 'office_admin'].includes(S.user.role)) return renderTimeOffApprover(page);
-  return renderTimeOffSelf(page);
+  if (S.user.role === 'office') return renderTimeOffSelf(page);
+  return renderTimeOffFieldView(page);
+}
+
+// Month calendar of who's out (approved only). Shared by every role that can
+// see Time Off -- renders into `container` and re-renders itself in place on
+// month navigation, so callers don't need to re-render the whole page.
+async function renderTimeOffCalendar(container) {
+  const ym = S.timeOffMonth || todayStr().slice(0, 7);
+  const weeks = monthGrid(ym);
+  const rangeStart = weeks[0][0]; const rangeEnd = weeks[weeks.length - 1][6];
+  const entries = await api('GET', `/time-off-requests/calendar?start=${rangeStart}&end=${rangeEnd}`);
+  const byDay = {};
+  for (const e of entries) for (let d = e.start_date; d <= e.end_date; d = addDays(d, 1)) (byDay[d] ||= []).push(e);
+  const today = todayStr();
+  container.innerHTML = `
+    <div class="toolbar"><button data-act="cal-prev" aria-label="Previous month">‹</button><strong>${esc(monthLabel(ym))}</strong><button data-act="cal-next" aria-label="Next month">›</button>
+      ${ym !== todayStr().slice(0, 7) ? '<button data-act="cal-today">Today</button>' : ''}</div>
+    <div class="cal-grid">
+      ${DOW.map((d) => `<div class="cal-dow">${d}</div>`).join('')}
+      ${weeks.flat().map((d) => `<div class="cal-day ${d.slice(0, 7) !== ym ? 'pad' : ''} ${d === today ? 'today' : ''}">
+        <div class="cal-date">${Number(d.slice(8, 10))}</div>
+        ${(byDay[d] || []).slice(0, 3).map((e) => `<div class="cal-chip" title="${esc(`${e.first_name} ${e.last_name} – ${TIME_OFF_TYPE_LABEL[e.type] || e.type}`)}">${esc(e.first_name)} ${esc((e.last_name || '')[0] || '')}.</div>`).join('')}
+        ${(byDay[d] || []).length > 3 ? `<div class="cal-more">+${(byDay[d] || []).length - 3} more</div>` : ''}
+      </div>`).join('')}
+    </div>`;
+  $('[data-act=cal-prev]', container).onclick = () => { S.timeOffMonth = addMonths(ym, -1); renderTimeOffCalendar(container); };
+  $('[data-act=cal-next]', container).onclick = () => { S.timeOffMonth = addMonths(ym, 1); renderTimeOffCalendar(container); };
+  const todayBtn = $('[data-act=cal-today]', container); if (todayBtn) todayBtn.onclick = () => { S.timeOffMonth = todayStr().slice(0, 7); renderTimeOffCalendar(container); };
+}
+
+// Read-only: field roles (super/viewer) can see who in the office is out, but
+// can't request or approve -- that stays office/office_admin/admin only.
+async function renderTimeOffFieldView(page) {
+  page.innerHTML = `<div class="toolbar"><h1 style="margin:0">Time Off</h1></div>
+    <div class="small muted" style="margin-bottom:10px">Who's out in the office. Office staff request time off and the office manager approves it -- this is a read-only view.</div>
+    <div id="to-cal"></div>`;
+  renderTimeOffCalendar($('#to-cal', page));
 }
 
 async function renderTimeOffSelf(page) {
-  const [mine, upcoming] = await Promise.all([api('GET', '/time-off-requests'), api('GET', '/time-off-requests/upcoming')]);
+  const mine = await api('GET', '/time-off-requests');
   page.innerHTML = `
     <div class="toolbar"><h1 style="margin:0">Time Off</h1><span class="spacer"></span>
       <button class="primary" data-act="new">+ Request time off</button></div>
@@ -2078,15 +2140,14 @@ async function renderTimeOffSelf(page) {
         <td>${['pending', 'approved'].includes(r.status) ? `<button class="link" data-cancel="${r.id}">Cancel</button>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>` : '<div class="card muted">No requests yet.</div>'}
     <h2>Who's out (approved)</h2>
-    ${upcoming.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th></tr></thead>
-      <tbody>${upcoming.map((u) => `<tr><td>${esc(u.first_name)} ${esc(u.last_name)}</td><td class="nowrap">${timeOffDates(u)}</td><td>${esc(TIME_OFF_TYPE_LABEL[u.type] || u.type)}</td></tr>`).join('')}</tbody></table></div>`
-      : '<div class="card muted">Nobody has upcoming approved time off.</div>'}`;
+    <div id="to-cal"></div>`;
   $('[data-act=new]', page).onclick = () => requestTimeOffModal(page);
   $$('[data-cancel]', page).forEach((b) => (b.onclick = async () => {
     if (!confirm('Cancel this time off request?')) return;
     try { await api('POST', `/time-off-requests/${b.dataset.cancel}/cancel`, {}); toast('Cancelled'); renderTimeOffSelf(page); }
     catch (e) { toast(e.message, true); }
   }));
+  renderTimeOffCalendar($('#to-cal', page));
 }
 
 function requestTimeOffModal(page) {
@@ -2108,11 +2169,13 @@ function requestTimeOffModal(page) {
 
 async function renderTimeOffApprover(page) {
   page.innerHTML = `<div class="toolbar"><h1 style="margin:0">Time Off</h1><span class="spacer"></span>
-    <div class="seg">${[['requests', 'Requests'], ['staff', 'Staff']].map(([k, l]) => `<button data-tab="${k}" class="${(S.timeOffTab || 'requests') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="seg">${[['requests', 'Requests'], ['calendar', 'Calendar'], ['staff', 'Staff']].map(([k, l]) => `<button data-tab="${k}" class="${(S.timeOffTab || 'requests') === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div id="to-body"></div>`;
   $$('[data-tab]', page).forEach((b) => (b.onclick = () => { S.timeOffTab = b.dataset.tab; renderTimeOffApprover(page); }));
   const el = $('#to-body', page);
-  if ((S.timeOffTab || 'requests') === 'staff') return timeOffStaffTab(el);
+  const tab = S.timeOffTab || 'requests';
+  if (tab === 'staff') return timeOffStaffTab(el);
+  if (tab === 'calendar') return renderTimeOffCalendar(el);
   return timeOffRequestsTab(el);
 }
 

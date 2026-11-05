@@ -128,17 +128,17 @@ test('office_admin manages the roster; admin sees everything too', async () => {
   assert.equal(onBehalf.status, 200);
 });
 
-test('the "who\'s out" view only ever shows approved time off, never pending/denied', async () => {
+test('the calendar view only ever shows approved time off, never pending/denied, and is open to field roles too', async () => {
   // Bob's on-behalf request from the previous test is still pending
-  const upcomingBefore = (await aliceUser('GET', '/time-off-requests/upcoming?since=2026-12-01')).body;
-  assert.ok(!upcomingBefore.some((x) => x.office_staff_id === bob));
+  const decBefore = (await aliceUser('GET', '/time-off-requests/calendar?start=2026-12-01&end=2026-12-31')).body;
+  assert.ok(!decBefore.some((x) => x.office_staff_id === bob));
 
   const all = (await boss('GET', '/time-off-requests?status=pending')).body;
   const bobReq = all.find((x) => x.office_staff_id === bob);
   await boss('POST', `/time-off-requests/${bobReq.id}/decide`, { status: 'approved' });
 
-  const upcomingAfter = (await aliceUser('GET', '/time-off-requests/upcoming?since=2026-12-01')).body;
-  const bobEntry = upcomingAfter.find((x) => x.office_staff_id === bob);
+  const decAfter = (await aliceUser('GET', '/time-off-requests/calendar?start=2026-12-01&end=2026-12-31')).body;
+  const bobEntry = decAfter.find((x) => x.office_staff_id === bob);
   assert.ok(bobEntry);
   assert.equal(bobEntry.first_name, 'Bob');
   assert.equal(bobEntry.start_date, '2026-12-20');
@@ -146,7 +146,15 @@ test('the "who\'s out" view only ever shows approved time off, never pending/den
   assert.equal(bobEntry.note, undefined);
   assert.equal(bobEntry.decision_note, undefined);
 
-  // A date before everything is still upcoming excludes it
-  const farFuture = (await aliceUser('GET', '/time-off-requests/upcoming?since=2027-01-01')).body;
-  assert.ok(!farFuture.some((x) => x.office_staff_id === bob));
+  // A range before everything is still out excludes it
+  const earlier = (await aliceUser('GET', '/time-off-requests/calendar?start=2026-01-01&end=2026-01-31')).body;
+  assert.ok(!earlier.some((x) => x.office_staff_id === bob));
+
+  // Unlike the main /time-off-requests endpoint, the calendar is open to field
+  // roles too -- the whole company can see who's out, not just office roles.
+  assert.equal((await field('GET', '/time-off-requests/calendar?start=2026-12-01&end=2026-12-31')).status, 200);
+  const fieldView = (await field('GET', '/time-off-requests/calendar?start=2026-12-01&end=2026-12-31')).body;
+  assert.ok(fieldView.some((x) => x.office_staff_id === bob));
+  // But field logins still can't see pending requests or act on any of this
+  assert.equal((await field('GET', '/time-off-requests')).status, 403);
 });

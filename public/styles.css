@@ -270,6 +270,19 @@ table.verify input[data-actual] { width: 86px; }
 .pcard .pb { padding: 8px 12px; }
 .pcard .chip { font-size: 14px; padding: 7px 8px; }
 
+/* ---- time off calendar ---- */
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; margin-bottom: 14px; }
+.cal-dow { background: var(--mid); color: #fff; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; text-align: center; padding: 6px 2px; }
+.cal-day { background: #fff; min-height: 86px; padding: 4px; display: flex; flex-direction: column; gap: 2px; }
+.cal-day.pad { background: #FAFAFA; }
+.cal-day.today { box-shadow: inset 0 0 0 2px var(--orange); }
+.cal-date { font-size: 12px; font-weight: 700; color: var(--soft); }
+.cal-day.pad .cal-date { color: #C8C8C8; }
+.cal-day.today .cal-date { color: var(--orange-dk); }
+.cal-chip { font-size: 11px; padding: 1px 5px; border-radius: 4px; background: var(--tint); border-left: 3px solid var(--orange); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-more { font-size: 11px; color: var(--muted); }
+@media (max-width: 760px) { .cal-day { min-height: 56px; font-size: 11px; } .cal-dow { font-size: 10px; padding: 4px 1px; } }
+
 /* ---- modal ---- */
 .modal-bg { position: fixed; inset: 0; background: rgba(45,45,45,.55); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 40px 12px; overflow-y: auto; }
 .modal { background: #fff; border-radius: 10px; width: 100%; max-width: 620px; box-shadow: 0 20px 50px rgba(0,0,0,.3); }
