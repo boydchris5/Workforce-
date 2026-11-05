@@ -989,15 +989,18 @@ function createApp(db, opts = {}) {
     FROM office_time_off_requests r JOIN office_staff os ON os.id = r.office_staff_id
     LEFT JOIN users u ON u.id = r.decided_by`;
 
-  // Minimal, privacy-safe view for the 'office' role's "who's out" context when
-  // picking dates -- names and dates of already-approved time off only, never
-  // pending requests or decision notes (the main endpoint below keeps those
-  // restricted to the requester themselves and the approver).
-  api.get('/time-off-requests/upcoming', officeAny, (req, res) => {
-    const today = date(req.query.since, 'since') || new Date().toISOString().slice(0, 10);
+  // Minimal, privacy-safe calendar view for a date range -- names and dates of
+  // already-approved time off only, never pending requests or decision notes
+  // (the main endpoint below keeps those restricted to the requester and the
+  // approver). Deliberately open to EVERY logged-in role, including field
+  // (super/viewer), not just officeAny -- the whole company can see who in
+  // the office is out, even though only office roles can request/approve.
+  api.get('/time-off-requests/calendar', (req, res) => {
+    const start = date(req.query.start, 'start', true);
+    const end = date(req.query.end, 'end', true);
     res.json(db.prepare(`SELECT r.id, r.office_staff_id, os.first_name, os.last_name, r.start_date, r.end_date, r.type
       FROM office_time_off_requests r JOIN office_staff os ON os.id = r.office_staff_id
-      WHERE r.status = 'approved' AND r.end_date >= ? ORDER BY r.start_date`).all(today));
+      WHERE r.status = 'approved' AND r.start_date <= ? AND r.end_date >= ? ORDER BY r.start_date`).all(end, start));
   });
 
   api.get('/time-off-requests', officeAny, (req, res) => {
