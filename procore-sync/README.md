@@ -3,6 +3,15 @@
 Pulls project-level Timesheet / Timecard Entry data out of the Procore sandbox
 (company ID **4293208**) and writes it to an `.xlsx` workbook.
 
+> **Looking for the in-app "Sync from Procore" button on Verify Hours
+> instead?** That's a separate implementation (`server/procore.js` +
+> `/api/timecards/procore-sync`) that does the pull server-side and feeds it
+> straight into the app's existing import logic -- no script to run. Set
+> `PROCORE_CLIENT_ID`/`PROCORE_CLIENT_SECRET` on the server (see the main
+> [README.md](../README.md#running-locally)) to enable it. This folder is for
+> running the sync from the command line instead (e.g. for the standalone
+> Excel export, or if you'd rather not put Procore credentials on the server).
+
 ## Prerequisite: Developer Managed Service Account (DMSA)
 
 This script authenticates with OAuth 2.0 **Client Credentials**, which is not
