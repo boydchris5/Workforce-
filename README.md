@@ -86,4 +86,7 @@ server/
   seed.js     demo data
 public/       front end (plain HTML/CSS/JS, no build step)
 test/         API tests (node --test)
+procore-sync/ Python tool that pulls time cards from the Procore API and
+              posts them to /api/timecards/import automatically, instead of
+              exporting a CSV from Procore by hand -- see procore-sync/README.md
 ```

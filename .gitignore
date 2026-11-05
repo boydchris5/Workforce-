@@ -3,3 +3,8 @@ data/
 *.db
 *.db-*
 .env
+
+# procore-sync
+procore-sync/__pycache__/
+procore-sync/*.xlsx
+procore-sync/.venv/
