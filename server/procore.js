@@ -9,11 +9,17 @@ const DEFAULT_OAUTH_BASE_URL = 'https://login-sandbox.procore.com';
 const DEFAULT_API_BASE_URL = 'https://sandbox.procore.com/rest/v1.0';
 const DEFAULT_COMPANY_ID = '4293208';
 const PAGE_SIZE = 100;
+const MAX_RATE_LIMIT_RETRIES = 6;
+const BASE_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+const PROJECT_PACING_MS = 150; // spread out per-project requests so a company with many projects doesn't burst the rate limit
 
 const env = (name, fallback) => {
   const v = process.env[name];
   return v === undefined || v === '' ? fallback : v;
 };
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const configured = () => !!(process.env.PROCORE_CLIENT_ID && process.env.PROCORE_CLIENT_SECRET);
 
@@ -41,7 +47,7 @@ async function getToken() {
   return cachedToken.token;
 }
 
-async function apiGet(path, params = {}, retried = false) {
+async function apiGet(path, params = {}, { authRetried = false, rateLimitAttempt = 0 } = {}) {
   const token = await getToken();
   const url = new URL(`${env('PROCORE_API_BASE_URL', DEFAULT_API_BASE_URL)}${path}`);
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) url.searchParams.set(k, v);
@@ -51,7 +57,18 @@ async function apiGet(path, params = {}, retried = false) {
       'Procore-Company-Id': env('PROCORE_COMPANY_ID', DEFAULT_COMPANY_ID),
     },
   });
-  if (resp.status === 401 && !retried) { cachedToken = null; return apiGet(path, params, true); }
+  if (resp.status === 401 && !authRetried) { cachedToken = null; return apiGet(path, params, { authRetried: true, rateLimitAttempt }); }
+  // Companies with many projects can trip Procore's rate limit even with the pacing
+  // delay below; back off (honoring Retry-After when given) and retry rather than
+  // failing the whole sync over a transient 429.
+  if (resp.status === 429 && rateLimitAttempt < MAX_RATE_LIMIT_RETRIES) {
+    const retryAfterSec = Number(resp.headers.get('retry-after'));
+    const delayMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+      ? retryAfterSec * 1000
+      : Math.min(BASE_BACKOFF_MS * 2 ** rateLimitAttempt, MAX_BACKOFF_MS);
+    await sleep(delayMs);
+    return apiGet(path, params, { authRetried, rateLimitAttempt: rateLimitAttempt + 1 });
+  }
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`Procore ${path} failed (HTTP ${resp.status}): ${text.slice(0, 500)}`);
@@ -102,9 +119,15 @@ function entryToRow(project, entry) {
 
 async function pullTimecardRows({ start_date, end_date, project_id }) {
   const allProjects = await listProjects();
-  const projects = project_id ? allProjects.filter((p) => p.id === Number(project_id)) : allProjects;
+  // Companies can accumulate many completed/archived projects; skipping inactive
+  // ones cuts the number of Procore API calls a lot and avoids tripping its rate
+  // limit on every sync. An explicit project_id always wins, active or not.
+  const projects = project_id
+    ? allProjects.filter((p) => p.id === Number(project_id))
+    : allProjects.filter((p) => p.active !== false);
   const rows = [];
-  for (const project of projects) {
+  for (const [i, project] of projects.entries()) {
+    if (i > 0) await sleep(PROJECT_PACING_MS);
     const entries = await listTimecardEntries(project.id, { start_date, end_date });
     for (const entry of entries) rows.push(entryToRow(project, entry));
   }

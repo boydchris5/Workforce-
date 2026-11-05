@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import date, datetime, timedelta
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-from procore_client import ProcoreAPIError, ProcoreAuthError, ProcoreClient, ProcoreConfig
+from procore_client import PROJECT_PACING_SECONDS, ProcoreAPIError, ProcoreAuthError, ProcoreClient, ProcoreConfig
 
 TIMECARD_COLUMNS = [
     "project_id",
@@ -109,11 +110,16 @@ def run_sync(client: ProcoreClient, start_date: str, end_date: str, project_id: 
             print(f"Project {project_id} not found (or not visible to this app) in company {client.config.company_id}.", file=sys.stderr)
             sys.exit(1)
     else:
-        projects = client.list_projects()
+        # Skip inactive/archived projects by default -- cuts API calls a lot on
+        # companies with a long project history, and avoids tripping Procore's
+        # rate limit for no benefit (archived jobs don't get new time cards).
+        projects = [p for p in client.list_projects() if p.get("active") is not False]
     print(f"Found {len(projects)} project(s) to sync.")
 
     all_rows: list[dict] = []
-    for project in projects:
+    for i, project in enumerate(projects):
+        if i > 0:
+            time.sleep(PROJECT_PACING_SECONDS)
         pid = project["id"]
         print(f"  Project [{pid}] {project.get('name')}: fetching timecard entries ({start_date} to {end_date}) ...")
         try:
