@@ -22,9 +22,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import date, timedelta
 
-from procore_client import ProcoreAPIError, ProcoreAuthError, ProcoreClient, ProcoreConfig
+from procore_client import PROJECT_PACING_SECONDS, ProcoreAPIError, ProcoreAuthError, ProcoreClient, ProcoreConfig
 from workforce_client import WorkforceAPIError, WorkforceAuthError, WorkforceClient, WorkforceConfig
 
 
@@ -91,11 +92,16 @@ def run_sync(procore: ProcoreClient, workforce: WorkforceClient, start_date: str
             print(f"Project {project_id} not found (or not visible to this app).", file=sys.stderr)
             sys.exit(1)
     else:
-        projects = procore.list_projects()
+        # Skip inactive/archived projects by default -- cuts API calls a lot on
+        # companies with a long project history, and avoids tripping Procore's
+        # rate limit for no benefit (archived jobs don't get new time cards).
+        projects = [p for p in procore.list_projects() if p.get("active") is not False]
     print(f"Found {len(projects)} Procore project(s) to pull from.")
 
     rows: list[dict] = []
-    for project in projects:
+    for i, project in enumerate(projects):
+        if i > 0:
+            time.sleep(PROJECT_PACING_SECONDS)
         pid = project["id"]
         try:
             entries = procore.list_timecard_entries(

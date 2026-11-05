@@ -17,6 +17,10 @@ import requests
 DEFAULT_OAUTH_BASE_URL = "https://login-sandbox.procore.com"
 DEFAULT_API_BASE_URL = "https://sandbox.procore.com/rest/v1.0"
 PAGE_SIZE = 100
+MAX_RATE_LIMIT_RETRIES = 6
+BASE_BACKOFF_SECONDS = 1.0
+MAX_BACKOFF_SECONDS = 30.0
+PROJECT_PACING_SECONDS = 0.15  # spread out per-project requests on companies with many projects
 
 
 class ProcoreAuthError(RuntimeError):
@@ -115,6 +119,18 @@ class ProcoreClient:
             token = self._ensure_token()
             headers["Authorization"] = f"Bearer {token}"
             resp = self._session.request(method, url, headers=headers, timeout=30, **kwargs)
+        # Companies with many projects can trip Procore's rate limit; back off
+        # (honoring Retry-After when given) and retry instead of failing the sync.
+        attempt = 0
+        while resp.status_code == 429 and attempt < MAX_RATE_LIMIT_RETRIES:
+            retry_after = resp.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS)
+            except ValueError:
+                delay = min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS)
+            time.sleep(delay)
+            resp = self._session.request(method, url, headers=headers, timeout=30, **kwargs)
+            attempt += 1
         if resp.status_code >= 400:
             raise ProcoreAPIError(
                 f"{method} {url} failed with HTTP {resp.status_code}: {resp.text[:1000]}",
