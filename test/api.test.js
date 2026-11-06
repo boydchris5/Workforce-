@@ -262,7 +262,7 @@ test('upgrades a database from an earlier version without losing data', () => {
   old.close();
 
   const up = db.open(file);
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 9);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 10);
   assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'crew_request_slots'").get());
   assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'office_staff'").get());
   assert.ok(up.prepare("SELECT 1 FROM sqlite_master WHERE name = 'office_time_off_requests'").get());

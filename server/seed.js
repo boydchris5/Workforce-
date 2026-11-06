@@ -113,27 +113,32 @@ db.tx(conn, () => {
   req.run(eid[5], pid[0], sat, 8, 'Saturday catch-up – gym roof framing', s1, 'rejected', 'Ben is needed Monday on the bridge pour – no Saturday OT this week');
   req.run(eid[7], pid[0], addDays(thisWeek, 10), 4, 'Finish stair landings after MOB shift', s1, 'pending', null);
 
-  // Office: an Office Manager, and a project manager who requests office time off and can
-  // view the field schedule (linked to her PM employee record so it opens on her jobs).
-  const office = (f, l, dept) => Number(conn.prepare('INSERT INTO office_staff (first_name, last_name, department) VALUES (?, ?, ?)').run(f, l, dept).lastInsertRowid);
-  const osSarah = office('Sarah', 'Collins', 'Project Management');
-  const osPat = office('Pat', 'Morgan', 'Accounting');
-  conn.prepare('UPDATE users SET employee_id = ?, office_staff_id = ?, can_view_schedule = 1 WHERE id = ?').run(pmSarah, osSarah, user('scollins', 'Sarah Collins', 'office'));
-  conn.prepare('UPDATE users SET office_staff_id = ? WHERE id = ?').run(osPat, user('pmorgan', 'Pat Morgan', 'office_admin'));
-  conn.prepare("UPDATE settings SET value = '120' WHERE key = 'office_pto_default_hours'").run();
-  conn.prepare(`INSERT INTO office_time_off_requests (office_staff_id, start_date, end_date, type, note, requested_by)
-    VALUES (?, ?, ?, 'pto', 'Thanksgiving week', (SELECT id FROM users WHERE username = 'scollins'))`).run(osSarah, addDays(thisWeek, 21), addDays(thisWeek, 23));
+  // Office staff are in the same employee list (type 'staff'). The PM can view the field
+  // schedule (it opens on her jobs); Pat is the Office Manager.
+  conn.prepare("UPDATE employees SET employee_type = 'staff', department = 'Project Management' WHERE classification = 'Project Manager'").run();
+  conn.prepare("UPDATE employees SET employee_type = 'superintendent' WHERE classification = 'Superintendent'").run();
+  const pat = Number(conn.prepare(`INSERT INTO employees (first_name, last_name, phone, classification, department, employee_type, active)
+    VALUES ('Pat', 'Morgan', '316-555-0100', 'Office Manager', 'Accounting', 'staff', 1)`).run().lastInsertRowid);
+  const sarah = user('scollins', 'Sarah Collins', 'office');
+  conn.prepare('UPDATE users SET employee_id = ?, can_view_schedule = 1 WHERE id = ?').run(pmSarah, sarah);
+  conn.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(pat, user('pmorgan', 'Pat Morgan', 'office_admin'));
   const kyle = user('kbrooks', 'Kyle Brooks', 'viewer');
   conn.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(eid[2], kyle);
 
-  // Time off: 80 h default allowance; Dan Miller has 120 h. Kyle has a vacation
-  // request waiting for approval and a past personal day.
-  conn.prepare("UPDATE settings SET value = '80' WHERE key = 'pto_default_hours'").run();
-  conn.prepare('INSERT INTO pto_allowances (employee_id, year, hours, note) VALUES (?, ?, 120, ?)').run(eid[0], new Date().getFullYear(), '10+ years');
+  // Allowances: office staff 40 h PTO + 80 h Vacation, superintendents 80 h PTO (Mike: 120).
+  for (const [k, v] of [['staff_pto_default_hours', '40'], ['staff_vacation_default_hours', '80'], ['super_pto_default_hours', '80']]) {
+    conn.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(k, v);
+  }
+  conn.prepare("INSERT INTO leave_allowances (employee_id, year, kind, hours, note) VALUES (?, ?, 'pto', 120, '10+ years')").run(supMike, new Date().getFullYear());
+  // Requests: Sarah (office) wants vacation, Mike (superintendent) asked for a PTO day,
+  // Kyle (union) has a pending vacation and an approved past day.
   const off = conn.prepare(`INSERT OR IGNORE INTO time_off (employee_id, off_date, reason, hours, status, note, batch, created_by, created_at)
     VALUES (?, ?, ?, 8, ?, ?, ?, ?, datetime('now'))`);
+  for (const d of [21, 22]) off.run(pmSarah, addDays(thisWeek, d), 'Vacation', 'pending', 'Family trip', 'demo-sarah', sarah);
+  off.run(supMike, addDays(thisWeek, 18), 'PTO', 'pending', 'Doctor appointment', 'demo-mike', s1);
   for (const d of [3, 4]) off.run(eid[2], addDays(thisWeek, 14 + d), 'Vacation', 'pending', 'Deer season – back Monday', 'demo-kyle', kyle);
-  off.run(eid[2], addDays(thisWeek, -10), 'Personal', 'approved', null, null, kyle);
+  off.run(eid[2], addDays(thisWeek, -10), 'Vacation', 'approved', null, null, kyle);
+  off.run(pat, addDays(thisWeek, 2), 'PTO', 'approved', null, 'demo-pat', null);
 });
 
 console.log(`Demo data loaded into ${DB_FILE}`);
