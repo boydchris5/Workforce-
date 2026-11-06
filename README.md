@@ -19,7 +19,10 @@ A web app for scheduling field staff by project. It works in any browser on a co
 | **Import projects** | Workforce Manager | Projects → **Import from spreadsheet…**: CSV with Job Number, Project Name, Customer, Address, City, State, ZIP, Status (or Stage), Start/End Date, Budget Hours, Starting Hours, Change Order Hours, Superintendent, Project Manager, Notes. Matched by job number (re-import updates). Stages map to status (Course of Construction/Warranty → Active; Pre-Construction/Bidding → Planned). Superintendent and PM are matched to employees by name; unmatched names are left blank with a note in the preview. |
 | **Records** | Everyone | Searchable history of every crew-day by date range, project, employee, trade and status, with hours by project and by trade. Exports to CSV for Excel. |
 | **🔒 Payroll** | Admin, plus anyone given payroll access | Private pay rates (base, fringe, burden %) with **effective dates and full history**. Every day worked is costed at the rate in effect that day, so past weeks keep the rate actually paid and a union increase applies only from its start date. A "Union increase for a trade" button adds a dated raise for everyone in a trade at once. The labor cost forecast covers 1–26 weeks (pick a past week to see historical cost), broken down by week, project × week, project, trade and employee. Overtime is calculated after 40 hours a week at 1.5× (both adjustable). Pay rates are stored in a separate table that no other screen reads. |
-| **My Schedule** | Field staff with a linked login | A phone-friendly list of upcoming days, job, start time and task. |
+| **My Schedule** | Anyone with a linked login | A phone-friendly list of upcoming days, job, hours and task, plus their **time-off balance** and **Request time off**. |
+| **Time-off requests & balances** | Employees request, manager approves | Each person starts the calendar year with an allowance of hours (company default in Settings, or their own amount on their record; set a whole trade at once in Employees → *Time-off balances*). The balance shows Started with / Used / Approved, coming up / Pending / Hours left. Only the reasons listed in Settings (default Vacation, Personal, PTO) count. Employees request days from My Schedule; the manager approves or rejects with a reason from **Requests**, seeing the balance before and after. Pending requests don't block scheduling; a day the person is scheduled can't be approved until they're moved. |
+| **Office time-off balances** | Office staff, Office Manager | Office staff see Started with / Used / Coming up / Pending / Hours left on Time Off. PTO and Personal requests count (default hours per weekday); Sick and Other don't. Office default allowance in Settings; the Office Manager sets individual amounts on Time Off → Balances and sees each person's hours left beside pending requests. |
+| **Notifications** | Workforce Manager, Office Manager | New crew requests, trade requests and time-off requests show in the Requests count, and – once SMTP is set up (see below) – each one emails every Workforce Manager who has an email address and “Email me each new request” ticked. Office time-off requests email the Office Manager(s) instead (or the Workforce Manager if no Office Manager has an email). Employees with an email hear back when their time off is approved or rejected. |
 | **Admin** | Workforce Manager | Users and roles, payroll access, company settings, activity log (who changed what) and a one-click database backup. |
 
 ## Help & user guide
@@ -30,6 +33,7 @@ The **? Help** button in the app's top bar opens the built-in user guide (`publi
 
 - **Workforce Manager (admin):** builds the schedule (entries are approved immediately), approves or rejects superintendents' requests, and has full access including users, settings, backups and payroll.
 - **Superintendent:** requests crew on the jobs where they are the listed superintendent (requests need the manager's approval), marks time off and verifies hours. Their login must be linked to their employee record. No payroll access unless it is granted.
+- **Project managers (office):** an Office Staff login with **Can view the field schedule** ticked – view-only access to the schedule, projects, employees and records (opening on their own jobs when linked to their PM employee record), plus Time Off for their own requests.
 - **Field staff (viewer):** read-only access to the schedule, employees, projects and records. They see their own schedule if their login is linked to an employee record.
 
 Payroll access is a separate checkbox on each user, so you can grant it to an owner or the CFO without making them admins.
@@ -73,6 +77,9 @@ On first start with an empty database, an `admin` login is created. Its password
 | `PROCORE_CLIENT_ID` / `PROCORE_CLIENT_SECRET` | unset | Enables the **Sync from Procore…** button on Verify Hours (OAuth Client Credentials grant; requires a Developer Managed Service Account -- see `procore-sync/README.md`). Without these, only CSV import is available. |
 | `PROCORE_COMPANY_ID` | `4293208` (sandbox) | Which Procore company to sync from |
 | `PROCORE_OAUTH_BASE_URL` / `PROCORE_API_BASE_URL` | sandbox hosts | Override to point at Procore production once ready |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | off | Email notifications (e.g. `smtp.office365.com` / `587` / the sending mailbox / its password). Without `SMTP_HOST`, requests show in-app only |
+| `MAIL_FROM` | `SMTP_USER` | From address, e.g. `Fager-McGee Workforce <workforce@fager-mcgee.com>` |
+| `APP_URL` | request host | The app's address, used for the link in each email |
 
 ## Upgrading
 
@@ -85,6 +92,7 @@ server/
   index.js    startup + first-run admin
   app.js      API routes (auth, schedule, verification, records, payroll, admin)
   db.js       SQLite schema
+  notify.js   email notifications (SMTP)
   payroll.js  OT and cost math
   seed.js     demo data
 public/       front end (plain HTML/CSS/JS, no build step)

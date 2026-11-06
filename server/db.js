@@ -26,8 +26,11 @@ const assignmentsDdl = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
 );`;
 const ASSIGNMENTS = assignmentsDdl('assignments');
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
+// Roles: admin = Workforce Manager, super = superintendent, viewer = field staff,
+// office = office staff (requests own time off), office_admin = Office Manager.
+// can_view_schedule lets an office login (e.g. a project manager) see the field
+// schedule, read-only. email + notify_requests drive email notifications.
+const usersDdl = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
   id INTEGER PRIMARY KEY,
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   name TEXT NOT NULL,
@@ -37,8 +40,14 @@ CREATE TABLE IF NOT EXISTS users (
   employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
   office_staff_id INTEGER REFERENCES office_staff(id) ON DELETE SET NULL,
   active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  email TEXT,
+  notify_requests INTEGER NOT NULL DEFAULT 1,
+  can_view_schedule INTEGER NOT NULL DEFAULT 0
+);`;
+
+const SCHEMA = `
+${usersDdl('users')}
 
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
@@ -181,13 +190,46 @@ CREATE TABLE IF NOT EXISTS crew_request_slots (
 );
 CREATE INDEX IF NOT EXISTS idx_slots_date ON crew_request_slots(work_date, status);
 
+-- status: approved (blocks scheduling, counts against the balance),
+-- pending (an employee's request waiting for the manager) or rejected.
+-- batch groups the days of one request.
 CREATE TABLE IF NOT EXISTS time_off (
   id INTEGER PRIMARY KEY,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   off_date TEXT NOT NULL,
   reason TEXT,
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  hours REAL,
+  status TEXT NOT NULL DEFAULT 'approved',
+  note TEXT,
+  batch TEXT,
+  created_at TEXT,
+  decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at TEXT,
+  reject_reason TEXT,
   UNIQUE (employee_id, off_date)
+);
+
+-- Yearly time-off allowance per office staff member (same idea, office roster).
+CREATE TABLE IF NOT EXISTS office_pto_allowances (
+  office_staff_id INTEGER NOT NULL REFERENCES office_staff(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  hours REAL NOT NULL,
+  note TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (office_staff_id, year)
+);
+
+-- Yearly time-off allowance per field employee (hours granted for that calendar year).
+CREATE TABLE IF NOT EXISTS pto_allowances (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  hours REAL NOT NULL,
+  note TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, year)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -249,9 +291,12 @@ const DEFAULT_SETTINGS = {
   max_daily_hours: '12',
   payroll_week_start: '3', // 0 = Sunday … 3 = Wednesday (payroll week Wed–Tue)
   warn_daily_hours: '8',
+  pto_default_hours: '0', // yearly allowance for anyone without their own
+  pto_reasons: 'Vacation, Personal, PTO', // time-off reasons that count against the balance
+  office_pto_default_hours: '0', // yearly allowance for office staff without their own
 };
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -338,6 +383,16 @@ function migrate(db) {
     });
     db.exec('PRAGMA foreign_keys = ON;');
   }
+  // v9: email notifications + office logins that can view the field schedule.
+  const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  const addUser = { email: 'TEXT', notify_requests: 'INTEGER NOT NULL DEFAULT 1', can_view_schedule: 'INTEGER NOT NULL DEFAULT 0' };
+  for (const [c, type] of Object.entries(addUser)) if (!userCols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} ${type};`);
+  // v9: field time-off requests (pending/approved/rejected), hours per day.
+  const offCols = db.prepare('PRAGMA table_info(time_off)').all().map((c) => c.name);
+  const addOff = { hours: 'REAL', status: "TEXT NOT NULL DEFAULT 'approved'", note: 'TEXT', batch: 'TEXT', created_at: 'TEXT',
+    decided_by: 'INTEGER REFERENCES users(id) ON DELETE SET NULL', decided_at: 'TEXT', reject_reason: 'TEXT' };
+  for (const [c, type] of Object.entries(addOff)) if (!offCols.includes(c)) db.exec(`ALTER TABLE time_off ADD COLUMN ${c} ${type};`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_timeoff_status ON time_off(status, off_date);');
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }
 
