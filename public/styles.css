@@ -84,6 +84,8 @@ h2 { font-size: 14px; margin: 20px 0 8px; color: var(--orange); text-transform: 
 .stat.bad { border-top-color: var(--orange); background: var(--orange); color: #fff; }
 .stat.bad .l { color: #fff; }
 .stat.ok { border-top-color: var(--charcoal); }
+.stat.click { cursor: pointer; }
+.neg { color: var(--orange-dk); font-weight: 700; }
 
 button, .btn {
   font: inherit; border: 1px solid var(--line); background: #fff; color: var(--text);
