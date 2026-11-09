@@ -550,6 +550,88 @@ function createApp(db, opts = {}) {
     res.json({ committed: commit, summary, results: results.map(({ rec, existing_id, ...x }) => x) });
   });
 
+  // ---- project sync from Procore -------------------------------------------------------
+  // Pulls job information from Procore, matched by job number (Procore "Project Number").
+  // Procore wins for the fields it provides; blank Procore fields never erase app data.
+  // Budget hours, starting hours, change orders, color and notes stay app-only.
+  // Bidding / Pre-Construction projects are skipped; inactive or closed-out projects are
+  // only used to mark an existing app project Complete.
+  api.post('/projects/procore-sync', adminOnly, async (req, res) => {
+    if (!procore.configured()) throw bad('Procore is not set up on this server (PROCORE_CLIENT_ID / PROCORE_CLIENT_SECRET are not set in Render).');
+    const commit = req.body.commit === true;
+    const skipStage = (st) => /bidding|pre-?\s?construction/i.test(st || '');
+    const closed = (p) => !p.active || /close ?out|post-?construction|complete|closed|archived/i.test(p.stage || '');
+    let pulled;
+    try {
+      pulled = await procore.pullProjects({ wantRoles: (p) => p.active && !skipStage(p.stage) && !closed(p) && !!p.job_number });
+    } catch (e) {
+      throw new HttpError(502, `Could not reach Procore: ${e.message}`);
+    }
+    const byJob = db.prepare(`SELECT p.*, ${leadNames} FROM projects p ${leadJoins} WHERE p.job_number = ? COLLATE NOCASE`);
+    const empName = (id) => { const e = id && db.prepare('SELECT first_name, last_name FROM employees WHERE id = ?').get(id); return e ? `${e.first_name} ${e.last_name}` : ''; };
+    const LABEL = { name: 'Name', address: 'Address', status: 'Status', start_date: 'Start date', end_date: 'End date', project_manager_employee_id: 'Project manager', superintendent_employee_id: 'Superintendent' };
+    const results = []; const seen = new Set();
+    for (const p of pulled.projects) {
+      const base = { job_number: p.job_number || '', name: p.name || '', stage: p.stage || (p.active ? 'Active' : 'Inactive') };
+      if (!p.job_number) { results.push({ ...base, action: 'skip', reason: 'No project number in Procore' }); continue; }
+      if (seen.has(p.job_number.toLowerCase())) { results.push({ ...base, action: 'skip', reason: 'Project number used twice in Procore' }); continue; }
+      seen.add(p.job_number.toLowerCase());
+      const existing = byJob.get(p.job_number);
+      if (skipStage(p.stage)) { results.push({ ...base, action: 'skip', reason: `${p.stage} – skipped until awarded` }); continue; }
+      if (closed(p)) {
+        if (existing && existing.status !== 'complete') {
+          results.push({ ...base, action: 'update', existing_id: existing.id, rec: { status: 'complete' }, changes: [{ field: 'Status', from: existing.status, to: 'complete' }] });
+        } else results.push({ ...base, action: 'skip', reason: existing ? 'Closed in Procore – already Complete' : 'Inactive / closed in Procore' });
+        continue;
+      }
+      let status = 'active';
+      try { status = importStatus(p.stage) || 'active'; } catch { status = 'active'; }
+      const cityLine = [p.city, [p.state, p.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+      const address = [p.address, cityLine].filter(Boolean).join(', ') || null;
+      const rec = { name: str(p.name, 200), address: str(address, 300), status, start_date: isDate(p.start_date) ? p.start_date : null, end_date: isDate(p.end_date) ? p.end_date : null };
+      const warn = [];
+      for (const [field, who, label] of [['project_manager_employee_id', p.project_manager, 'Project manager'], ['superintendent_employee_id', p.superintendent, 'Superintendent']]) {
+        if (!who) continue;
+        const m = employeeByName(who);
+        if (m.id) rec[field] = m.id; else warn.push(`${label} "${who}" isn't in Employees – left as is`);
+      }
+      // Blank Procore values never erase app data.
+      for (const k of Object.keys(rec)) if (rec[k] === null || rec[k] === undefined || rec[k] === '') delete rec[k];
+      if (!existing) {
+        if (!rec.name) { results.push({ ...base, action: 'skip', reason: 'No project name in Procore' }); continue; }
+        results.push({ ...base, action: 'create', rec, changes: Object.entries(rec).map(([k, v]) => ({ field: LABEL[k], from: '', to: k.endsWith('_employee_id') ? empName(v) : v })), reason: warn.join('; ') });
+        continue;
+      }
+      const changes = [];
+      for (const [k, v] of Object.entries(rec)) {
+        if (String(existing[k] ?? '') === String(v)) { delete rec[k]; continue; }
+        changes.push({ field: LABEL[k], from: k.endsWith('_employee_id') ? empName(existing[k]) : existing[k] ?? '', to: k.endsWith('_employee_id') ? empName(v) : v });
+      }
+      results.push({ ...base, action: changes.length ? 'update' : 'same', existing_id: existing.id, rec, changes, reason: warn.join('; ') });
+    }
+    const summary = { create: 0, update: 0, same: 0, skip: 0 };
+    for (const x of results) summary[x.action] += 1;
+    if (commit) {
+      tx(db, () => {
+        for (const x of results) {
+          if (x.action === 'create') {
+            const cols = Object.keys(x.rec);
+            db.prepare(`INSERT INTO projects (job_number, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`).run(x.job_number, ...cols.map((c) => x.rec[c]));
+          } else if (x.action === 'update') {
+            const cols = Object.keys(x.rec);
+            if (cols.length) db.prepare(`UPDATE projects SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map((c) => x.rec[c]), x.existing_id);
+          }
+        }
+      });
+      audit(req, 'procore_sync', 'project', null, { ...summary, changes: results.filter((x) => x.action === 'update' || x.action === 'create').map((x) => ({ job: x.job_number, changes: x.changes.map((c) => c.field) })) });
+    }
+    res.json({
+      committed: commit, summary,
+      roles_unavailable: pulled.rolesUnavailable ? 'Procore didn\'t allow reading project roles, so project managers and superintendents were left as they are. In the Procore Developer Portal, give the app read access to the project Directory.' : null,
+      results: results.map(({ rec, existing_id, ...x }) => x),
+    });
+  });
+
   // ---- change orders ---------------------------------------------------------------
   api.get('/projects/:id/change-orders', (req, res) => {
     res.json(db.prepare(`SELECT c.*, u.name AS created_by_name FROM project_change_orders c LEFT JOIN users u ON u.id = c.created_by
@@ -1196,7 +1278,78 @@ function createApp(db, opts = {}) {
       const kb = leaveBalance(g.employee_id, Number(g.start_date.slice(0, 4)))?.kinds[reasonKind(g.reason)];
       g.balance_left = kb ? kb.left : null;
     }
-    res.json({ pending: groups.filter((g) => g.status === 'pending'), decided: groups.filter((g) => g.status !== 'pending').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || '')) });
+    // Approved time off still ahead (requested or entered by a manager), so it can be edited or removed.
+    const upcoming = groupOff(db.prepare(`${timeOffSelect} WHERE t.status = 'approved' AND t.off_date >= ?`).all(today()))
+      .sort((a, b) => a.start_date.localeCompare(b.start_date));
+    res.json({
+      pending: groups.filter((g) => g.status === 'pending'),
+      upcoming,
+      decided: groups.filter((g) => g.status !== 'pending').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || '')),
+    });
+  });
+
+  // ---- approver edits / deletes a whole request ----------------------------------------
+  // `ids` are the day rows of one request (one employee). The Office Manager: office staff only.
+  function requestRows(req) {
+    const ids = [...new Set((Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean))];
+    if (!ids.length) throw bad('Pick a request.');
+    const rows = db.prepare(`${timeOffSelect} WHERE t.id IN (${ids.map(() => '?').join(',')}) ORDER BY t.off_date`).all(...ids);
+    if (!rows.length) throw new HttpError(404, 'That time off no longer exists.');
+    if (new Set(rows.map((r) => r.employee_id)).size > 1) throw bad('Edit one person\'s request at a time.');
+    if (req.user.role === 'office_admin' && rows[0].employee_type !== 'staff') throw new HttpError(403, 'The Office Manager edits office staff time off only.');
+    return rows;
+  }
+  const spanText = (rows) => shortDates(rows.map((r) => r.off_date));
+  const personEmails = (eid) => [empRow.get(eid)?.email, ...db.prepare("SELECT email FROM users WHERE employee_id = ? AND active = 1 AND email IS NOT NULL AND email <> ''").all(eid).map((u) => u.email)];
+
+  api.put('/time-off/request', leaveApprover, (req, res) => {
+    const rows = requestRows(req); const first = rows[0];
+    const type = typeOf(empRow.get(first.employee_id));
+    const dates = offDates(req.body);
+    if (dates.length > 366) throw bad('Too many days.');
+    const reason = str(req.body.reason, 200) || first.reason;
+    if (!REASONS[type].some((x) => x.toLowerCase() === String(reason).toLowerCase())) throw bad(`Pick one of: ${REASONS[type].join(', ')}.`);
+    const h = offHours(req.body); const note = req.body.note !== undefined ? str(req.body.note, 500) : first.note;
+    const status = first.status === 'rejected' ? 'pending' : first.status;
+    const batch = first.batch || require('node:crypto').randomUUID();
+    const conflicts = []; const kept = [];
+    const ins = db.prepare(`INSERT INTO time_off (employee_id, off_date, reason, hours, note, batch, created_by, status, created_at, decided_by, decided_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const other = db.prepare('SELECT status FROM time_off WHERE employee_id = ? AND off_date = ?');
+    tx(db, () => {
+      db.prepare(`DELETE FROM time_off WHERE id IN (${rows.map(() => '?').join(',')})`).run(...rows.map((r) => r.id));
+      for (const d of dates) {
+        if (other.get(first.employee_id, d)) { conflicts.push(`${d}: already has other time off`); continue; }
+        if (status === 'approved') {
+          const booked = findBookings.all(first.employee_id, d);
+          if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((x) => x.job_number).join(', ')} – move them first`); continue; }
+        }
+        ins.run(first.employee_id, d, reason, h, note, batch, first.created_by, status, first.created_at || new Date().toISOString(),
+          status === 'approved' ? req.user.id : null, status === 'approved' ? new Date().toISOString() : null);
+        kept.push(d);
+      }
+      if (!kept.length) throw bad(`Nothing saved – ${conflicts.join('; ') || 'no days in that range'}. The original time off is unchanged.`, { conflicts });
+    });
+    audit(req, 'edit', 'time_off', first.employee_id, { was: spanText(rows), now: shortDates(kept), reason, hours: h });
+    sendEmail(personEmails(first.employee_id), `Your time off was changed: ${shortDates(kept)}`, {
+      heading: 'Your time off was changed',
+      lines: [`Was: ${spanText(rows)} (${first.reason || ''})`, `Now: ${shortDates(kept)} · ${reason} · ${h} h per day`, `Status: ${status === 'approved' ? 'Approved' : 'Waiting for approval'}`, `By: ${req.user.name}`],
+      link: appUrl(req, '#/timeoff'), linkText: 'See Time Off', footer: 'Sent by the Fager-McGee Workforce app.',
+    });
+    res.json({ saved: kept.length, conflicts, ids: db.prepare('SELECT id FROM time_off WHERE employee_id = ? AND batch = ?').all(first.employee_id, batch).map((r) => r.id) });
+  });
+
+  api.post('/time-off/remove', leaveApprover, (req, res) => {
+    const rows = requestRows(req); const first = rows[0];
+    db.prepare(`DELETE FROM time_off WHERE id IN (${rows.map(() => '?').join(',')})`).run(...rows.map((r) => r.id));
+    const why = str(req.body.reason, 300);
+    audit(req, 'delete', 'time_off', first.employee_id, { dates: spanText(rows), status: first.status, reason: why });
+    sendEmail(personEmails(first.employee_id), `Your time off was removed: ${spanText(rows)}`, {
+      heading: 'Your time off was removed',
+      lines: [`Days: ${spanText(rows)} (${first.reason || ''})`, ...(why ? [`Reason: ${why}`] : []), `By: ${req.user.name}`],
+      link: appUrl(req, '#/timeoff'), linkText: 'See Time Off', footer: 'Sent by the Fager-McGee Workforce app.',
+    });
+    res.json({ removed: rows.length });
   });
 
   // Balances for everyone who has allowances (superintendents and office staff).

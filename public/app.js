@@ -1618,7 +1618,7 @@ async function renderProjects(page) {
     <div class="toolbar"><h1 style="margin:0">Projects</h1><span class="spacer"></span>
       <select data-act="pm"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, filterPm)).join('')}</select>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show completed</label>
-      ${isAdmin() ? '<button data-act="import">Import from spreadsheet…</button>' : ''}
+      ${isAdmin() ? '<button data-act="procore-projects">Sync from Procore…</button><button data-act="import">Import from spreadsheet…</button>' : ''}
       ${canSchedule() ? '<button class="primary" data-act="new">+ New project</button>' : ''}</div>
     <div class="table-wrap"><table class="list sortable">
       <thead><tr>${cols.map(([k, l, cls]) => `<th class="${cls || ''}"><button class="sort-h ${sort.key === k ? 'on' : ''}" data-sort="${k}" aria-label="Sort by ${esc(l)}">${esc(l)}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`).join('')}</tr></thead>
@@ -1643,10 +1643,55 @@ async function renderProjects(page) {
     renderProjects(page);
   }));
   const imp = $('[data-act=import]', page); if (imp) imp.onclick = importProjectsModal;
+  const pcs = $('[data-act=procore-projects]', page); if (pcs) pcs.onclick = () => procoreProjectsModal(page);
   if (canSchedule()) {
     $('[data-act=new]', page).onclick = () => projectModal({ status: 'active' });
     $$('tr[data-id]', page).forEach((tr) => (tr.onclick = () => projectModal(projects.find((p) => p.id === Number(tr.dataset.id)))));
   }
+}
+
+// Pull job information from Procore: preview what would be added / changed, then apply.
+async function procoreProjectsModal(page) {
+  const m = modal({
+    title: 'Sync projects from Procore',
+    wide: true,
+    body: '<div class="muted">Reading projects from Procore… this can take a minute for a large company.</div>',
+    footer: '<button data-close>Close</button>',
+  });
+  const ACT = { create: ['Add', 'ok'], update: ['Update', 'warn'], same: ['No change', ''], skip: ['Skip', ''] };
+  let r;
+  try { r = await api('POST', '/projects/procore-sync', {}); } catch (e) { $('.mb', m.el).innerHTML = `<div class="alert bad">${esc(e.message)}</div>`; return; }
+  const fmt = (v) => esc(v === null || v === undefined || v === '' ? '—' : String(v));
+  const rows = [...r.results].sort((a, b) => ['create', 'update', 'same', 'skip'].indexOf(a.action) - ['create', 'update', 'same', 'skip'].indexOf(b.action) || a.job_number.localeCompare(b.job_number));
+  const draw = (showAll) => {
+    const list = showAll ? rows : rows.filter((x) => x.action === 'create' || x.action === 'update');
+    $('.mb', m.el).innerHTML = `
+      <div class="stats">
+        <div class="stat ${r.summary.create ? 'ok' : ''}"><div class="v">${r.summary.create}</div><div class="l">New projects</div></div>
+        <div class="stat ${r.summary.update ? 'warn' : ''}"><div class="v">${r.summary.update}</div><div class="l">Projects to update</div></div>
+        <div class="stat"><div class="v">${r.summary.same}</div><div class="l">Already match</div></div>
+        <div class="stat"><div class="v">${r.summary.skip}</div><div class="l">Skipped</div></div></div>
+      ${r.roles_unavailable ? `<div class="alert warn-box">${esc(r.roles_unavailable)}</div>` : ''}
+      <div class="small muted">Procore wins for name, address, status, dates, project manager and superintendent. Blank Procore fields never erase anything. Budget hours, starting hours, change orders, color and notes are not touched. Bidding and Pre-Construction projects are skipped.</div>
+      <label class="check"><input type="checkbox" data-f="all" ${showAll ? 'checked' : ''}> Show unchanged and skipped projects too</label>
+      <div class="table-wrap" style="max-height:440px"><table class="list"><thead><tr><th></th><th>Job #</th><th>Project</th><th>Procore stage</th><th>Changes</th></tr></thead>
+      <tbody>${list.map((x) => `<tr><td><span class="pill ${ACT[x.action][1]}">${ACT[x.action][0]}</span></td><td class="nowrap">${esc(x.job_number)}</td><td>${esc(x.name)}</td><td class="small">${esc(x.stage || '')}</td>
+        <td class="small">${(x.changes || []).map((c) => `<div><b>${esc(c.field)}:</b> ${x.action === 'create' ? fmt(c.to) : `${fmt(c.from)} → ${fmt(c.to)}`}</div>`).join('')}${x.reason ? `<div class="muted">${esc(x.reason)}</div>` : ''}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted">Everything already matches Procore.</td></tr>'}</tbody></table></div>`;
+    $('[data-f=all]', m.el).onchange = (ev) => draw(ev.target.checked);
+  };
+  draw(false);
+  const n = r.summary.create + r.summary.update;
+  $('.mf', m.el).innerHTML = `<button data-close>Cancel</button>${n ? `<button class="primary" data-act="apply">Apply ${n} change${n === 1 ? '' : 's'}</button>` : ''}`;
+  $$('[data-close]', m.el).forEach((b) => (b.onclick = m.close));
+  const ap = $('[data-act=apply]', m.el);
+  if (ap) ap.onclick = async () => {
+    ap.disabled = true; ap.textContent = 'Applying…';
+    try {
+      const done = await api('POST', '/projects/procore-sync', { commit: true });
+      m.close(); toast(`Procore sync: ${done.summary.create} added, ${done.summary.update} updated`); renderProjects(page);
+    } catch (e) { ap.disabled = false; ap.textContent = 'Apply'; toast(e.message, true); }
+  };
 }
 
 function projectModal(p) {
@@ -2323,17 +2368,27 @@ async function myTimeOffModal() {
 
 async function leaveRequestsTab(el) {
   const r = await api('GET', '/leave/requests');
+  // Edit / Delete: Workforce Manager for anyone; the Office Manager for office staff.
+  const canEditReq = (g) => S.user.role === 'admin' || g.employee_type === 'staff';
+  const editBtns = (g, list, i) => (canEditReq(g) ? ` <button data-edit="${list}|${i}">Edit</button> <button class="link" data-del="${list}|${i}">delete</button>` : '');
   const row = (g, i, pending) => `<tr>
       <td>${esc(g.first_name)} ${esc(g.last_name)}<div class="small muted">${esc(TYPE_LABEL[g.employee_type] || '')}${g.department ? ` · ${esc(g.department)}` : ''}</div></td>
       <td class="nowrap">${offSpan(g)}<div class="small muted">${g.days} day${g.days > 1 ? 's' : ''} · ${fmtH(g.hours)} h</div></td>
       <td>${esc(g.reason || '')}</td><td class="small muted">${esc(g.note || '')}</td>
       ${pending ? `<td class="nowrap">${g.balance_left === null ? '<span class="small muted">—</span>' : `<span class="${g.balance_left - g.hours < 0 ? 'neg' : ''}">${fmtH(g.balance_left)} h</span><div class="small muted">→ ${fmtH(g.balance_left - g.hours)} after</div>`}</td>
-        <td class="nowrap"><button class="ok" data-ok="${i}">✓ Approve</button> <button class="danger" data-no="${i}">✕ Reject…</button></td>`
+        <td class="nowrap"><button class="ok" data-ok="${i}">✓ Approve</button> <button class="danger" data-no="${i}">✕ Reject…</button>${editBtns(g, 'pending', i)}</td>`
       : `<td>${offPill(g.status)}${g.reject_reason ? `<div class="small">${esc(g.reject_reason)}</div>` : ''}</td><td class="small muted">${esc(g.decided_by_name || '')}</td>`}</tr>`;
   el.innerHTML = `<div class="toolbar"><span class="small muted">Requests from office staff, superintendents and field employees.</span><span class="spacer"></span><button data-act="enter">+ Enter time off for someone</button></div>
     <h2>Pending (${r.pending.length})</h2>
     ${r.pending.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th><th>Note</th><th>Hours left</th><th></th></tr></thead>
       <tbody>${r.pending.map((g, i) => row(g, i, true)).join('')}</tbody></table></div>` : '<div class="card muted">No pending requests.</div>'}
+    <h2>Approved, coming up (${r.upcoming.length})</h2>
+    ${r.upcoming.length ? `<div class="table-wrap" style="max-height:420px"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th><th>Note</th><th>Approved by</th><th></th></tr></thead>
+      <tbody>${r.upcoming.map((g, i) => `<tr>
+        <td>${esc(g.first_name)} ${esc(g.last_name)}<div class="small muted">${esc(TYPE_LABEL[g.employee_type] || '')}</div></td>
+        <td class="nowrap">${offSpan(g)}<div class="small muted">${g.days} day${g.days > 1 ? 's' : ''} · ${fmtH(g.hours)} h</div></td>
+        <td>${esc(g.reason || '')}</td><td class="small muted">${esc(g.note || '')}</td><td class="small muted">${esc(g.decided_by_name || g.requested_by_name || '')}</td>
+        <td class="nowrap">${editBtns(g, 'upcoming', i)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">No approved time off coming up.</div>'}
     <h2>Decided – last 60 days</h2>
     ${r.decided.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Dates</th><th>Type</th><th>Note</th><th>Status</th><th>Decided by</th></tr></thead>
       <tbody>${r.decided.map((g, i) => row(g, i, false)).join('')}</tbody></table></div>` : '<div class="small muted">Nothing decided recently.</div>'}`;
@@ -2358,6 +2413,45 @@ async function leaveRequestsTab(el) {
     };
   }));
   $('[data-act=enter]', el).onclick = () => enterOffModal(() => leaveRequestsTab(el));
+  const pick = (v) => { const [list, i] = v.split('|'); return r[list][Number(i)]; };
+  $$('[data-edit]', el).forEach((b) => (b.onclick = () => editOffModal(pick(b.dataset.edit), () => leaveRequestsTab(el))));
+  $$('[data-del]', el).forEach((b) => (b.onclick = () => {
+    const g = pick(b.dataset.del);
+    const m = modal({
+      title: `Delete time off – ${g.first_name} ${g.last_name}`,
+      body: `<div>${offSpan(g)} · ${esc(g.reason || '')} · ${g.days} day${g.days > 1 ? 's' : ''} (${g.status === 'approved' ? 'approved' : 'pending'})</div>
+        <label>Reason (optional – included in the email to them)<input name="reason" maxlength="300"></label>
+        <div class="small muted">The days are removed from the schedule, the calendar and their balance.</div>`,
+      footer: '<button data-close>Cancel</button><button class="danger" data-act="go">Delete</button>',
+    });
+    $('[data-act=go]', m.el).onclick = async () => {
+      try { await api('POST', '/time-off/remove', { ids: g.ids, reason: $('[name=reason]', m.el).value }); m.close(); toast('Time off deleted'); leaveRequestsTab(el); } catch (e) { errorBox(m.el, e.message); }
+    };
+  }));
+}
+
+// Approver changes the dates, type, hours or note of one request (it keeps its status).
+async function editOffModal(g, after) {
+  const reasons = await api('GET', '/leave/reasons');
+  const list = reasons[g.employee_type] || reasons.union;
+  const perDay = g.days ? Math.round((g.hours / g.days) * 2) / 2 : (S.settings.default_hours || 8);
+  const m = modal({
+    title: `Edit time off – ${g.first_name} ${g.last_name}`,
+    body: `<div class="grid2"><label>From<input type="date" name="from" value="${g.start_date}"></label><label>To<input type="date" name="to" value="${g.end_date}"></label></div>
+      <div class="grid2"><label>Type<select name="reason">${[...new Set([...list, g.reason].filter(Boolean))].map((x) => opt(x, x, g.reason)).join('')}</select></label>
+        <label>Hours per day<input type="number" name="hours" step="0.5" min="0.5" max="24" value="${perDay}"></label></div>
+      <label>Note<input name="note" maxlength="500" value="${esc(g.note || '')}"></label>
+      <label class="check"><input type="checkbox" name="weekdays_only" checked> Work days only (skips weekends and union holidays)</label>
+      <div class="small muted">Currently ${g.status === 'approved' ? 'approved' : 'waiting for approval'} – it stays that way. ${esc(g.first_name)} gets an email about the change if they have an email address.</div>`,
+    footer: '<button data-close>Cancel</button><button class="primary" data-act="go">Save changes</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    try {
+      const res = await api('PUT', '/time-off/request', { ids: g.ids, ...formData(m.el) });
+      if (res.conflicts.length) { toast(`Saved ${res.saved} day(s). Skipped: ${res.conflicts.join('; ')}`, true); m.close(); after(); return; }
+      m.close(); toast('Time off updated'); after();
+    } catch (e) { errorBox(m.el, e.message, e.data?.conflicts); }
+  };
 }
 
 // Approver enters time off for someone (approved right away). The Office Manager: office staff only.

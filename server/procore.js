@@ -134,4 +134,50 @@ async function pullTimecardRows({ start_date, end_date, project_id }) {
   return { rows, projectCount: projects.length };
 }
 
-module.exports = { configured, pullTimecardRows, listProjects };
+// ---- job information --------------------------------------------------------
+// People assigned to a project in Procore's project directory, by role
+// (e.g. "Project Manager", "Superintendent").
+function listProjectRoles(projectId) {
+  return getPaginated('/project_roles', { project_id: projectId });
+}
+const roleName = (r) => String(r.role?.name || r.role || r.role_name || '').trim();
+const personName = (r) => String(r.user?.name || r.contact?.name || r.name_of_person || (r.role && typeof r.role === 'string' ? r.name : '') || r.login || '').trim();
+const pickRole = (roles, re) => roles.filter((r) => r.is_active !== false && re.test(roleName(r))).map(personName).find(Boolean) || null;
+
+// Every Procore project, normalized. Project roles (PM / superintendent) are read
+// only for projects the app will actually use (active, past pre-construction), to
+// keep API calls down. If roles can't be read (e.g. a missing permission), the
+// sync still works and leaves PM / superintendent as they are.
+async function pullProjects({ wantRoles = (p) => p.active !== false } = {}) {
+  const raw = await listProjects();
+  const out = []; const warnings = []; let roleCalls = 0;
+  for (const p of raw) {
+    const rec = {
+      procore_id: p.id,
+      job_number: p.project_number ? String(p.project_number).trim() : null,
+      name: p.name || p.display_name || null,
+      address: p.address || null, city: p.city || null, state: p.state_code || p.state || null, zip: p.zip || null,
+      active: p.active !== false,
+      stage: p.project_stage?.name || p.stage?.name || (typeof p.stage === 'string' ? p.stage : null),
+      start_date: p.start_date || null,
+      end_date: p.completion_date || p.projected_finish_date || null,
+      project_manager: null, superintendent: null, roles_read: false,
+    };
+    if (wantRoles(rec) && !warnings.includes('roles')) {
+      try {
+        if (roleCalls++ > 0) await sleep(PROJECT_PACING_MS);
+        const roles = await listProjectRoles(p.id);
+        rec.project_manager = pickRole(roles, /project\s*manager/i);
+        rec.superintendent = pickRole(roles, /superintendent|general foreman/i);
+        rec.roles_read = true;
+      } catch (e) {
+        warnings.push('roles');
+        warnings.roleError = e.message;
+      }
+    }
+    out.push(rec);
+  }
+  return { projects: out, rolesUnavailable: warnings.includes('roles') ? warnings.roleError : null };
+}
+
+module.exports = { configured, pullTimecardRows, listProjects, pullProjects };

@@ -170,6 +170,37 @@ test('approved time off blocks scheduling; a scheduled day cannot be approved', 
   assert.equal(block.status, 409);
 });
 
+test('approvers edit and delete requests; the person is emailed; the Office Manager only for staff', async () => {
+  // Alice (staff) has an approved PTO day on Aug 3 entered by the Office Manager.
+  let up = (await om('GET', '/leave/requests')).body.upcoming.find((g) => g.employee_id === eAlice && g.reason === 'PTO');
+  assert.ok(up, 'upcoming approved request listed');
+  sent.length = 0;
+  // Move it to Aug 10–11 as Vacation, 8 h a day: stays approved.
+  let r = await om('PUT', '/time-off/request', { ids: up.ids, from: `${year}-08-10`, to: `${year}-08-11`, reason: 'Vacation', hours: 8, weekdays_only: true });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  await flush();
+  assert.match(sent[0].subject, /Your time off was changed/); assert.equal(sent[0].to, 'alice@example.com');
+  const cal = (await dan('GET', `/leave/calendar?start=${year}-08-01&end=${year}-08-31`)).body.days.filter((d) => d.employee_id === eAlice);
+  assert.deepEqual(cal.map((d) => d.reason), ['Vacation', 'Vacation']);
+  // Invalid type for an office staff member; the Office Manager can't edit union crew.
+  up = (await om('GET', '/leave/requests')).body.upcoming.find((g) => g.employee_id === eAlice && g.start_date === `${year}-08-10`);
+  assert.equal((await om('PUT', '/time-off/request', { ids: up.ids, from: `${year}-08-10`, reason: 'Jury duty' })).status, 400);
+  const union = (await boss('GET', '/leave/requests')).body.upcoming.find((g) => g.employee_id === eDan);
+  assert.equal((await om('POST', '/time-off/remove', { ids: union.ids })).status, 403);
+  assert.equal((await alice('POST', '/time-off/remove', { ids: up.ids })).status, 403);
+  // Moving approved time off onto a scheduled day is refused and leaves the original alone.
+  await boss('POST', '/assignments', { project_id: job, employee_ids: [eDan], dates: [`${year}-04-20`], planned_hours: 8 });
+  const bad = await boss('PUT', '/time-off/request', { ids: union.ids, from: `${year}-04-20`, reason: 'Jury duty' });
+  assert.equal(bad.status, 400);
+  assert.ok((await boss('GET', '/leave/requests')).body.upcoming.some((g) => g.employee_id === eDan && g.start_date === union.start_date));
+  // Delete with a reason -> email, gone from the calendar and the balance.
+  sent.length = 0;
+  assert.equal((await om('POST', '/time-off/remove', { ids: up.ids, reason: 'Entered by mistake' })).body.removed, 2);
+  await flush();
+  assert.match(sent[0].subject, /Your time off was removed/); assert.match(sent[0].text, /Entered by mistake/);
+  assert.equal((await dan('GET', `/leave/calendar?start=${year}-08-01&end=${year}-08-31`)).body.days.filter((d) => d.employee_id === eAlice).length, 0);
+});
+
 test('a PM (office login with schedule access) sees approved work only and cannot edit', async () => {
   assert.equal((await pm('GET', '/me')).body.user.can_view_schedule, 1);
   const s = (await pm('GET', `/schedule?start=${year}-04-12`)).body;

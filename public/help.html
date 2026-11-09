@@ -475,6 +475,7 @@
     <tr><td>Union crew</td><td>Vacation, Sick / medical, Family leave, Jury duty, Union business, Training, Bereavement, Unpaid, Other</td><td>None – recorded only</td></tr>
   </table>
   <p><b>Who approves:</b> the Workforce Manager (Schedule → <span class="ui">Requests</span>, or Time Off) and the Office Manager (Time Off → Requests) can both approve or reject – a reason is required to reject. Emails (if set up) go to the Office Manager for office staff, to both managers for superintendents, and to the Workforce Manager for union crew. The person sees the answer on Time Off, plus an email if they have an email address.</p>
+  <p><b>Editing or deleting:</b> on Time Off → Requests, the Workforce Manager (anyone) and the Office Manager (office staff) can click <span class="ui">Edit</span> on a pending request or on approved time off still coming up to change the dates, type, hours per day or note (it keeps its status), or <span class="ui">delete</span> to remove it. The person gets an email about the change, and it is recorded in the Activity log. Approved time off can't be moved onto a day the person is scheduled.</p>
   <p>Everyone sees the <b>Who's out</b> calendar of approved time off for the whole company, with union holidays marked. Above it, each person sees only their own requests and balances.</p>
   <div class="note">A pending request doesn't block scheduling. If the person is scheduled on a requested day, that day can't be approved until they're moved off the schedule – the app tells you which days.</div>
 
@@ -592,6 +593,19 @@
     <li><b>Show completed</b> includes finished jobs. <b>All project managers</b> shows one PM's jobs.</li>
     <li><b>Hours to date</b> = starting hours + approved scheduled/verified hours. <b>Verified</b> = hours confirmed in Verify Hours.</li>
     <li>The <b>Budget</b> bar fills as hours are used: grey normally, orange past 85%, dark orange over 100%.</li>
+  </ul>
+  <h3 id="procore-projects">Sync projects from Procore (Workforce Manager)</h3>
+  <ol class="steps">
+    <li>Projects → <span class="ui">Sync from Procore…</span>. The app reads your Procore projects (this can take a minute).</li>
+    <li>Review the preview: <b>Add</b> (new jobs), <b>Update</b> (each change shown old → new), plus jobs that already match or are skipped (tick <i>Show unchanged and skipped</i>).</li>
+    <li>Click <span class="ui">Apply</span>. Nothing changes until you do.</li>
+  </ol>
+  <ul>
+    <li>Jobs are matched by <b>job number</b> = Procore <b>Project Number</b>.</li>
+    <li>From Procore: name, address, status (from the project stage), start and completion dates, project manager and superintendent (from the Procore project directory, matched to Employees by name – unmatched names are listed and left as they are).</li>
+    <li>Procore wins for those fields. A blank in Procore never erases anything in the app.</li>
+    <li>Never touched: budget hours, starting hours, change orders, board color and notes.</li>
+    <li><b>Bidding</b> and <b>Pre-Construction</b> projects are skipped until awarded. Inactive or closed-out projects only mark an existing job Complete.</li>
   </ul>
   <h3>Adding or editing a project</h3>
   <p>Click <span class="ui">+ New project</span> or a row. Fields: job number and name (required), customer/GC, <b>project manager</b>, <b>superintendent / foreman</b>, status, original budget hours, starting hours, start and end dates, board color, site address (opens in maps on a phone) and notes.</p>
