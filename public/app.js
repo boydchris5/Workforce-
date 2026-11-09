@@ -1618,7 +1618,7 @@ async function renderProjects(page) {
     <div class="toolbar"><h1 style="margin:0">Projects</h1><span class="spacer"></span>
       <select data-act="pm"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, filterPm)).join('')}</select>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show completed</label>
-      ${isAdmin() ? '<button data-act="import">Import from spreadsheet…</button>' : ''}
+      ${isAdmin() ? '<button data-act="procore-projects">Sync from Procore…</button><button data-act="import">Import from spreadsheet…</button>' : ''}
       ${canSchedule() ? '<button class="primary" data-act="new">+ New project</button>' : ''}</div>
     <div class="table-wrap"><table class="list sortable">
       <thead><tr>${cols.map(([k, l, cls]) => `<th class="${cls || ''}"><button class="sort-h ${sort.key === k ? 'on' : ''}" data-sort="${k}" aria-label="Sort by ${esc(l)}">${esc(l)}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`).join('')}</tr></thead>
@@ -1643,10 +1643,55 @@ async function renderProjects(page) {
     renderProjects(page);
   }));
   const imp = $('[data-act=import]', page); if (imp) imp.onclick = importProjectsModal;
+  const pcs = $('[data-act=procore-projects]', page); if (pcs) pcs.onclick = () => procoreProjectsModal(page);
   if (canSchedule()) {
     $('[data-act=new]', page).onclick = () => projectModal({ status: 'active' });
     $$('tr[data-id]', page).forEach((tr) => (tr.onclick = () => projectModal(projects.find((p) => p.id === Number(tr.dataset.id)))));
   }
+}
+
+// Pull job information from Procore: preview what would be added / changed, then apply.
+async function procoreProjectsModal(page) {
+  const m = modal({
+    title: 'Sync projects from Procore',
+    wide: true,
+    body: '<div class="muted">Reading projects from Procore… this can take a minute for a large company.</div>',
+    footer: '<button data-close>Close</button>',
+  });
+  const ACT = { create: ['Add', 'ok'], update: ['Update', 'warn'], same: ['No change', ''], skip: ['Skip', ''] };
+  let r;
+  try { r = await api('POST', '/projects/procore-sync', {}); } catch (e) { $('.mb', m.el).innerHTML = `<div class="alert bad">${esc(e.message)}</div>`; return; }
+  const fmt = (v) => esc(v === null || v === undefined || v === '' ? '—' : String(v));
+  const rows = [...r.results].sort((a, b) => ['create', 'update', 'same', 'skip'].indexOf(a.action) - ['create', 'update', 'same', 'skip'].indexOf(b.action) || a.job_number.localeCompare(b.job_number));
+  const draw = (showAll) => {
+    const list = showAll ? rows : rows.filter((x) => x.action === 'create' || x.action === 'update');
+    $('.mb', m.el).innerHTML = `
+      <div class="stats">
+        <div class="stat ${r.summary.create ? 'ok' : ''}"><div class="v">${r.summary.create}</div><div class="l">New projects</div></div>
+        <div class="stat ${r.summary.update ? 'warn' : ''}"><div class="v">${r.summary.update}</div><div class="l">Projects to update</div></div>
+        <div class="stat"><div class="v">${r.summary.same}</div><div class="l">Already match</div></div>
+        <div class="stat"><div class="v">${r.summary.skip}</div><div class="l">Skipped</div></div></div>
+      ${r.roles_unavailable ? `<div class="alert warn-box">${esc(r.roles_unavailable)}</div>` : ''}
+      <div class="small muted">Procore wins for name, address, status, dates, project manager and superintendent. Blank Procore fields never erase anything. Budget hours, starting hours, change orders, color and notes are not touched. Bidding and Pre-Construction projects are skipped.</div>
+      <label class="check"><input type="checkbox" data-f="all" ${showAll ? 'checked' : ''}> Show unchanged and skipped projects too</label>
+      <div class="table-wrap" style="max-height:440px"><table class="list"><thead><tr><th></th><th>Job #</th><th>Project</th><th>Procore stage</th><th>Changes</th></tr></thead>
+      <tbody>${list.map((x) => `<tr><td><span class="pill ${ACT[x.action][1]}">${ACT[x.action][0]}</span></td><td class="nowrap">${esc(x.job_number)}</td><td>${esc(x.name)}</td><td class="small">${esc(x.stage || '')}</td>
+        <td class="small">${(x.changes || []).map((c) => `<div><b>${esc(c.field)}:</b> ${x.action === 'create' ? fmt(c.to) : `${fmt(c.from)} → ${fmt(c.to)}`}</div>`).join('')}${x.reason ? `<div class="muted">${esc(x.reason)}</div>` : ''}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted">Everything already matches Procore.</td></tr>'}</tbody></table></div>`;
+    $('[data-f=all]', m.el).onchange = (ev) => draw(ev.target.checked);
+  };
+  draw(false);
+  const n = r.summary.create + r.summary.update;
+  $('.mf', m.el).innerHTML = `<button data-close>Cancel</button>${n ? `<button class="primary" data-act="apply">Apply ${n} change${n === 1 ? '' : 's'}</button>` : ''}`;
+  $$('[data-close]', m.el).forEach((b) => (b.onclick = m.close));
+  const ap = $('[data-act=apply]', m.el);
+  if (ap) ap.onclick = async () => {
+    ap.disabled = true; ap.textContent = 'Applying…';
+    try {
+      const done = await api('POST', '/projects/procore-sync', { commit: true });
+      m.close(); toast(`Procore sync: ${done.summary.create} added, ${done.summary.update} updated`); renderProjects(page);
+    } catch (e) { ap.disabled = false; ap.textContent = 'Apply'; toast(e.message, true); }
+  };
 }
 
 function projectModal(p) {

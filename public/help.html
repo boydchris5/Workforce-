@@ -594,6 +594,19 @@
     <li><b>Hours to date</b> = starting hours + approved scheduled/verified hours. <b>Verified</b> = hours confirmed in Verify Hours.</li>
     <li>The <b>Budget</b> bar fills as hours are used: grey normally, orange past 85%, dark orange over 100%.</li>
   </ul>
+  <h3 id="procore-projects">Sync projects from Procore (Workforce Manager)</h3>
+  <ol class="steps">
+    <li>Projects → <span class="ui">Sync from Procore…</span>. The app reads your Procore projects (this can take a minute).</li>
+    <li>Review the preview: <b>Add</b> (new jobs), <b>Update</b> (each change shown old → new), plus jobs that already match or are skipped (tick <i>Show unchanged and skipped</i>).</li>
+    <li>Click <span class="ui">Apply</span>. Nothing changes until you do.</li>
+  </ol>
+  <ul>
+    <li>Jobs are matched by <b>job number</b> = Procore <b>Project Number</b>.</li>
+    <li>From Procore: name, address, status (from the project stage), start and completion dates, project manager and superintendent (from the Procore project directory, matched to Employees by name – unmatched names are listed and left as they are).</li>
+    <li>Procore wins for those fields. A blank in Procore never erases anything in the app.</li>
+    <li>Never touched: budget hours, starting hours, change orders, board color and notes.</li>
+    <li><b>Bidding</b> and <b>Pre-Construction</b> projects are skipped until awarded. Inactive or closed-out projects only mark an existing job Complete.</li>
+  </ul>
   <h3>Adding or editing a project</h3>
   <p>Click <span class="ui">+ New project</span> or a row. Fields: job number and name (required), customer/GC, <b>project manager</b>, <b>superintendent / foreman</b>, status, original budget hours, starting hours, start and end dates, board color, site address (opens in maps on a phone) and notes.</p>
   <ul>
