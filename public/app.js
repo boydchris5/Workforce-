@@ -1726,6 +1726,7 @@ async function renderEmployees(page) {
   const showAll = store('wf_emp_all') === '1';
   const [employees, skills] = await Promise.all([api('GET', `/employees${showAll ? '?all=1' : ''}`), api('GET', '/skills')]);
   const trades = [...new Set(employees.map((e) => e.trade).filter(Boolean))].sort();
+  S.empClasses = [...new Set(employees.map((e) => e.classification).filter(Boolean))];
   const today = todayStr();
   let q = ''; let trade = ''; let skill = ''; let etype = '';
   page.innerHTML = `
@@ -1773,6 +1774,21 @@ async function renderEmployees(page) {
   draw();
 }
 
+// Classification picker: common office, field-leadership and crew titles, plus any
+// already on file, plus "Other…" to type a new one. "Project Manager" is what puts
+// someone in the Project manager list on projects.
+const CLASS_GROUPS = [
+  ['Office', ['Project Manager', 'Assistant Project Manager', 'Estimator', 'Project Engineer', 'Office Manager', 'Accounting', 'Safety', 'Administrative']],
+  ['Field leadership', ['Superintendent', 'General Foreman', 'Foreman']],
+  ['Crew', ['Journeyman', 'Apprentice 1st yr', 'Apprentice 2nd yr', 'Apprentice 3rd yr', 'Apprentice 4th yr', 'Operator', 'Laborer Group 1']],
+];
+function classificationOptions(current) {
+  const known = new Set(CLASS_GROUPS.flatMap(([, l]) => l).map((x) => x.toLowerCase()));
+  const extra = [...new Set([...(S.empClasses || []), current].filter((x) => x && !known.has(x.toLowerCase())))].sort();
+  return `<option value="">—</option>${CLASS_GROUPS.map(([g, l]) => `<optgroup label="${g}">${l.map((x) => opt(x, x, current)).join('')}</optgroup>`).join('')}
+    ${extra.length ? `<optgroup label="Also on file">${extra.map((x) => opt(x, x, current)).join('')}</optgroup>` : ''}<option value="__other">Other…</option>`;
+}
+
 function employeeModal(e, skills) {
   const ro = !canEditPeople();
   const dis = ro ? 'disabled' : '';
@@ -1792,10 +1808,10 @@ function employeeModal(e, skills) {
         <label>Hire date<input name="hire_date" type="date" value="${esc(e.hire_date || '')}" ${dis}></label>
         <label>Union trade<input name="trade" list="trade-list" value="${esc(e.trade || '')}" placeholder="Carpenter, Laborer, Ironworker…" ${dis}></label>
         <label>Union local<input name="union_local" value="${esc(e.union_local || '')}" placeholder="e.g. 1445" ${dis}></label>
-        <label>Classification<input name="classification" list="class-list" value="${esc(e.classification || '')}" placeholder="Journeyman, Apprentice, Foreman…" ${dis}></label>
+        <label>Classification<select name="classification" ${dis}>${classificationOptions(e.classification)}</select>
+          <input name="class_other" placeholder="Type the classification" style="display:none;margin-top:6px" ${dis}></label>
       </div>
       <datalist id="trade-list">${['Carpenter', 'Laborer', 'Operating Engineer', 'Ironworker', 'Cement Mason', 'Millwright', 'Teamster', 'Electrician', 'Pipefitter', 'Plumber'].map((t) => `<option value="${t}">`).join('')}</datalist>
-      <datalist id="class-list">${['Superintendent', 'General Foreman', 'Foreman', 'Project Manager', 'Journeyman', 'Apprentice 1st yr', 'Apprentice 2nd yr', 'Apprentice 3rd yr', 'Apprentice 4th yr', 'Operator', 'Laborer Group 1'].map((t) => `<option value="${t}">`).join('')}</datalist>
       <div><div class="small muted" style="margin-bottom:4px">Skills &amp; certifications (expiration optional)</div>
         <div class="grid2" id="skill-grid">${skills.map((s) => `<div style="display:flex;gap:6px;align-items:center">
           <label class="check" style="flex:1"><input type="checkbox" data-skill="${esc(s.name)}" ${have.has(s.name) ? 'checked' : ''} ${dis}>${esc(s.name)}</label>
@@ -1817,8 +1833,19 @@ function employeeModal(e, skills) {
     h.innerHTML = full.recent.length ? `<b>Recent work</b> (${full.recent.length} days, ${fmtH(total)} h)<div class="table-wrap" style="max-height:200px;margin-top:4px"><table class="list"><tbody>${full.recent.map((r) => `<tr><td>${esc(r.work_date)}</td><td>${esc(r.job_number)} ${esc(r.project_name)}</td><td class="right">${fmtH(r.actual_hours ?? r.planned_hours)} h</td><td>${esc(r.status)}</td></tr>`).join('')}</tbody></table></div>` : 'No work history yet.';
   });
   if (ro) return;
+  const cls = $('[name=classification]', m.el); const other = $('[name=class_other]', m.el); const typeSel = $('[name=employee_type]', m.el);
+  cls.onchange = () => {
+    other.style.display = cls.value === '__other' ? '' : 'none';
+    if (cls.value === '__other') other.focus();
+    // Suggest the matching Type (still changeable).
+    if (/^superintendent$/i.test(cls.value)) typeSel.value = 'superintendent';
+    else if (CLASS_GROUPS[0][1].includes(cls.value)) typeSel.value = 'staff';
+    else if (CLASS_GROUPS[2][1].includes(cls.value)) typeSel.value = 'union';
+  };
   $('[data-act=save]', m.el).onclick = async () => {
     const f = formData(m.el);
+    if (f.classification === '__other') f.classification = (f.class_other || '').trim();
+    delete f.class_other;
     const sk = $$('[data-skill]', m.el).filter((x) => x.checked).map((x) => ({ name: x.dataset.skill, expires_on: $(`[data-exp="${CSS.escape(x.dataset.skill)}"]`, m.el).value || null }));
     const extra = ($('[data-newskills]', m.el).value || '').split(',').map((s) => s.trim()).filter(Boolean).map((name) => ({ name }));
     const body = { ...f, active: e.id ? f.active : true, skills: [...sk, ...extra] };
