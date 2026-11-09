@@ -339,3 +339,28 @@ footer.site .dot { color: var(--orange); margin: 0 6px; }
   main { padding: 0; max-width: none; }
   .board { min-width: 0; font-size: 10px; }
 }
+
+/* Union holidays */
+.board th.holiday, .board td.holiday { background: repeating-linear-gradient(135deg, #EFEFEF, #EFEFEF 6px, #E6E6E6 6px, #E6E6E6 12px); }
+.board th.holiday { color: #555; }
+.hol-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--orange-dk); margin-top: 2px; }
+.daytabs button.holiday { background: #E6E6E6; }
+.days-pick label.holiday { background: #EFEFEF; color: #666; }
+.hol-mini { font-size: 10px; color: var(--orange-dk); font-weight: 700; text-transform: uppercase; }
+.cal-day.holiday { background: #F1F1F1; }
+.cal-hol { font-size: 10px; font-weight: 700; color: var(--orange-dk); text-transform: uppercase; }
+.cal-hol-key { display: inline-block; padding: 1px 6px; background: #E6E6E6; border-radius: 4px; }
+.cal-chip.superintendent { background: var(--charcoal); color: #fff; }
+.cal-chip.union { background: #fff; border: 1px solid var(--light); color: var(--charcoal); }
+.leave-kind { font-weight: 700; color: var(--orange-dk); text-transform: uppercase; font-size: 12px; letter-spacing: .04em; margin: 10px 0 4px; }
+.pill.type-staff { background: var(--orange-tint); color: var(--orange-dk); }
+.pill.type-superintendent { background: var(--charcoal); color: #fff; }
+/* Names: short on screen, full on the printed / PDF schedule */
+.chip .nm-f { display: none; }
+@media print {
+  .chip .nm-s { display: none; }
+  .chip .nm-f { display: inline; }
+  .chip .nm { white-space: normal; overflow: visible; text-overflow: clip; }
+  .board th.holiday, .board td.holiday { background: #E9E9E9 !important; }
+  #page > .alert, .legend { display: none !important; }
+}

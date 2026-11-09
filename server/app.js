@@ -7,6 +7,7 @@ const { isDate, addDays, weekStart, periodStart, weekDates, daysBetween } = requ
 const { costAssignments, rateLookup, sumInto, round2 } = require('./payroll');
 const procore = require('./procore');
 const { createNotifier, renderEmail } = require('./notify');
+const { holidaysForYear, holidayMap } = require('./holidays');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -63,8 +64,8 @@ function createApp(db, opts = {}) {
   const api = express.Router();
   const canSchedule = auth.requireRole('admin', 'super');
   const adminOnly = auth.requireRole('admin');
-  const officeApprover = auth.requireRole('admin', 'office_admin');
-  const officeAny = auth.requireRole('admin', 'office', 'office_admin');
+  // The Office Manager adds and edits employees too (office staff live in the same list).
+  const canEditPeople = auth.requireRole('admin', 'super', 'office_admin');
   // Everyone but the Workforce Manager and superintendents sees approved field work only
   // and can't edit it (field staff, and office logins allowed to view the schedule).
   const viewOnly = (req) => !['admin', 'super'].includes(req.user.role);
@@ -178,21 +179,26 @@ function createApp(db, opts = {}) {
     e.recent = db.prepare(`SELECT a.work_date, a.planned_hours, a.actual_hours, a.status, p.job_number, p.name AS project_name
       FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? ORDER BY a.work_date DESC LIMIT 60`).all(e.id);
     e.time_off = db.prepare("SELECT id, off_date, reason, hours, status, reject_reason FROM time_off WHERE employee_id = ? AND off_date >= ? AND status <> 'rejected' ORDER BY off_date").all(e.id, addDays(today(), -30));
-    if (!viewOnly(req) || req.user.employee_id === e.id) e.pto = ptoBalance(e.id, Number(req.query.year) || Number(today().slice(0, 4)));
+    if (!viewOnly(req) || req.user.role === 'office_admin' || req.user.employee_id === e.id) e.leave = leaveBalance(e.id, Number(req.query.year) || Number(today().slice(0, 4)));
     e.no_shows = db.prepare(`SELECT a.work_date, a.verify_note, p.job_number, p.name AS project_name, u.name AS verified_by_name
       FROM assignments a JOIN projects p ON p.id = a.project_id LEFT JOIN users u ON u.id = a.verified_by
       WHERE a.employee_id = ? AND a.status = 'no_show' ORDER BY a.work_date DESC LIMIT 50`).all(e.id);
     res.json(e);
   });
 
+  // Employee type: union crew, superintendent (salaried, schedulable) or office staff (not on the field schedule).
+  const EMPLOYEE_TYPES = ['union', 'superintendent', 'staff'];
+  const typeFromClassification = (c) => (/superintendent/i.test(c || '') ? 'superintendent' : /project manager/i.test(c || '') ? 'staff' : 'union');
   function readEmployee(b) {
     const e = {
       employee_no: str(b.employee_no, 50), first_name: str(b.first_name, 100), last_name: str(b.last_name, 100),
       phone: str(b.phone, 50), email: str(b.email, 200), trade: str(b.trade, 100), union_local: str(b.union_local, 100),
       classification: str(b.classification, 100), hire_date: date(b.hire_date, 'Hire date'),
       active: b.active === undefined ? 1 : bool(b.active), notes: str(b.notes, 2000),
+      employee_type: str(b.employee_type, 20) || typeFromClassification(b.classification), department: str(b.department, 100),
     };
     if (!e.first_name || !e.last_name) throw bad('First and last name are required.');
+    if (!EMPLOYEE_TYPES.includes(e.employee_type)) throw bad('Pick a type: Union, Superintendent or Office staff.');
     return e;
   }
 
@@ -210,11 +216,11 @@ function createApp(db, opts = {}) {
     }
   }
 
-  api.post('/employees', canSchedule, (req, res) => {
+  api.post('/employees', canEditPeople, (req, res) => {
     const e = readEmployee(req.body);
     const id = tx(db, () => {
-      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes)
-        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes)`).run(e);
+      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes, employee_type, department)
+        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes, :employee_type, :department)`).run(e);
       const id = Number(r.lastInsertRowid);
       saveSkills(id, req.body.skills);
       return id;
@@ -223,12 +229,13 @@ function createApp(db, opts = {}) {
     res.json({ id });
   });
 
-  api.put('/employees/:id', canSchedule, (req, res) => {
+  api.put('/employees/:id', canEditPeople, (req, res) => {
     const id = int(req.params.id);
     const e = readEmployee(req.body);
     tx(db, () => {
       const r = db.prepare(`UPDATE employees SET employee_no=:employee_no, first_name=:first_name, last_name=:last_name, phone=:phone, email=:email,
-        trade=:trade, union_local=:union_local, classification=:classification, hire_date=:hire_date, active=:active, notes=:notes WHERE id=:id`).run({ ...e, id });
+        trade=:trade, union_local=:union_local, classification=:classification, hire_date=:hire_date, active=:active, notes=:notes,
+        employee_type=:employee_type, department=:department WHERE id=:id`).run({ ...e, id });
       if (!r.changes) throw new HttpError(404, 'Employee not found.');
       saveSkills(id, req.body.skills);
     });
@@ -331,8 +338,8 @@ function createApp(db, opts = {}) {
           if (x.action !== 'create' && x.action !== 'update') continue;
           const rec = x.rec; let id = x.existing_id;
           if (x.action === 'create') {
-            id = Number(db.prepare(`INSERT INTO employees (${cols.join(', ')}, active) VALUES (${cols.map(() => '?').join(', ')}, ?)`)
-              .run(...cols.map((c) => rec[c]), rec.active ?? 1).lastInsertRowid);
+            id = Number(db.prepare(`INSERT INTO employees (${cols.join(', ')}, active, employee_type) VALUES (${cols.map(() => '?').join(', ')}, ?, ?)`)
+              .run(...cols.map((c) => rec[c]), rec.active ?? 1, typeFromClassification(rec.classification)).lastInsertRowid);
           } else {
             const sets = cols.filter((c) => rec[c] !== null);
             const vals = sets.map((c) => rec[c]);
@@ -643,7 +650,7 @@ function createApp(db, opts = {}) {
     const slots = viewOnly(req) ? [] : db.prepare(`${slotSelect} WHERE s.work_date BETWEEN ? AND ? AND s.status IN ('open','rejected')
       ORDER BY s.work_date, s.trade, s.id`).all(start, end);
     res.json({
-      start, end, days, projects, assignments, time_off: timeOff, slots,
+      start, end, days, projects, assignments, time_off: timeOff, slots, holidays: holidayMap(start, end),
       totals: { approval, open_slots: slots.filter((x) => x.status === 'open').length,
         time_off_pending: req.user.role === 'admin' ? db.prepare("SELECT COUNT(DISTINCT COALESCE(batch, id)) AS n FROM time_off WHERE status = 'pending'").get().n : 0, hours: totalHours, assignments: assignments.length - approval.rejected, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
     });
@@ -656,7 +663,8 @@ function createApp(db, opts = {}) {
       linked: true,
       assignments: db.prepare(`${assignmentSelect} WHERE a.employee_id = ? AND a.work_date >= ? AND a.approval_status = 'approved' ORDER BY a.work_date, a.id LIMIT 60`).all(req.user.employee_id, addDays(from, -7)),
       time_off: db.prepare('SELECT * FROM time_off WHERE employee_id = ? AND off_date >= ? ORDER BY off_date').all(req.user.employee_id, addDays(from, -60)),
-      pto: ptoBalance(req.user.employee_id, int(req.query.year) || Number(today().slice(0, 4))),
+      leave: leaveBalance(req.user.employee_id, int(req.query.year) || Number(today().slice(0, 4))),
+      reasons: REASONS[typeOf(empRow.get(req.user.employee_id))],
     });
   });
 
@@ -696,6 +704,12 @@ function createApp(db, opts = {}) {
       seen.add(key);
       const h = dayHours.get(eid, d).h;
       if (h > warn) out.push({ employee_id: eid, work_date: d, hours: h, message: `${empName.get(eid)?.name} is scheduled ${h} hrs on ${d} (over ${warn})` });
+    }
+    // Scheduling on a union holiday is allowed but called out.
+    const days = [...new Set(pairs.map(([, d]) => d))].sort();
+    if (days.length) {
+      const hol = holidayMap(days[0], days[days.length - 1]);
+      for (const d of days) if (hol[d]) out.push({ type: 'holiday', work_date: d, message: `${d} is ${hol[d]} (union holiday)` });
     }
     return out;
   }
@@ -843,7 +857,7 @@ function createApp(db, opts = {}) {
       rejected_slots: db.prepare(`${slotSelect} WHERE s.status = 'rejected' AND s.work_date >= ? ${mine} ORDER BY s.work_date, p.job_number`).all(since, ...args),
       // Each pending day carries the person's balance for that year, so the manager can decide at a glance.
       time_off: req.user.role === 'admin' ? db.prepare(`${timeOffSelect} WHERE t.status = 'pending' ORDER BY t.off_date, e.last_name`).all()
-        .map((r) => ({ ...r, counts: ptoCounts(r.reason), pto_left: ptoBalance(r.employee_id, Number(r.off_date.slice(0, 4))).left })) : [],
+        .map((r) => { const kb = leaveBalance(r.employee_id, Number(r.off_date.slice(0, 4)))?.kinds[reasonKind(r.reason)]; return { ...r, counts: !!kb, pto_left: kb ? kb.left : null }; }) : [],
     });
   });
 
@@ -952,24 +966,37 @@ function createApp(db, opts = {}) {
     res.json({ rejected });
   });
 
-  // ---- time off --------------------------------------------------------------------
-  const timeOffSelect = `SELECT t.*, e.first_name, e.last_name, e.trade, cu.name AS requested_by_name, du.name AS decided_by_name
+  // ---- time off (one record for everyone) --------------------------------------------
+  // Union crew, superintendents and office staff all use the time_off table: one row per
+  // day, approved / pending / rejected, with the days of one request sharing a batch id.
+  // Approved days block scheduling and show on the schedule and the Time Off calendar.
+  const timeOffSelect = `SELECT t.*, e.first_name, e.last_name, e.trade, e.employee_type, e.department, cu.name AS requested_by_name, du.name AS decided_by_name
     FROM time_off t JOIN employees e ON e.id = t.employee_id LEFT JOIN users cu ON cu.id = t.created_by LEFT JOIN users du ON du.id = t.decided_by`;
-  // Days in a request: a date range (optionally weekdays only) or a list of dates.
+  const leaveApprover = auth.requireRole('admin', 'office_admin');
+  const empRow = db.prepare('SELECT * FROM employees WHERE id = ?');
+  // Reasons each kind of employee can pick. Only PTO and Vacation use up allowance hours.
+  const UNION_REASONS = ['Vacation', 'Sick / medical', 'Family leave', 'Jury duty', 'Union business', 'Training', 'Bereavement', 'Unpaid', 'Laid off', 'Other'];
+  const REASONS = { staff: ['PTO', 'Vacation', 'Other'], superintendent: ['PTO', 'Other'], union: UNION_REASONS };
+  const LEAVE_KINDS = { staff: ['pto', 'vacation'], superintendent: ['pto'], union: [] };
+  const reasonKind = (reason) => { const r = String(reason || '').trim().toLowerCase(); return /^pto\b/.test(r) ? 'pto' : /^vacation\b/.test(r) ? 'vacation' : null; };
+  const typeOf = (e) => (e && REASONS[e.employee_type] ? e.employee_type : 'union');
+  const defaultAllowance = (type, kind) => Number(getSettings(db)[`${type === 'staff' ? 'staff' : 'super'}_${kind}_default_hours`]) || 0;
+
+  // Days in a request: a date range (optionally weekdays only, skipping union holidays) or a list of dates.
   function offDates(b) {
     let dates;
     if (b.from) {
-      // A date range (e.g. three weeks next spring), optionally weekdays only.
       const from = date(b.from, 'From', true); const to = date(b.to || b.from, 'To', true);
       if (to < from) throw bad('The end date is before the start date.');
       if (daysBetween(from, to) > 366) throw bad('Enter at most one year of time off at a time.');
+      const hol = holidayMap(from, to);
       dates = [];
       for (let d = from; d <= to; d = addDays(d, 1)) {
         const dow = new Date(d + 'T00:00:00Z').getUTCDay();
-        if (b.weekdays_only && (dow === 0 || dow === 6)) continue;
+        if (b.weekdays_only && (dow === 0 || dow === 6 || hol[d])) continue;
         dates.push(d);
       }
-      if (!dates.length) throw bad('That range has no weekdays.');
+      if (!dates.length) throw bad('That range has no work days (weekends and holidays are skipped).');
     } else {
       dates = (Array.isArray(b.dates) ? b.dates : [b.off_date]).map((d) => date(d, 'Date', true));
     }
@@ -977,38 +1004,85 @@ function createApp(db, opts = {}) {
   }
   const offHours = (b) => hours(b.hours, 'Hours per day') ?? Number(getSettings(db).default_hours) ?? 8;
 
-  // Manager or superintendent enters time off directly: approved right away.
-  api.post('/time-off', canSchedule, (req, res) => {
+  // Yearly balance per kind (PTO, Vacation) for one employee; null for union crew.
+  function leaveBalance(eid, year) {
+    const e = empRow.get(eid); const type = typeOf(e);
+    const kinds = LEAVE_KINDS[type];
+    if (!kinds.length) return null;
+    const def = Number(getSettings(db).default_hours) || 8; const t = today();
+    const out = { year, employee_type: type, kinds: {} };
+    for (const k of kinds) {
+      const own = db.prepare('SELECT hours, note FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k);
+      out.kinds[k] = { allowance: own ? own.hours : defaultAllowance(type, k), custom: !!own, note: own?.note || null, used: 0, scheduled: 0, pending: 0 };
+    }
+    for (const r of db.prepare(`SELECT off_date, reason, hours, status FROM time_off WHERE employee_id = ? AND off_date BETWEEN ? AND ? AND status IN ('approved','pending')`)
+      .all(eid, `${year}-01-01`, `${year}-12-31`)) {
+      const b = out.kinds[reasonKind(r.reason)]; if (!b) continue;
+      const h = r.hours ?? def;
+      if (r.status === 'pending') b.pending += h; else if (r.off_date <= t) b.used += h; else b.scheduled += h;
+    }
+    for (const b of Object.values(out.kinds)) b.left = round2(b.allowance - b.used - b.scheduled);
+    return out;
+  }
+  // Group a list of day rows into requests (same batch, or consecutive manager-entered days).
+  function groupOff(rows) {
+    const out = [];
+    for (const r of [...rows].sort((a, b) => a.employee_id - b.employee_id || a.off_date.localeCompare(b.off_date))) {
+      const key = r.batch || null; const last = out[out.length - 1];
+      const same = last && last.employee_id === r.employee_id && last.status === r.status && last.reason === r.reason
+        && (key ? last.batch === key : !last.batch && r.off_date <= addDays(last.end_date, 3));
+      if (same) { last.end_date = r.off_date; last.ids.push(r.id); last.days += 1; last.hours += r.hours ?? 8; }
+      else out.push({ ...r, start_date: r.off_date, end_date: r.off_date, ids: [r.id], days: 1, hours: r.hours ?? 8 });
+    }
+    return out;
+  }
+  // Who hears about a new request: office staff -> Office Manager; superintendents -> both;
+  // union crew -> Workforce Manager.
+  const emailsFor = (roles) => db.prepare(`SELECT email FROM users WHERE role IN (${roles.map(() => '?').join(',')}) AND active = 1 AND notify_requests = 1
+    AND email IS NOT NULL AND email <> ''`).all(...roles).map((r) => r.email);
+  function requestRecipients(type) {
+    const om = emailsFor(['office_admin']); const wm = emailsFor(['admin']);
+    if (type === 'staff') return om.length ? om : wm;
+    if (type === 'superintendent') return [...wm, ...om];
+    return wm;
+  }
+
+  // Manager (or a superintendent, or the Office Manager for staff) enters time off: approved right away.
+  api.post('/time-off', auth.requireRole('admin', 'super', 'office_admin'), (req, res) => {
     const eid = int(req.body.employee_id);
-    if (!empName.get(eid)) throw bad('Pick an employee.');
+    const emp = empRow.get(eid);
+    if (!emp) throw bad('Pick an employee.');
+    if (req.user.role === 'office_admin' && emp.employee_type !== 'staff') throw new HttpError(403, 'The Office Manager enters time off for office staff only.');
     const dates = offDates(req.body);
     const reason = str(req.body.reason, 200); const h = offHours(req.body);
     const conflicts = []; let added = 0;
-    // Approving over an employee's own pending/rejected request for that day replaces it.
-    const up = db.prepare(`INSERT INTO time_off (employee_id, off_date, reason, hours, created_by, status, created_at, decided_by, decided_at)
-      VALUES (?, ?, ?, ?, ?, 'approved', datetime('now'), ?, datetime('now'))
-      ON CONFLICT (employee_id, off_date) DO UPDATE SET status = 'approved', reason = excluded.reason, hours = excluded.hours,
+    const batch = req.body.from ? require('node:crypto').randomUUID() : null;
+    const up = db.prepare(`INSERT INTO time_off (employee_id, off_date, reason, hours, note, batch, created_by, status, created_at, decided_by, decided_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', datetime('now'), ?, datetime('now'))
+      ON CONFLICT (employee_id, off_date) DO UPDATE SET status = 'approved', reason = excluded.reason, hours = excluded.hours, note = excluded.note,
         decided_by = excluded.decided_by, decided_at = excluded.decided_at, reject_reason = NULL WHERE time_off.status <> 'approved'`);
     tx(db, () => {
       for (const d of dates) {
         const booked = findBookings.all(eid, d);
         if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((x) => x.job_number).join(', ')}. Remove that first.`); continue; }
-        added += up.run(eid, d, reason, h, req.user.id, req.user.id).changes;
+        added += up.run(eid, d, reason, h, str(req.body.note, 500), batch, req.user.id, req.user.id).changes;
       }
     });
     audit(req, 'create', 'time_off', eid, { from: dates[0], to: dates[dates.length - 1], days: added, reason });
     res.json({ added, conflicts });
   });
 
-  // Anyone whose login is linked to their employee record can request time off.
+  // Anyone whose login is linked to their employee record requests their own time off.
   api.post('/time-off/request', (req, res) => {
     const eid = req.user.employee_id;
     if (!eid) throw bad('Your login is not linked to an employee record. Ask the Workforce Manager.');
+    const emp = empRow.get(eid); const type = typeOf(emp);
     const dates = offDates(req.body);
     if (dates.length > 60) throw bad('Request at most 60 days at a time.');
     if (dates[0] < today()) throw bad('Time off must be today or later.');
     const reason = str(req.body.reason, 200);
-    if (!reason) throw bad('Pick a reason.');
+    if (!reason) throw bad('Pick a type of time off.');
+    if (!REASONS[type].some((x) => x.toLowerCase() === reason.toLowerCase())) throw bad(`Pick one of: ${REASONS[type].join(', ')}.`);
     const h = offHours(req.body); const note = str(req.body.note, 500);
     const batch = require('node:crypto').randomUUID();
     const skipped = []; const added = []; const notes = [];
@@ -1030,18 +1104,21 @@ function createApp(db, opts = {}) {
     });
     if (!added.length) throw bad(`Nothing requested – ${skipped.join('; ')}.`);
     audit(req, 'request', 'time_off', eid, { from: added[0], to: added[added.length - 1], days: added.length, reason });
-    const bal = ptoBalance(eid, Number(added[0].slice(0, 4)));
-    const counts = ptoCounts(reason);
-    notifyManagers(req, `Time-off request: ${empName.get(eid).name}`, `${empName.get(eid).name} requested time off`, [
-      `Days: ${shortDates(added)} · ${h} h per day`, `Reason: ${reason}`, ...(note ? [`Note: ${note}`] : []),
-      counts ? `Balance before this request: ${bal.left} h left of ${bal.allowance} h (${added.length * h} h requested)` : 'This reason does not count against the time-off balance.',
-      ...(notes.length ? ['Heads up – ' + notes.join('; ')] : []),
-    ]);
+    const bal = leaveBalance(eid, Number(added[0].slice(0, 4)));
+    const kb = bal?.kinds[reasonKind(reason)];
+    const name = `${emp.first_name} ${emp.last_name}`;
+    sendEmail(requestRecipients(type), `Time-off request: ${name}`, {
+      heading: `${name} requested time off`,
+      lines: [`Days: ${shortDates(added)} · ${h} h per day`, `Type: ${reason}`, ...(note ? [`Note: ${note}`] : []),
+        kb ? `${reason} balance before this request: ${kb.left} h left of ${kb.allowance} h (${added.length * h} h requested)` : 'This type does not use allowance hours.',
+        ...(notes.length ? ['Heads up – ' + notes.join('; ')] : [])],
+      link: appUrl(req, type === 'staff' ? '#/timeoff' : '#/schedule'), linkText: 'Review in the Workforce app',
+    });
     res.json({ added: added.length, skipped, notes, balance: bal });
   });
 
-  // Manager approves or rejects requests (a reason is required to reject).
-  api.post('/time-off/decide', adminOnly, (req, res) => {
+  // Approve or reject (a reason is required to reject). Workforce Manager or Office Manager.
+  api.post('/time-off/decide', leaveApprover, (req, res) => {
     const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
     const approve = req.body.action === 'approve';
     if (!ids.length) throw bad('Pick at least one request.');
@@ -1061,287 +1138,99 @@ function createApp(db, opts = {}) {
       }
     });
     audit(req, approve ? 'approve' : 'reject', 'time_off', null, { count: done.length, reason });
-    // Tell each employee (if their login has an email).
     const byEmp = new Map();
     for (const r of done) (byEmp.get(r.employee_id) || byEmp.set(r.employee_id, []).get(r.employee_id)).push(r);
     for (const [eid, list] of byEmp) {
-      const to = db.prepare("SELECT email FROM users WHERE employee_id = ? AND active = 1 AND email IS NOT NULL AND email <> ''").all(eid).map((u) => u.email);
+      const to = [empRow.get(eid)?.email, ...db.prepare("SELECT email FROM users WHERE employee_id = ? AND active = 1 AND email IS NOT NULL AND email <> ''").all(eid).map((u) => u.email)];
       sendEmail(to, `Time off ${approve ? 'approved' : 'not approved'}: ${shortDates(list.map((x) => x.off_date))}`, {
         heading: `Your time off was ${approve ? 'approved' : 'not approved'}`,
         lines: [`Days: ${shortDates(list.map((x) => x.off_date))}`, ...(approve ? [] : [`Reason: ${reason}`]), `By: ${req.user.name}`],
-        link: appUrl(req, '#/my'), linkText: 'See My Schedule', footer: 'Sent by the Fager-McGee Workforce app.',
+        link: appUrl(req, '#/timeoff'), linkText: 'See Time Off', footer: 'Sent by the Fager-McGee Workforce app.',
       });
     }
     res.json({ [approve ? 'approved' : 'rejected']: done.length, conflicts });
   });
 
-  // Managers/superintendents remove any time off; an employee can withdraw their own pending request.
+  // Managers remove any time off (the Office Manager: office staff); an employee can cancel
+  // their own pending request or approved days still ahead.
   api.delete('/time-off/:id', (req, res) => {
     const row = db.prepare('SELECT * FROM time_off WHERE id = ?').get(int(req.params.id));
     if (!row) return res.json({ ok: true });
-    const own = row.employee_id === req.user.employee_id && row.status !== 'approved';
-    if (!['admin', 'super'].includes(req.user.role) && !own) throw new HttpError(403, 'You can only withdraw your own pending requests.');
+    const own = row.employee_id === req.user.employee_id && (row.status !== 'approved' || row.off_date > today());
+    const om = req.user.role === 'office_admin' && empRow.get(row.employee_id)?.employee_type === 'staff';
+    if (!['admin', 'super'].includes(req.user.role) && !own && !om) throw new HttpError(403, 'You can only cancel your own requests.');
     db.prepare('DELETE FROM time_off WHERE id = ?').run(row.id);
     audit(req, 'delete', 'time_off', row.id, { employee_id: row.employee_id, off_date: row.off_date, status: row.status });
     res.json({ ok: true });
   });
 
-  // ---- office time off (request/approve -- separate from field scheduling above) ---
-  const TIME_OFF_TYPES = ['pto', 'sick', 'personal', 'other'];
-  const officeStaffRow = db.prepare('SELECT * FROM office_staff WHERE id = ?');
-
-  api.get('/office-staff', officeAny, (_req, res) => {
-    res.json(db.prepare('SELECT * FROM office_staff ORDER BY active DESC, last_name, first_name').all());
-  });
-
-  function readOfficeStaff(b) {
-    const first_name = str(b.first_name, 100); const last_name = str(b.last_name, 100);
-    if (!first_name || !last_name) throw bad('First and last name are required.');
-    return {
-      first_name, last_name,
-      email: str(b.email, 200), department: str(b.department, 100),
-      active: b.active === undefined ? 1 : bool(b.active),
-    };
-  }
-
-  api.post('/office-staff', officeApprover, (req, res) => {
-    const s = readOfficeStaff(req.body);
-    const r = db.prepare('INSERT INTO office_staff (first_name, last_name, email, department, active) VALUES (?, ?, ?, ?, ?)')
-      .run(s.first_name, s.last_name, s.email, s.department, s.active);
-    audit(req, 'create', 'office_staff', Number(r.lastInsertRowid), { name: `${s.first_name} ${s.last_name}` });
-    res.json({ id: Number(r.lastInsertRowid) });
-  });
-
-  api.put('/office-staff/:id', officeApprover, (req, res) => {
-    const id = int(req.params.id);
-    const s = readOfficeStaff(req.body);
-    const r = db.prepare('UPDATE office_staff SET first_name=?, last_name=?, email=?, department=?, active=? WHERE id=?')
-      .run(s.first_name, s.last_name, s.email, s.department, s.active, id);
-    if (!r.changes) throw new HttpError(404, 'Office staff member not found.');
-    audit(req, 'update', 'office_staff', id, { name: `${s.first_name} ${s.last_name}`, active: s.active });
-    res.json({ id });
-  });
-
-  const timeOffRequestSelect = `SELECT r.*, os.first_name, os.last_name, u.name AS decided_by_name
-    FROM office_time_off_requests r JOIN office_staff os ON os.id = r.office_staff_id
-    LEFT JOIN users u ON u.id = r.decided_by`;
-
-  // Minimal, privacy-safe calendar view for a date range -- names and dates of
-  // already-approved time off only, never pending requests or decision notes
-  // (the main endpoint below keeps those restricted to the requester and the
-  // approver). Deliberately open to EVERY logged-in role, including field
-  // (super/viewer), not just officeAny -- the whole company can see who in
-  // the office is out, even though only office roles can request/approve.
-  api.get('/time-off-requests/calendar', (req, res) => {
-    const start = date(req.query.start, 'start', true);
-    const end = date(req.query.end, 'end', true);
-    res.json(db.prepare(`SELECT r.id, r.office_staff_id, os.first_name, os.last_name, r.start_date, r.end_date, r.type
-      FROM office_time_off_requests r JOIN office_staff os ON os.id = r.office_staff_id
-      WHERE r.status = 'approved' AND r.start_date <= ? AND r.end_date >= ? ORDER BY r.start_date`).all(end, start));
-  });
-
-  api.get('/time-off-requests', officeAny, (req, res) => {
-    if (req.user.role === 'office') {
-      if (!req.user.office_staff_id) throw new HttpError(403, 'Your login is not linked to an office staff record. Ask the office manager.');
-      return res.json(db.prepare(`${timeOffRequestSelect} WHERE r.office_staff_id = ? ORDER BY r.start_date DESC`).all(req.user.office_staff_id));
-    }
-    const status = str(req.query.status, 20);
-    const rows = db.prepare(`${timeOffRequestSelect} ${status ? 'WHERE r.status = ?' : ''}
-      ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END, r.start_date DESC`).all(...(status ? [status] : []));
-    res.json(rows);
-  });
-
-  api.post('/time-off-requests', officeAny, (req, res) => {
-    let officeStaffId;
-    if (req.user.role === 'office') {
-      if (!req.user.office_staff_id) throw new HttpError(403, 'Your login is not linked to an office staff record. Ask the office manager.');
-      officeStaffId = req.user.office_staff_id;
-    } else {
-      officeStaffId = int(req.body.office_staff_id);
-      if (!officeStaffId || !officeStaffRow.get(officeStaffId)) throw bad('Pick a valid office staff member.');
-    }
-    const start = date(req.body.start_date, 'Start date', true);
-    const end = date(req.body.end_date, 'End date', true);
-    if (end < start) throw bad('The end date is before the start date.');
-    const type = str(req.body.type, 20) || 'pto';
-    if (!TIME_OFF_TYPES.includes(type)) throw bad('Invalid time off type.');
-    const note = str(req.body.note, 500);
-    const r = db.prepare(`INSERT INTO office_time_off_requests (office_staff_id, start_date, end_date, type, note, requested_by)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(officeStaffId, start, end, type, note, req.user.id);
-    audit(req, 'create', 'office_time_off_request', Number(r.lastInsertRowid), { office_staff_id: officeStaffId, start, end, type });
-    if (req.user.role === 'office' || req.user.office_staff_id === officeStaffId) {
-      const os = officeStaffRow.get(officeStaffId);
-      const bal = officePtoBalance(officeStaffId, Number(start.slice(0, 4)));
-      const days = weekdaysIn(start, end).length;
-      sendEmail(officeApproverEmails(), `Time-off request: ${os.first_name} ${os.last_name}`, {
-        heading: `${os.first_name} ${os.last_name} requested time off`,
-        lines: [`Days: ${start === end ? start : `${start} to ${end}`} (${days} weekday${days === 1 ? '' : 's'})`, `Type: ${OFFICE_TYPE_NAMES[type]}`, ...(note ? [`Note: ${note}`] : []),
-          OFFICE_COUNTING.includes(type) ? `Balance before this request: ${bal.left} h left of ${bal.allowance} h` : 'This type does not count against the time-off balance.'],
-        link: appUrl(req, '#/timeoff'), linkText: 'Review in the Workforce app',
-      });
-    }
-    res.json({ id: Number(r.lastInsertRowid) });
-  });
-
-  api.post('/time-off-requests/:id/decide', officeApprover, (req, res) => {
-    const id = int(req.params.id);
-    const cur = db.prepare('SELECT * FROM office_time_off_requests WHERE id = ?').get(id);
-    if (!cur) throw new HttpError(404, 'Request not found.');
-    if (cur.status !== 'pending') throw bad('Only a pending request can be approved or denied.');
-    const status = str(req.body.status, 20);
-    if (!['approved', 'denied'].includes(status)) throw bad('Status must be approved or denied.');
-    const note = str(req.body.decision_note, 500);
-    db.prepare(`UPDATE office_time_off_requests SET status=?, decided_by=?, decided_at=datetime('now'), decision_note=? WHERE id=?`)
-      .run(status, req.user.id, note, id);
-    audit(req, status === 'approved' ? 'approve' : 'deny', 'office_time_off_request', id, { note });
-    const os = officeStaffRow.get(cur.office_staff_id);
-    const to = [os?.email, ...db.prepare("SELECT email FROM users WHERE office_staff_id = ? AND active = 1 AND email IS NOT NULL AND email <> ''").all(cur.office_staff_id).map((u) => u.email)];
-    const span = cur.start_date === cur.end_date ? cur.start_date : `${cur.start_date} to ${cur.end_date}`;
-    sendEmail(to, `Time off ${status === 'approved' ? 'approved' : 'not approved'}: ${span}`, {
-      heading: `Your time off was ${status === 'approved' ? 'approved' : 'not approved'}`,
-      lines: [`Days: ${span}`, ...(note ? [`Note: ${note}`] : []), `By: ${req.user.name}`],
-      link: appUrl(req, '#/timeoff'), linkText: 'See Time Off', footer: 'Sent by the Fager-McGee Workforce app.',
-    });
-    res.json({ id, status });
-  });
-
-  api.post('/time-off-requests/:id/cancel', officeAny, (req, res) => {
-    const id = int(req.params.id);
-    const cur = db.prepare('SELECT * FROM office_time_off_requests WHERE id = ?').get(id);
-    if (!cur) throw new HttpError(404, 'Request not found.');
-    if (req.user.role === 'office' && cur.office_staff_id !== req.user.office_staff_id) throw new HttpError(403, 'You can only cancel your own requests.');
-    if (!['pending', 'approved'].includes(cur.status)) throw bad('That request can no longer be cancelled.');
-    db.prepare(`UPDATE office_time_off_requests SET status='cancelled', decided_by=?, decided_at=datetime('now') WHERE id=?`).run(req.user.id, id);
-    audit(req, 'cancel', 'office_time_off_request', id);
-    res.json({ id });
-  });
-
-  // ---- office time-off balances ----------------------------------------------------
-  // Office staff get a yearly allowance in hours. PTO and Personal requests count
-  // against it (each weekday = the default hours per day); Sick and Other don't.
-  const OFFICE_COUNTING = ['pto', 'personal'];
-  const OFFICE_TYPE_NAMES = { pto: 'PTO / vacation', sick: 'Sick', personal: 'Personal', other: 'Other' };
-  function weekdaysIn(start, end) {
-    const out = [];
-    for (let d = start; d <= end; d = addDays(d, 1)) { const w = new Date(d + 'T00:00:00Z').getUTCDay(); if (w !== 0 && w !== 6) out.push(d); }
-    return out;
-  }
-  const officeApproverEmails = () => {
-    const q = (roles) => db.prepare(`SELECT email FROM users WHERE role IN (${roles}) AND active = 1 AND notify_requests = 1 AND email IS NOT NULL AND email <> ''`).all().map((r) => r.email);
-    const om = q("'office_admin'");
-    return om.length ? om : q("'admin'"); // no Office Manager email on file -> the Workforce Manager
-  };
-  function officePtoBalance(osid, year) {
-    const s = getSettings(db);
-    const own = db.prepare('SELECT hours, note FROM office_pto_allowances WHERE office_staff_id = ? AND year = ?').get(osid, year);
-    const allowance = own ? own.hours : Number(s.office_pto_default_hours) || 0;
-    const per = Number(s.default_hours) || 8; const t = today();
-    const out = { year, allowance, allowance_note: own?.note || null, custom: !!own, used: 0, scheduled: 0, pending: 0, other: 0 };
-    const rows = db.prepare(`SELECT start_date, end_date, type, status FROM office_time_off_requests
-      WHERE office_staff_id = ? AND status IN ('approved','pending') AND start_date <= ? AND end_date >= ?`).all(osid, `${year}-12-31`, `${year}-01-01`);
-    for (const r of rows) {
-      for (const d of weekdaysIn(r.start_date < `${year}-01-01` ? `${year}-01-01` : r.start_date, r.end_date > `${year}-12-31` ? `${year}-12-31` : r.end_date)) {
-        if (!OFFICE_COUNTING.includes(r.type)) { if (r.status === 'approved') out.other += per; continue; }
-        if (r.status === 'pending') out.pending += per; else if (d <= t) out.used += per; else out.scheduled += per;
-      }
-    }
-    out.left = round2(allowance - out.used - out.scheduled);
-    return out;
-  }
-  // An office login sees its own balance; the Office Manager/Workforce Manager can look up anyone's.
-  api.get('/time-off-requests/balance', officeAny, (req, res) => {
+  // My own time off: requests (grouped) and balances, for anyone linked to an employee record.
+  api.get('/leave/mine', (req, res) => {
+    const eid = req.user.employee_id;
+    if (!eid) return res.json({ linked: false });
     const year = int(req.query.year) || Number(today().slice(0, 4));
-    const osid = req.user.role === 'office' ? req.user.office_staff_id : int(req.query.office_staff_id) || req.user.office_staff_id;
-    if (!osid) return res.json(null);
-    res.json(officePtoBalance(osid, year));
-  });
-  api.get('/office-pto', officeApprover, (req, res) => {
-    const year = int(req.query.year) || Number(today().slice(0, 4));
+    const e = empRow.get(eid);
     res.json({
-      year, default_hours: Number(getSettings(db).office_pto_default_hours) || 0,
-      staff: db.prepare('SELECT * FROM office_staff WHERE active = 1 ORDER BY last_name, first_name').all()
-        .map((o) => ({ id: o.id, first_name: o.first_name, last_name: o.last_name, department: o.department, ...officePtoBalance(o.id, year) })),
+      linked: true, employee_type: typeOf(e), reasons: REASONS[typeOf(e)],
+      balance: leaveBalance(eid, year),
+      requests: groupOff(db.prepare(`${timeOffSelect} WHERE t.employee_id = ? AND (t.off_date >= ? OR t.status = 'pending') ORDER BY t.off_date`).all(eid, addDays(today(), -120))).reverse(),
     });
   });
-  api.put('/office-pto/:id', officeApprover, (req, res) => {
-    const osid = int(req.params.id);
-    if (!officeStaffRow.get(osid)) throw new HttpError(404, 'Office staff member not found.');
-    const year = int(req.body.year);
+  // Reasons offered for a given employee (manager entry).
+  api.get('/leave/reasons', (_req, res) => res.json(REASONS));
+
+  // Who's out: approved time off for everyone, open to every login (no notes or reasons for rejections).
+  api.get('/leave/calendar', (req, res) => {
+    const start = date(req.query.start, 'start', true); const end = date(req.query.end, 'end', true);
+    if (daysBetween(start, end) > 62) throw bad('Pick at most two months.');
+    const rows = db.prepare(`SELECT t.id, t.employee_id, t.off_date, t.reason, e.first_name, e.last_name, e.employee_type, e.department, e.trade
+      FROM time_off t JOIN employees e ON e.id = t.employee_id WHERE t.status = 'approved' AND t.off_date BETWEEN ? AND ? ORDER BY e.last_name, e.first_name`).all(start, end);
+    res.json({ days: rows, holidays: holidayMap(start, end) });
+  });
+
+  // Approver queue: pending requests (and the last 60 days of decisions), each with the balance it draws on.
+  api.get('/leave/requests', leaveApprover, (req, res) => {
+    const groups = groupOff(db.prepare(`${timeOffSelect} WHERE t.batch IS NOT NULL AND (t.status = 'pending' OR (t.decided_at >= ? AND t.status IN ('approved','rejected')))`)
+      .all(addDays(today(), -60)));
+    for (const g of groups) {
+      const kb = leaveBalance(g.employee_id, Number(g.start_date.slice(0, 4)))?.kinds[reasonKind(g.reason)];
+      g.balance_left = kb ? kb.left : null;
+    }
+    res.json({ pending: groups.filter((g) => g.status === 'pending'), decided: groups.filter((g) => g.status !== 'pending').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || '')) });
+  });
+
+  // Balances for everyone who has allowances (superintendents and office staff).
+  api.get('/leave/balances', auth.requireRole('admin', 'super', 'office_admin'), (req, res) => {
+    const year = int(req.query.year) || Number(today().slice(0, 4));
+    const s = getSettings(db);
+    res.json({
+      year,
+      defaults: { staff_pto: Number(s.staff_pto_default_hours) || 0, staff_vacation: Number(s.staff_vacation_default_hours) || 0, super_pto: Number(s.super_pto_default_hours) || 0 },
+      employees: db.prepare("SELECT * FROM employees WHERE active = 1 AND employee_type IN ('staff','superintendent') ORDER BY employee_type, last_name, first_name").all()
+        .map((e) => ({ id: e.id, first_name: e.first_name, last_name: e.last_name, employee_type: e.employee_type, department: e.department, trade: e.trade, ...leaveBalance(e.id, year) })),
+    });
+  });
+  // Set one person's allowance for a year and kind (blank hours = back to the company default).
+  api.put('/leave/allowance/:employee_id', leaveApprover, (req, res) => {
+    const eid = int(req.params.employee_id); const e = empRow.get(eid);
+    if (!e) throw new HttpError(404, 'Employee not found.');
+    const year = int(req.body.year); const kind = str(req.body.kind, 20);
     if (!year || year < 2000 || year > 2100) throw bad('Pick a year.');
+    if (!LEAVE_KINDS[typeOf(e)].includes(kind)) throw bad(`${e.first_name} ${e.last_name} doesn't get ${kind === 'vacation' ? 'Vacation' : 'PTO'} hours.`);
     const h = num(req.body.hours);
-    if (h === null) db.prepare('DELETE FROM office_pto_allowances WHERE office_staff_id = ? AND year = ?').run(osid, year);
+    if (h === null) db.prepare('DELETE FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').run(eid, year, kind);
     else {
       if (Number.isNaN(h) || h < 0 || h > 2000) throw bad('Allowance must be between 0 and 2000 hours.');
-      db.prepare(`INSERT INTO office_pto_allowances (office_staff_id, year, hours, note, updated_by) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (office_staff_id, year) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`)
-        .run(osid, year, h, str(req.body.note, 200), req.user.id);
+      db.prepare(`INSERT INTO leave_allowances (employee_id, year, kind, hours, note, updated_by) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (employee_id, year, kind) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`)
+        .run(eid, year, kind, h, str(req.body.note, 200), req.user.id);
     }
-    audit(req, 'update', 'office_pto_allowance', osid, { year, hours: h });
-    res.json(officePtoBalance(osid, year));
+    audit(req, 'update', 'leave_allowance', eid, { year, kind, hours: h });
+    res.json(leaveBalance(eid, year));
   });
 
-  // ---- time-off balances (hours granted per calendar year) ---------------------------
-  // Reasons listed in Settings (default Vacation, Personal, PTO) count against the balance;
-  // others (e.g. Unpaid, Jury duty, Union business) don't.
-  function ptoCounts(reason) {
-    const list = String(getSettings(db).pto_reasons || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
-    const r = String(reason || '').trim().toLowerCase();
-    return !!r && list.some((x) => r === x || r.startsWith(`${x} `) || r.startsWith(`${x}-`) || r.startsWith(`${x} –`) || r.startsWith(`${x}:`));
-  }
-  function ptoBalance(eid, year) {
-    const s = getSettings(db);
-    const own = db.prepare('SELECT hours, note FROM pto_allowances WHERE employee_id = ? AND year = ?').get(eid, year);
-    const allowance = own ? own.hours : Number(s.pto_default_hours) || 0;
-    const def = Number(s.default_hours) || 8; const t = today();
-    const out = { year, allowance, allowance_note: own?.note || null, custom: !!own, used: 0, scheduled: 0, pending: 0, other: 0 };
-    for (const r of db.prepare(`SELECT off_date, reason, hours, status FROM time_off WHERE employee_id = ? AND off_date BETWEEN ? AND ? AND status IN ('approved','pending')`)
-      .all(eid, `${year}-01-01`, `${year}-12-31`)) {
-      const h = r.hours ?? def;
-      if (!ptoCounts(r.reason)) { if (r.status === 'approved') out.other += h; continue; }
-      if (r.status === 'pending') out.pending += h; else if (r.off_date <= t) out.used += h; else out.scheduled += h;
-    }
-    out.left = round2(allowance - out.used - out.scheduled);
-    return out;
-  }
-
-  api.get('/pto', canSchedule, (req, res) => {
-    const year = int(req.query.year) || Number(today().slice(0, 4));
-    res.json({
-      year, reasons: getSettings(db).pto_reasons, default_hours: Number(getSettings(db).pto_default_hours) || 0,
-      employees: listEmployees(false).filter((e) => !/project manager/i.test(e.classification || ''))
-        .map((e) => ({ id: e.id, first_name: e.first_name, last_name: e.last_name, trade: e.trade, employee_number: e.employee_number, ...ptoBalance(e.id, year) })),
-    });
-  });
-  // Set one person's allowance for a year (blank hours = go back to the company default).
-  api.put('/pto/:employee_id', adminOnly, (req, res) => {
-    const eid = int(req.params.employee_id);
-    if (!empName.get(eid)) throw new HttpError(404, 'Employee not found.');
-    const year = int(req.body.year);
-    if (!year || year < 2000 || year > 2100) throw bad('Pick a year.');
-    const h = num(req.body.hours);
-    if (h === null) db.prepare('DELETE FROM pto_allowances WHERE employee_id = ? AND year = ?').run(eid, year);
-    else {
-      if (Number.isNaN(h) || h < 0 || h > 2000) throw bad('Allowance must be between 0 and 2000 hours.');
-      db.prepare(`INSERT INTO pto_allowances (employee_id, year, hours, note, updated_by) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (employee_id, year) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`)
-        .run(eid, year, h, str(req.body.note, 200), req.user.id);
-    }
-    audit(req, 'update', 'pto_allowance', eid, { year, hours: h });
-    res.json(ptoBalance(eid, year));
-  });
-  // Set the same allowance for many people at once (everyone, or one trade).
-  api.post('/pto/bulk', adminOnly, (req, res) => {
-    const year = int(req.body.year); const h = num(req.body.hours);
-    if (!year || year < 2000 || year > 2100) throw bad('Pick a year.');
-    if (h === null || Number.isNaN(h) || h < 0 || h > 2000) throw bad('Allowance must be between 0 and 2000 hours.');
-    const trade = str(req.body.trade, 100);
-    const people = listEmployees(false).filter((e) => !/project manager/i.test(e.classification || '') && (!trade || (e.trade || '').toLowerCase() === trade.toLowerCase()));
-    const up = db.prepare(`INSERT INTO pto_allowances (employee_id, year, hours, note, updated_by) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT (employee_id, year) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`);
-    tx(db, () => { for (const e of people) up.run(e.id, year, h, str(req.body.note, 200), req.user.id); });
-    audit(req, 'bulk_update', 'pto_allowance', null, { year, hours: h, trade, count: people.length });
-    res.json({ updated: people.length });
-  });
+  // Union holidays for a year (observed dates).
+  api.get('/holidays', (req, res) => res.json(holidaysForYear(int(req.query.year) || Number(today().slice(0, 4)))));
 
   // ---- hour verification -----------------------------------------------------------
   // Verify Hours works on the payroll week (settings.payroll_week_start, e.g. Wed–Tue).
@@ -1746,7 +1635,7 @@ function createApp(db, opts = {}) {
   function readUser(b, isNew) {
     const u = {
       username: str(b.username, 100), name: str(b.name, 200), role: str(b.role, 20) || 'viewer',
-      can_view_payroll: bool(b.can_view_payroll), employee_id: int(b.employee_id), office_staff_id: int(b.office_staff_id),
+      can_view_payroll: bool(b.can_view_payroll), employee_id: int(b.employee_id), office_staff_id: null,
       active: b.active === undefined ? 1 : bool(b.active),
       email: str(b.email, 200), notify_requests: b.notify_requests === undefined ? 1 : bool(b.notify_requests),
       can_view_schedule: bool(b.can_view_schedule),
@@ -1789,7 +1678,7 @@ function createApp(db, opts = {}) {
 
   api.get('/settings', adminOnly, (_req, res) => res.json(getSettings(db)));
   api.put('/settings', adminOnly, (req, res) => {
-    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours', 'payroll_week_start', 'pto_default_hours', 'pto_reasons', 'office_pto_default_hours'];
+    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours', 'payroll_week_start', 'staff_pto_default_hours', 'staff_vacation_default_hours', 'super_pto_default_hours'];
     const up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     for (const k of allowed) if (req.body[k] !== undefined && req.body[k] !== null && String(req.body[k]).trim() !== '') up.run(String(req.body[k]).trim().slice(0, 200), k);
     audit(req, 'update', 'settings', null, req.body);

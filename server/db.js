@@ -68,7 +68,22 @@ CREATE TABLE IF NOT EXISTS employees (
   hire_date TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  employee_type TEXT NOT NULL DEFAULT 'union', -- union | superintendent | staff (office)
+  department TEXT
+);
+
+-- Yearly time-off allowance in hours, per employee, year and kind.
+-- Office staff get PTO and Vacation; superintendents get PTO; union crew none.
+CREATE TABLE IF NOT EXISTS leave_allowances (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('pto','vacation')),
+  hours REAL NOT NULL,
+  note TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, year, kind)
 );
 
 CREATE TABLE IF NOT EXISTS skills (
@@ -291,12 +306,13 @@ const DEFAULT_SETTINGS = {
   max_daily_hours: '12',
   payroll_week_start: '3', // 0 = Sunday … 3 = Wednesday (payroll week Wed–Tue)
   warn_daily_hours: '8',
-  pto_default_hours: '0', // yearly allowance for anyone without their own
-  pto_reasons: 'Vacation, Personal, PTO', // time-off reasons that count against the balance
-  office_pto_default_hours: '0', // yearly allowance for office staff without their own
+  // Yearly time-off allowances (hours) for anyone without their own amount.
+  staff_pto_default_hours: '0',
+  staff_vacation_default_hours: '0',
+  super_pto_default_hours: '0',
 };
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -393,7 +409,64 @@ function migrate(db) {
     decided_by: 'INTEGER REFERENCES users(id) ON DELETE SET NULL', decided_at: 'TEXT', reject_reason: 'TEXT' };
   for (const [c, type] of Object.entries(addOff)) if (!offCols.includes(c)) db.exec(`ALTER TABLE time_off ADD COLUMN ${c} ${type};`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_timeoff_status ON time_off(status, off_date);');
+  // v10: one employee list for union crew, superintendents and office staff, and one
+  // time-off record for everyone (office requests move into time_off).
+  const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
+  if (!empCols.includes('employee_type')) {
+    tx(db, () => {
+      db.exec("ALTER TABLE employees ADD COLUMN employee_type TEXT NOT NULL DEFAULT 'union';");
+      db.exec('ALTER TABLE employees ADD COLUMN department TEXT;');
+      if (empCols.includes('classification')) {
+        db.exec("UPDATE employees SET employee_type = 'superintendent' WHERE classification LIKE '%superintendent%';");
+        db.exec("UPDATE employees SET employee_type = 'staff' WHERE classification LIKE '%project manager%';");
+      }
+      if (tableSql('office_staff')) migrateOfficeStaff(db);
+    });
+  }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+}
+
+// Moves the separate office roster, its logins, requests and allowances onto employees.
+function migrateOfficeStaff(db) {
+  const def = Number(db.prepare("SELECT value FROM settings WHERE key = 'default_hours'").get()?.value) || 8;
+  const byName = db.prepare('SELECT id FROM employees WHERE lower(first_name) = lower(?) AND lower(last_name) = lower(?)');
+  const map = new Map();
+  const roster = db.prepare('SELECT * FROM office_staff').all();
+  const ins = roster.length ? db.prepare(`INSERT INTO employees (first_name, last_name, email, department, active, employee_type) VALUES (?, ?, ?, ?, ?, 'staff')`) : null;
+  for (const o of roster) {
+    const hit = byName.get(o.first_name, o.last_name);
+    if (hit) {
+      db.prepare("UPDATE employees SET employee_type = 'staff', department = COALESCE(department, ?), email = COALESCE(email, ?) WHERE id = ?").run(o.department, o.email, hit.id);
+      map.set(o.id, hit.id);
+    } else map.set(o.id, Number(ins.run(o.first_name, o.last_name, o.email, o.department, o.active).lastInsertRowid));
+  }
+  for (const u of db.prepare('SELECT id, office_staff_id FROM users WHERE office_staff_id IS NOT NULL AND employee_id IS NULL').all()) {
+    if (map.has(u.office_staff_id)) db.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(map.get(u.office_staff_id), u.id);
+  }
+  const typeReason = { pto: 'PTO', personal: 'PTO', vacation: 'Vacation', sick: 'Other', other: 'Other' };
+  const statusMap = { pending: 'pending', approved: 'approved', denied: 'rejected' };
+  const addOff = db.prepare(`INSERT OR IGNORE INTO time_off (employee_id, off_date, reason, hours, status, note, batch, created_by, created_at, decided_by, decided_at, reject_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'office_time_off_requests'").get()) {
+    for (const r of db.prepare('SELECT * FROM office_time_off_requests').all()) {
+      const eid = map.get(r.office_staff_id); const st = statusMap[r.status];
+      if (!eid || !st) continue; // cancelled requests aren't carried over
+      for (let d = r.start_date; d <= r.end_date; d = new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10)) {
+        const w = new Date(d + 'T00:00:00Z').getUTCDay();
+        if (w === 0 || w === 6) continue;
+        addOff.run(eid, d, typeReason[r.type] || 'Other', def, st, r.note, `office-${r.id}`, r.requested_by, r.created_at, r.decided_by, r.decided_at, st === 'rejected' ? r.decision_note : null);
+      }
+    }
+  }
+  const addAllow = db.prepare('INSERT OR IGNORE INTO leave_allowances (employee_id, year, kind, hours, note, updated_by) VALUES (?, ?, ?, ?, ?, ?)');
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'office_pto_allowances'").get()) {
+    for (const a of db.prepare('SELECT * FROM office_pto_allowances').all()) if (map.has(a.office_staff_id)) addAllow.run(map.get(a.office_staff_id), a.year, 'pto', a.hours, a.note, a.updated_by);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'pto_allowances'").get()) {
+    for (const a of db.prepare('SELECT * FROM pto_allowances').all()) addAllow.run(a.employee_id, a.year, 'pto', a.hours, a.note, a.updated_by);
+  }
+  const old = db.prepare("SELECT key, value FROM settings WHERE key IN ('office_pto_default_hours','pto_default_hours')").all();
+  for (const o of old) db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(o.key === 'office_pto_default_hours' ? 'staff_pto_default_hours' : 'super_pto_default_hours', o.value);
 }
 
 function open(file) {

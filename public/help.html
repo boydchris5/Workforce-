@@ -461,18 +461,25 @@
   <div class="note">Time off can't be added on a day the person is already scheduled. Remove that schedule entry first, then add the time off.</div>
   <p>Time off entered by the manager or a superintendent is approved right away. Employees can also <a href="#time-off-requests">request it themselves</a>.</p>
 
-  <h3 id="time-off-requests">Employees requesting time off</h3>
-  <p>Anyone whose login is linked to their employee record can ask for time off:</p>
+  <h3 id="time-off-requests">Requesting time off</h3>
+  <p>There is <b>one time-off record for everyone</b> – union crew, superintendents and office staff. A superintendent's request from My Schedule lands in the same list the Office Manager works from on the Time Off page. Anyone whose login is linked to their employee record can ask:</p>
   <ol class="steps">
-    <li>Open <span class="ui">My Schedule</span> and click <span class="ui">Request time off</span>.</li>
-    <li>Pick the first and last day, the reason, the hours per day, and add a short note if you like.</li>
-    <li>Click <span class="ui">Send request</span>. It shows as <span class="chip pend">Pending</span> until the manager answers. You can <b>withdraw</b> it while it's pending.</li>
+    <li>Open <span class="ui">Time Off</span> (or <span class="ui">My Schedule</span> in the field) and click <span class="ui">Request time off</span>.</li>
+    <li>Pick the first and last day, the <b>type</b>, the hours per day, and add a short note if you like. <b>Work days only</b> skips weekends and union holidays.</li>
+    <li>Click <span class="ui">Send request</span>. It shows as <span class="chip pend">Pending</span> until it's answered. You can <b>cancel</b> a pending request, or approved days that haven't come yet.</li>
   </ol>
-  <p>The Workforce Manager gets an email for each request (if email is set up) and sees it under <span class="ui">Requests</span> on the Schedule page, with the person's balance before and after. Click <span class="ui">✓ Approve</span>, or <span class="ui">✕ Reject…</span> and type a reason. The employee sees the answer on My Schedule, plus an email if their login has an email address.</p>
+  <table>
+    <tr><th>Who</th><th>Types they can pick</th><th>Uses allowance hours</th></tr>
+    <tr><td>Office staff</td><td>PTO, Vacation, Other</td><td>PTO and Vacation (separate balances)</td></tr>
+    <tr><td>Superintendents</td><td>PTO, Other</td><td>PTO</td></tr>
+    <tr><td>Union crew</td><td>Vacation, Sick / medical, Family leave, Jury duty, Union business, Training, Bereavement, Unpaid, Other</td><td>None – recorded only</td></tr>
+  </table>
+  <p><b>Who approves:</b> the Workforce Manager (Schedule → <span class="ui">Requests</span>, or Time Off) and the Office Manager (Time Off → Requests) can both approve or reject – a reason is required to reject. Emails (if set up) go to the Office Manager for office staff, to both managers for superintendents, and to the Workforce Manager for union crew. The person sees the answer on Time Off, plus an email if they have an email address.</p>
+  <p>Everyone sees the <b>Who's out</b> calendar of approved time off for the whole company, with union holidays marked. Above it, each person sees only their own requests and balances.</p>
   <div class="note">A pending request doesn't block scheduling. If the person is scheduled on a requested day, that day can't be approved until they're moved off the schedule – the app tells you which days.</div>
 
   <h3 id="balances">Time-off balances</h3>
-  <p>Each person starts the calendar year with an allowance of hours. The balance shows:</p>
+  <p>Office staff start the calendar year with a <b>PTO</b> allowance and a <b>Vacation</b> allowance; superintendents with a <b>PTO</b> allowance. Union crew don't have allowances. Each balance shows:</p>
   <table>
     <tr><td><b>Started with</b></td><td>Their allowance for the year – the company default, or their own amount</td></tr>
     <tr><td><b>Used</b></td><td>Approved time off up to today</td></tr>
@@ -480,12 +487,17 @@
     <tr><td><b>Pending</b></td><td>Requested, waiting for approval (not taken off yet)</td></tr>
     <tr><td><b>Hours left</b></td><td>Started with − Used − Approved, coming up</td></tr>
   </table>
-  <p>Only the reasons listed in <b>Admin → Settings</b> count against the balance (default: Vacation, Personal, PTO). Jury duty, union business, unpaid days and other reasons don't use up hours.</p>
+  <p>“Other” time off is recorded but doesn't use up hours.</p>
   <ul>
-    <li><b>Everyone's balances:</b> Employees → <span class="ui">Time-off balances</span>. Pick the year. The manager can set an allowance for everyone or for a whole trade at once, or click a person to change just theirs.</li>
-    <li><b>One person:</b> open their employee record – the balance is above their time off. The manager can change their allowance and add a note (e.g. “10+ years”).</li>
-    <li>Each person sees their own balance on <span class="ui">My Schedule</span>. Field staff can't see anyone else's.</li>
+    <li><b>Company defaults:</b> Admin → Settings – office staff PTO, office staff Vacation and superintendent PTO hours per year.</li>
+    <li><b>Everyone's balances:</b> Time Off → <span class="ui">Balances</span> (or Employees → <span class="ui">Time-off balances</span>). Pick the year and click a person to set their own PTO/Vacation hours and a note (e.g. “10+ years”). Blank = company default.</li>
+    <li><b>One person:</b> open their employee record – the balance is above their time off.</li>
+    <li>Each person sees only their own balance.</li>
   </ul>
+
+  <h3 id="holidays">Union holidays</h3>
+  <p>New Year's Day, Memorial Day, Independence Day, Labor Day, Veterans Day, Thanksgiving Day and Christmas Day are <b>greyed out</b> on the schedule with the holiday's name, and marked on the Time Off calendar. A holiday on a Saturday is observed the Friday before; on a Sunday, the Monday after.</p>
+  <p>You can still schedule someone on a holiday – the app saves it and shows a <b>🗓 Scheduled on a union holiday</b> warning. <b>Mon–Fri</b> in the scheduling window and <b>Work days only</b> for time off skip holidays.</p>
 </section>
 
 <section id="my-schedule" data-s>
@@ -603,7 +615,8 @@
   <h2>Employees</h2>
   <figure><img src="help/img/employees.jpg" alt="Employees list" loading="lazy"><figcaption>The employee list with trade, union local, classification and skills.</figcaption></figure>
   <ul>
-    <li>Search by name, phone, local or employee #. Filter by trade or skill. <b>Show inactive</b> includes former employees.</li>
+    <li><b>One list for everyone:</b> each person has a <b>Type</b> – <b>Union</b> (field crew), <b>Superintendent</b>, or <b>Office staff</b> (with a department; not on the field schedule). Add anyone with <span class="ui">+ New employee</span>; the Office Manager can add and edit employees too.</li>
+    <li>Search by name, phone, local or employee #. Filter by type, trade or skill. <b>Show inactive</b> includes former employees.</li>
     <li>Tap a phone number on a phone to call.</li>
     <li>Expired certifications show in solid orange.</li>
   </ul>
@@ -674,9 +687,8 @@
     <tr><td>Hard limit (hours / day)</td><td>12</td><td>Scheduling above this is blocked</td></tr>
     <tr><td>Payroll week starts on</td><td>Wednesday</td><td>Verify Hours week and payroll overtime week</td></tr>
     <tr><td>Warn when over (hours / day)</td><td>8</td><td>Scheduling above this is saved with a warning</td></tr>
-    <tr><td>Yearly time-off allowance – field default</td><td>0</td><td>Hours each field employee starts the year with unless they have their own allowance</td></tr>
-    <tr><td>Yearly time-off allowance – office staff default</td><td>0</td><td>Hours each office staff member starts the year with. PTO and Personal requests count (default hours per weekday); Sick and Other don't. The Office Manager sets individual amounts on Time Off → Balances</td></tr>
-    <tr><td>Time-off reasons that count against the balance</td><td>Vacation, Personal, PTO</td><td>Comma-separated. Other reasons don't use up hours</td></tr>
+    <tr><td>Office staff – PTO / Vacation hours per year</td><td>0 / 0</td><td>Each office staff member's allowances unless they have their own amounts</td></tr>
+    <tr><td>Superintendents – PTO hours per year</td><td>0</td><td>Each superintendent's PTO allowance unless they have their own</td></tr>
   </table>
   <h3 id="email">Email notifications</h3>
   <p>Requests always show in the app (the <span class="ui">Requests</span> button and counts on the Schedule page). To also get emails, the app needs a mailbox to send from. Settings shows whether email is <b>On</b> or <b>Off</b>; when it's on, use <span class="ui">Send me a test email</span>.</p>
