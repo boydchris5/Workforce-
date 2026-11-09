@@ -1196,7 +1196,78 @@ function createApp(db, opts = {}) {
       const kb = leaveBalance(g.employee_id, Number(g.start_date.slice(0, 4)))?.kinds[reasonKind(g.reason)];
       g.balance_left = kb ? kb.left : null;
     }
-    res.json({ pending: groups.filter((g) => g.status === 'pending'), decided: groups.filter((g) => g.status !== 'pending').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || '')) });
+    // Approved time off still ahead (requested or entered by a manager), so it can be edited or removed.
+    const upcoming = groupOff(db.prepare(`${timeOffSelect} WHERE t.status = 'approved' AND t.off_date >= ?`).all(today()))
+      .sort((a, b) => a.start_date.localeCompare(b.start_date));
+    res.json({
+      pending: groups.filter((g) => g.status === 'pending'),
+      upcoming,
+      decided: groups.filter((g) => g.status !== 'pending').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || '')),
+    });
+  });
+
+  // ---- approver edits / deletes a whole request ----------------------------------------
+  // `ids` are the day rows of one request (one employee). The Office Manager: office staff only.
+  function requestRows(req) {
+    const ids = [...new Set((Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean))];
+    if (!ids.length) throw bad('Pick a request.');
+    const rows = db.prepare(`${timeOffSelect} WHERE t.id IN (${ids.map(() => '?').join(',')}) ORDER BY t.off_date`).all(...ids);
+    if (!rows.length) throw new HttpError(404, 'That time off no longer exists.');
+    if (new Set(rows.map((r) => r.employee_id)).size > 1) throw bad('Edit one person\'s request at a time.');
+    if (req.user.role === 'office_admin' && rows[0].employee_type !== 'staff') throw new HttpError(403, 'The Office Manager edits office staff time off only.');
+    return rows;
+  }
+  const spanText = (rows) => shortDates(rows.map((r) => r.off_date));
+  const personEmails = (eid) => [empRow.get(eid)?.email, ...db.prepare("SELECT email FROM users WHERE employee_id = ? AND active = 1 AND email IS NOT NULL AND email <> ''").all(eid).map((u) => u.email)];
+
+  api.put('/time-off/request', leaveApprover, (req, res) => {
+    const rows = requestRows(req); const first = rows[0];
+    const type = typeOf(empRow.get(first.employee_id));
+    const dates = offDates(req.body);
+    if (dates.length > 366) throw bad('Too many days.');
+    const reason = str(req.body.reason, 200) || first.reason;
+    if (!REASONS[type].some((x) => x.toLowerCase() === String(reason).toLowerCase())) throw bad(`Pick one of: ${REASONS[type].join(', ')}.`);
+    const h = offHours(req.body); const note = req.body.note !== undefined ? str(req.body.note, 500) : first.note;
+    const status = first.status === 'rejected' ? 'pending' : first.status;
+    const batch = first.batch || require('node:crypto').randomUUID();
+    const conflicts = []; const kept = [];
+    const ins = db.prepare(`INSERT INTO time_off (employee_id, off_date, reason, hours, note, batch, created_by, status, created_at, decided_by, decided_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const other = db.prepare('SELECT status FROM time_off WHERE employee_id = ? AND off_date = ?');
+    tx(db, () => {
+      db.prepare(`DELETE FROM time_off WHERE id IN (${rows.map(() => '?').join(',')})`).run(...rows.map((r) => r.id));
+      for (const d of dates) {
+        if (other.get(first.employee_id, d)) { conflicts.push(`${d}: already has other time off`); continue; }
+        if (status === 'approved') {
+          const booked = findBookings.all(first.employee_id, d);
+          if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((x) => x.job_number).join(', ')} – move them first`); continue; }
+        }
+        ins.run(first.employee_id, d, reason, h, note, batch, first.created_by, status, first.created_at || new Date().toISOString(),
+          status === 'approved' ? req.user.id : null, status === 'approved' ? new Date().toISOString() : null);
+        kept.push(d);
+      }
+      if (!kept.length) throw bad(`Nothing saved – ${conflicts.join('; ') || 'no days in that range'}. The original time off is unchanged.`, { conflicts });
+    });
+    audit(req, 'edit', 'time_off', first.employee_id, { was: spanText(rows), now: shortDates(kept), reason, hours: h });
+    sendEmail(personEmails(first.employee_id), `Your time off was changed: ${shortDates(kept)}`, {
+      heading: 'Your time off was changed',
+      lines: [`Was: ${spanText(rows)} (${first.reason || ''})`, `Now: ${shortDates(kept)} · ${reason} · ${h} h per day`, `Status: ${status === 'approved' ? 'Approved' : 'Waiting for approval'}`, `By: ${req.user.name}`],
+      link: appUrl(req, '#/timeoff'), linkText: 'See Time Off', footer: 'Sent by the Fager-McGee Workforce app.',
+    });
+    res.json({ saved: kept.length, conflicts, ids: db.prepare('SELECT id FROM time_off WHERE employee_id = ? AND batch = ?').all(first.employee_id, batch).map((r) => r.id) });
+  });
+
+  api.post('/time-off/remove', leaveApprover, (req, res) => {
+    const rows = requestRows(req); const first = rows[0];
+    db.prepare(`DELETE FROM time_off WHERE id IN (${rows.map(() => '?').join(',')})`).run(...rows.map((r) => r.id));
+    const why = str(req.body.reason, 300);
+    audit(req, 'delete', 'time_off', first.employee_id, { dates: spanText(rows), status: first.status, reason: why });
+    sendEmail(personEmails(first.employee_id), `Your time off was removed: ${spanText(rows)}`, {
+      heading: 'Your time off was removed',
+      lines: [`Days: ${spanText(rows)} (${first.reason || ''})`, ...(why ? [`Reason: ${why}`] : []), `By: ${req.user.name}`],
+      link: appUrl(req, '#/timeoff'), linkText: 'See Time Off', footer: 'Sent by the Fager-McGee Workforce app.',
+    });
+    res.json({ removed: rows.length });
   });
 
   // Balances for everyone who has allowances (superintendents and office staff).
