@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS leave_allowances (
   PRIMARY KEY (employee_id, year, kind)
 );
 
+-- PTO / Vacation hours already used in a year before that time was in the app
+-- (entered once when starting to use the app mid-year).
+CREATE TABLE IF NOT EXISTS leave_prior_used (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('pto','vacation')),
+  hours REAL NOT NULL,
+  note TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, year, kind)
+);
+
 CREATE TABLE IF NOT EXISTS skills (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE

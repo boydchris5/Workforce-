@@ -1100,7 +1100,9 @@ function createApp(db, opts = {}) {
     const out = { year, employee_type: type, kinds: {} };
     for (const k of kinds) {
       const own = db.prepare('SELECT hours, note FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k);
-      out.kinds[k] = { allowance: own ? own.hours : defaultAllowance(type, k), custom: !!own, note: own?.note || null, used: 0, scheduled: 0, pending: 0 };
+      // Hours used before the app tracked them count as used.
+      const prior = db.prepare('SELECT hours FROM leave_prior_used WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k)?.hours || 0;
+      out.kinds[k] = { allowance: own ? own.hours : defaultAllowance(type, k), custom: !!own, note: own?.note || null, prior_used: prior, used: prior, scheduled: 0, pending: 0 };
     }
     for (const r of db.prepare(`SELECT off_date, reason, hours, status FROM time_off WHERE employee_id = ? AND off_date BETWEEN ? AND ? AND status IN ('approved','pending')`)
       .all(eid, `${year}-01-01`, `${year}-12-31`)) {
@@ -1376,14 +1378,25 @@ function createApp(db, opts = {}) {
     if (!year || year < 2000 || year > 2100) throw bad('Pick a year.');
     if (!LEAVE_KINDS[typeOf(e)].includes(kind)) throw bad(`${e.first_name} ${e.last_name} doesn't get ${kind === 'vacation' ? 'Vacation' : 'PTO'} hours.`);
     const h = num(req.body.hours);
-    if (h === null) db.prepare('DELETE FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').run(eid, year, kind);
-    else {
-      if (Number.isNaN(h) || h < 0 || h > 2000) throw bad('Allowance must be between 0 and 2000 hours.');
-      db.prepare(`INSERT INTO leave_allowances (employee_id, year, kind, hours, note, updated_by) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (employee_id, year, kind) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`)
-        .run(eid, year, kind, h, str(req.body.note, 200), req.user.id);
-    }
-    audit(req, 'update', 'leave_allowance', eid, { year, kind, hours: h });
+    if (h !== null && (Number.isNaN(h) || h < 0 || h > 2000)) throw bad('Allowance must be between 0 and 2000 hours.');
+    // Hours already used this year before the app (optional; blank or 0 clears it).
+    const prior = req.body.prior_used === undefined ? undefined : num(req.body.prior_used);
+    if (prior !== undefined && prior !== null && (Number.isNaN(prior) || prior < 0 || prior > 2000)) throw bad('Hours already used must be between 0 and 2000.');
+    tx(db, () => {
+      if (req.body.hours !== undefined) {
+        if (h === null) db.prepare('DELETE FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').run(eid, year, kind);
+        else db.prepare(`INSERT INTO leave_allowances (employee_id, year, kind, hours, note, updated_by) VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT (employee_id, year, kind) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`)
+          .run(eid, year, kind, h, str(req.body.note, 200), req.user.id);
+      }
+      if (prior !== undefined) {
+        if (!prior) db.prepare('DELETE FROM leave_prior_used WHERE employee_id = ? AND year = ? AND kind = ?').run(eid, year, kind);
+        else db.prepare(`INSERT INTO leave_prior_used (employee_id, year, kind, hours, updated_by) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (employee_id, year, kind) DO UPDATE SET hours = excluded.hours, updated_by = excluded.updated_by, updated_at = datetime('now')`)
+          .run(eid, year, kind, prior, req.user.id);
+      }
+    });
+    audit(req, 'update', 'leave_allowance', eid, { year, kind, hours: h, prior_used: prior });
     res.json(leaveBalance(eid, year));
   });
 

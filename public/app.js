@@ -1255,7 +1255,7 @@ function leaveTiles(b) {
   if (!b) return '';
   return Object.entries(b.kinds).map(([k, x]) => `<div class="leave-kind">${KIND_LABEL[k]} – ${b.year}</div><div class="stats">
     <div class="stat"><div class="v">${fmtH(x.allowance)}</div><div class="l">Started with</div></div>
-    <div class="stat"><div class="v">${fmtH(x.used)}</div><div class="l">Used</div></div>
+    <div class="stat"><div class="v">${fmtH(x.used)}</div><div class="l">Used${x.prior_used ? ` (incl. ${fmtH(x.prior_used)} before app)` : ''}</div></div>
     <div class="stat"><div class="v">${fmtH(x.scheduled)}</div><div class="l">Approved, coming up</div></div>
     <div class="stat ${x.pending ? 'warn' : ''}"><div class="v">${fmtH(x.pending)}</div><div class="l">Waiting for approval</div></div>
     <div class="stat ${x.left < 0 ? 'bad' : 'ok'}"><div class="v">${fmtH(x.left)}</div><div class="l">Hours left</div></div></div>`).join('');
@@ -1873,7 +1873,7 @@ function employeeModal(e, skills) {
   if (e.id) api('GET', `/employees/${e.id}`).then((full) => {
     const h = $('#emp-hist', m.el); if (!h) return;
     drawTimeOff(e, full.time_off, $('#emp-off', m.el));
-    if (full.leave) drawLeave(e, full.leave, $('#emp-pto', m.el));
+    if (full.leave) drawLeave(e, full.leave, $('#emp-pto', m.el), () => employeeModal(e, skills));
     $('#emp-ns', m.el).innerHTML = full.no_shows.length ? `<b class="small">No-shows (${full.no_shows.length})</b><div class="table-wrap" style="max-height:160px;margin-top:4px"><table class="list"><tbody>${full.no_shows.map((n) => `<tr>
       <td class="nowrap">${esc(n.work_date)}</td><td>${esc(n.job_number)}</td><td>${esc(n.verify_note || '')}</td><td class="small muted">${esc(n.verified_by_name || '')}</td></tr>`).join('')}</tbody></table></div>` : '';
     const total = full.recent.reduce((s, r) => s + (r.actual_hours ?? r.planned_hours), 0);
@@ -1903,11 +1903,12 @@ function employeeModal(e, skills) {
 }
 
 // Time-off balance on the employee record (superintendents: PTO; office staff: PTO + Vacation).
-function drawLeave(e, b, box) {
+function drawLeave(e, b, box, reopen) {
   box.hidden = false;
-  box.innerHTML = `<div class="co-head"><b>Time-off balance – ${b.year}</b><span class="small muted">${isLeaveApprover() ? '<button class="link" data-act="allow">set allowance</button>' : ''}</span></div>${leaveTiles(b)}`;
+  box.innerHTML = `<div class="co-head"><b>Time-off balance – ${b.year}</b><span class="small muted">${isLeaveApprover() ? '<button class="link" data-act="allow">set allowance / hours already used</button>' : ''}</span></div>${leaveTiles(b)}`;
   const a = $('[data-act=allow]', box);
-  if (a) a.onclick = () => allowanceModal({ ...e, kinds: b.kinds }, b.year, async () => drawLeave(e, (await api('GET', `/employees/${e.id}`)).leave, box));
+  // The allowance window replaces the employee window; reopen the record after saving.
+  if (a) a.onclick = () => allowanceModal({ ...e, kinds: b.kinds }, b.year, () => (reopen ? reopen() : null));
 }
 
 // Time off on the employee record: any future date range, with a reason.
@@ -2499,13 +2500,14 @@ function allowanceModal(e, year, after) {
     title: `${e.first_name} ${e.last_name} – ${year} allowance`,
     body: `${leaveTiles({ year, kinds: e.kinds })}
       ${kinds.map(([k, x]) => `<div class="grid2"><label>${KIND_LABEL[k]} hours for ${year}<input type="number" min="0" step="1" data-kind="${k}" value="${x.custom ? x.allowance : ''}" placeholder="${fmtH(x.allowance)} (company default)"></label>
-        <label>Note<input data-note="${k}" value="${esc(x.note || '')}" placeholder="e.g. 10+ years"></label></div>`).join('')}
-      <div class="small muted">Leave hours blank to use the company default.</div>`,
+        <label>${KIND_LABEL[k]} already used in ${year} before the app<input type="number" min="0" step="0.5" data-prior="${k}" value="${x.prior_used || ''}" placeholder="0"></label></div>
+        <label>Note<input data-note="${k}" value="${esc(x.note || '')}" placeholder="e.g. 10+ years"></label>`).join('')}
+      <div class="small muted">Leave allowance hours blank to use the company default. "Already used before the app" is time taken earlier this year that isn't entered as time off in the app – it counts as used, so the balance starts correct today. Don't also enter those days as time off, or they'll count twice.</div>`,
     footer: '<button data-close>Cancel</button><button class="primary" data-act="go">Save</button>',
   });
   $('[data-act=go]', m.el).onclick = async () => {
     try {
-      for (const [k] of kinds) await api('PUT', `/leave/allowance/${e.id}`, { year, kind: k, hours: $(`[data-kind=${k}]`, m.el).value, note: $(`[data-note=${k}]`, m.el).value });
+      for (const [k] of kinds) await api('PUT', `/leave/allowance/${e.id}`, { year, kind: k, hours: $(`[data-kind=${k}]`, m.el).value, note: $(`[data-note=${k}]`, m.el).value, prior_used: $(`[data-prior=${k}]`, m.el).value });
       m.close(); toast('Allowance saved'); after();
     } catch (err) { errorBox(m.el, err.message); }
   };

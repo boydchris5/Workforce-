@@ -118,6 +118,17 @@ test('allowances: staff get PTO + Vacation, superintendents PTO; set by the Offi
   assert.ok(!all.employees.some((e) => e.id === eDan));
 });
 
+test('hours already used before the app count as used, and can be cleared', async () => {
+  let b = (await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: 24 })).body.kinds.pto;
+  assert.equal(b.prior_used, 24); assert.equal(b.used, 24); assert.equal(b.left, 120 - 24);
+  assert.equal(b.allowance, 120); // allowance untouched when only prior_used is sent
+  assert.equal((await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: -5 })).status, 400);
+  assert.equal((await sue('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: 0 })).status, 403);
+  assert.equal((await sue('GET', `/leave/mine?year=${year}`)).body.balance.kinds.pto.left, 96);
+  b = (await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: 0 })).body.kinds.pto;
+  assert.equal(b.prior_used, 0); assert.equal(b.left, 120);
+});
+
 test('requests: staff -> Office Manager, superintendents -> both managers, union -> Workforce Manager', async () => {
   sent.length = 0;
   // Mon Mar 1 – Fri Mar 5 next year style range; weekends skipped.
