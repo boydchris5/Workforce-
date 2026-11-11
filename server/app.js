@@ -187,8 +187,11 @@ function createApp(db, opts = {}) {
   });
 
   // Employee type: union crew, superintendent (salaried, schedulable) or office staff (not on the field schedule).
-  const EMPLOYEE_TYPES = ['union', 'superintendent', 'staff'];
-  const typeFromClassification = (c) => (/superintendent/i.test(c || '') ? 'superintendent' : /project manager/i.test(c || '') ? 'staff' : 'union');
+  // Type drives who can be picked on projects, time-off rules and the field crew list.
+  // Classification is for union classifications only (Journeyman, Foreman, Apprentice…).
+  const EMPLOYEE_TYPES = ['union', 'general_foreman', 'superintendent', 'project_manager', 'staff'];
+  const typeFromClassification = (c) => (/superintendent/i.test(c || '') ? 'superintendent' : /general foreman/i.test(c || '') ? 'general_foreman'
+    : /project manager/i.test(c || '') ? 'project_manager' : 'union');
   function readEmployee(b) {
     const e = {
       employee_no: str(b.employee_no, 50), first_name: str(b.first_name, 100), last_name: str(b.last_name, 100),
@@ -198,7 +201,7 @@ function createApp(db, opts = {}) {
       employee_type: str(b.employee_type, 20) || typeFromClassification(b.classification), department: str(b.department, 100),
     };
     if (!e.first_name || !e.last_name) throw bad('First and last name are required.');
-    if (!EMPLOYEE_TYPES.includes(e.employee_type)) throw bad('Pick a type: Union, Superintendent or Office staff.');
+    if (!EMPLOYEE_TYPES.includes(e.employee_type)) throw bad('Pick a type: Union, General Foreman, Superintendent, Project Manager or Office staff.');
     return e;
   }
 
@@ -1058,11 +1061,13 @@ function createApp(db, opts = {}) {
   const empRow = db.prepare('SELECT * FROM employees WHERE id = ?');
   // Reasons each kind of employee can pick. Only PTO and Vacation use up allowance hours.
   const UNION_REASONS = ['Vacation', 'Sick / medical', 'Family leave', 'Jury duty', 'Union business', 'Training', 'Bereavement', 'Unpaid', 'Laid off', 'Other'];
-  const REASONS = { staff: ['PTO', 'Vacation', 'Other'], superintendent: ['PTO', 'Other'], union: UNION_REASONS };
-  const LEAVE_KINDS = { staff: ['pto', 'vacation'], superintendent: ['pto'], union: [] };
+  // Project managers follow the office staff rules; general foremen the union crew rules.
+  const REASONS = { staff: ['PTO', 'Vacation', 'Other'], project_manager: ['PTO', 'Vacation', 'Other'], superintendent: ['PTO', 'Other'], union: UNION_REASONS, general_foreman: UNION_REASONS };
+  const LEAVE_KINDS = { staff: ['pto', 'vacation'], project_manager: ['pto', 'vacation'], superintendent: ['pto'], union: [], general_foreman: [] };
+  const isOffice = (type) => type === 'staff' || type === 'project_manager';
   const reasonKind = (reason) => { const r = String(reason || '').trim().toLowerCase(); return /^pto\b/.test(r) ? 'pto' : /^vacation\b/.test(r) ? 'vacation' : null; };
   const typeOf = (e) => (e && REASONS[e.employee_type] ? e.employee_type : 'union');
-  const defaultAllowance = (type, kind) => Number(getSettings(db)[`${type === 'staff' ? 'staff' : 'super'}_${kind}_default_hours`]) || 0;
+  const defaultAllowance = (type, kind) => Number(getSettings(db)[`${isOffice(type) ? 'staff' : 'super'}_${kind}_default_hours`]) || 0;
 
   // Days in a request: a date range (optionally weekdays only, skipping union holidays) or a list of dates.
   function offDates(b) {
@@ -1124,7 +1129,7 @@ function createApp(db, opts = {}) {
     AND email IS NOT NULL AND email <> ''`).all(...roles).map((r) => r.email);
   function requestRecipients(type) {
     const om = emailsFor(['office_admin']); const wm = emailsFor(['admin']);
-    if (type === 'staff') return om.length ? om : wm;
+    if (isOffice(type)) return om.length ? om : wm;
     if (type === 'superintendent') return [...wm, ...om];
     return wm;
   }
@@ -1134,7 +1139,7 @@ function createApp(db, opts = {}) {
     const eid = int(req.body.employee_id);
     const emp = empRow.get(eid);
     if (!emp) throw bad('Pick an employee.');
-    if (req.user.role === 'office_admin' && emp.employee_type !== 'staff') throw new HttpError(403, 'The Office Manager enters time off for office staff only.');
+    if (req.user.role === 'office_admin' && !isOffice(emp.employee_type)) throw new HttpError(403, 'The Office Manager enters time off for office staff only.');
     const dates = offDates(req.body);
     const reason = str(req.body.reason, 200); const h = offHours(req.body);
     const conflicts = []; let added = 0;
@@ -1194,7 +1199,7 @@ function createApp(db, opts = {}) {
       lines: [`Days: ${shortDates(added)} · ${h} h per day`, `Type: ${reason}`, ...(note ? [`Note: ${note}`] : []),
         kb ? `${reason} balance before this request: ${kb.left} h left of ${kb.allowance} h (${added.length * h} h requested)` : 'This type does not use allowance hours.',
         ...(notes.length ? ['Heads up – ' + notes.join('; ')] : [])],
-      link: appUrl(req, type === 'staff' ? '#/timeoff' : '#/schedule'), linkText: 'Review in the Workforce app',
+      link: appUrl(req, isOffice(type) ? '#/timeoff' : '#/schedule'), linkText: 'Review in the Workforce app',
     });
     res.json({ added: added.length, skipped, notes, balance: bal });
   });
@@ -1239,7 +1244,7 @@ function createApp(db, opts = {}) {
     const row = db.prepare('SELECT * FROM time_off WHERE id = ?').get(int(req.params.id));
     if (!row) return res.json({ ok: true });
     const own = row.employee_id === req.user.employee_id && (row.status !== 'approved' || row.off_date > today());
-    const om = req.user.role === 'office_admin' && empRow.get(row.employee_id)?.employee_type === 'staff';
+    const om = req.user.role === 'office_admin' && isOffice(empRow.get(row.employee_id)?.employee_type);
     if (!['admin', 'super'].includes(req.user.role) && !own && !om) throw new HttpError(403, 'You can only cancel your own requests.');
     db.prepare('DELETE FROM time_off WHERE id = ?').run(row.id);
     audit(req, 'delete', 'time_off', row.id, { employee_id: row.employee_id, off_date: row.off_date, status: row.status });
@@ -1296,7 +1301,7 @@ function createApp(db, opts = {}) {
     const rows = db.prepare(`${timeOffSelect} WHERE t.id IN (${ids.map(() => '?').join(',')}) ORDER BY t.off_date`).all(...ids);
     if (!rows.length) throw new HttpError(404, 'That time off no longer exists.');
     if (new Set(rows.map((r) => r.employee_id)).size > 1) throw bad('Edit one person\'s request at a time.');
-    if (req.user.role === 'office_admin' && rows[0].employee_type !== 'staff') throw new HttpError(403, 'The Office Manager edits office staff time off only.');
+    if (req.user.role === 'office_admin' && !isOffice(rows[0].employee_type)) throw new HttpError(403, 'The Office Manager edits office staff time off only.');
     return rows;
   }
   const spanText = (rows) => shortDates(rows.map((r) => r.off_date));
@@ -1359,7 +1364,7 @@ function createApp(db, opts = {}) {
     res.json({
       year,
       defaults: { staff_pto: Number(s.staff_pto_default_hours) || 0, staff_vacation: Number(s.staff_vacation_default_hours) || 0, super_pto: Number(s.super_pto_default_hours) || 0 },
-      employees: db.prepare("SELECT * FROM employees WHERE active = 1 AND employee_type IN ('staff','superintendent') ORDER BY employee_type, last_name, first_name").all()
+      employees: db.prepare("SELECT * FROM employees WHERE active = 1 AND employee_type IN ('staff','project_manager','superintendent') ORDER BY employee_type, last_name, first_name").all()
         .map((e) => ({ id: e.id, first_name: e.first_name, last_name: e.last_name, employee_type: e.employee_type, department: e.department, trade: e.trade, ...leaveBalance(e.id, year) })),
     });
   });

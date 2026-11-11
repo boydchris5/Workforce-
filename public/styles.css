@@ -355,6 +355,9 @@ footer.site .dot { color: var(--orange); margin: 0 6px; }
 .leave-kind { font-weight: 700; color: var(--orange-dk); text-transform: uppercase; font-size: 12px; letter-spacing: .04em; margin: 10px 0 4px; }
 .pill.type-staff { background: var(--orange-tint); color: var(--orange-dk); }
 .pill.type-superintendent { background: var(--charcoal); color: #fff; }
+.pill.type-project_manager { background: var(--orange); color: #fff; }
+.pill.type-general_foreman { background: #6B6B6B; color: #fff; }
+.cal-chip.general_foreman { background: #fff; border: 1px solid var(--light); color: var(--charcoal); }
 /* Names: short on screen, full on the printed / PDF schedule */
 .chip .nm-f { display: none; }
 @media print {

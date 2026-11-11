@@ -59,9 +59,12 @@ function monthGrid(ym) {
 // Trades offered for trade requests: the trades on file, plus the common ones.
 const tradeChoices = () => [...new Set(['Carpenter', 'Laborer', 'Operating Engineer', ...(S.crew || []).map((e) => e.trade).filter(Boolean)])].sort();
 
-// Project leads are employees picked by classification.
-const isSuperOrForeman = (e) => /superintendent|foreman/i.test(e.classification || '');
-const isProjectManager = (e) => /project manager/i.test(e.classification || '');
+// Project leads are employees picked by Type.
+// Type decides who can be picked on a project. Superintendent / foreman: Superintendent or
+// General Foreman type, or a union employee classified Foreman. Project manager: Project Manager type.
+const isSuperOrForeman = (e) => ['superintendent', 'general_foreman'].includes(e.employee_type) || (e.employee_type === 'union' && /\bforeman\b/i.test(e.classification || ''));
+const isProjectManager = (e) => e.employee_type === 'project_manager';
+const isOfficeType = (t) => t === 'staff' || t === 'project_manager';
 const fullName = (e) => `${e.first_name} ${e.last_name}`;
 const shortName = (e) => `${e.first_name} ${e.last_name.charAt(0)}.`;
 const isWeekend = (i) => i >= 5;
@@ -277,7 +280,7 @@ async function loadLookups() {
   S.projects = projects; S.employees = employees;
   if (!S.reasons) S.reasons = await api('GET', '/leave/reasons');
   // Field crew = everyone except office staff (project managers), who aren't scheduled.
-  S.crew = employees.filter((e) => e.employee_type !== 'staff' && !isProjectManager(e));
+  S.crew = employees.filter((e) => !isOfficeType(e.employee_type));
   return { projects, employees };
 }
 
@@ -1242,7 +1245,7 @@ function timeOffModal(pre) {
 // ---------------------------------------------------------------------------
 // ---- Time off shared pieces ------------------------------------------------
 const KIND_LABEL = { pto: 'PTO', vacation: 'Vacation' };
-const TYPE_LABEL = { union: 'Union', superintendent: 'Superintendent', staff: 'Office staff' };
+const TYPE_LABEL = { union: 'Union', general_foreman: 'General Foreman', superintendent: 'Superintendent', project_manager: 'Project Manager', staff: 'Office staff' };
 const OFF_STATUS = { approved: ['Approved', 'ok'], pending: ['Pending', 'warn'], rejected: ['Not approved', 'bad'] };
 const offPill = (s) => `<span class="pill ${OFF_STATUS[s]?.[1] || ''}">${OFF_STATUS[s]?.[0] || esc(s)}</span>`;
 const offSpan = (r) => `${esc(dayLabel(r.start_date, { weekday: 'short', month: 'short', day: 'numeric' }))}${r.end_date !== r.start_date ? ` – ${esc(dayLabel(r.end_date, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}`;
@@ -1696,7 +1699,7 @@ async function procoreProjectsModal(page) {
 
 function projectModal(p) {
   // Superintendent: anyone classified Superintendent or Foreman. PM: classified Project Manager.
-  // The person already on the project stays listed even if their classification changed.
+  // The person already on the project stays listed even if their Type changed.
   const emps = (S.allEmployees || []).filter((e) => e.active);
   const pick = (test, currentId) => {
     const list = emps.filter(test);
@@ -1706,7 +1709,7 @@ function projectModal(p) {
   };
   const supers = pick(isSuperOrForeman, p.superintendent_employee_id);
   const pms = pick(isProjectManager, p.project_manager_employee_id);
-  const label = (e) => `${e.last_name}, ${e.first_name}${e.classification ? ` – ${e.classification}` : ''}`;
+  const label = (e) => `${e.last_name}, ${e.first_name} – ${e.employee_type === 'union' ? (e.classification || 'Union') : TYPE_LABEL[e.employee_type] || ''}`;
   const m = modal({
     title: p.id ? `Edit ${p.job_number}` : 'New project',
     body: `<div class="grid2">
@@ -1722,7 +1725,7 @@ function projectModal(p) {
         <label>End date<input type="date" name="end_date" value="${esc(p.end_date || '')}"></label>
         <label>Board color<input type="color" name="color" value="${esc(p.color || '#F15A22')}"></label>
       </div>
-      ${!supers.length || !pms.length ? `<div class="small muted">The lists come from Employees: superintendents and foremen by their classification, project managers by "Project Manager". ${!pms.length ? 'No one is classified Project Manager yet.' : ''}</div>` : ''}
+      ${!supers.length || !pms.length ? `<div class="small muted">The lists come from Employees by Type: Superintendent, General Foreman or a union Foreman for superintendent / foreman; Project Manager for project manager. ${!pms.length ? 'No one has Type Project Manager yet.' : ''}</div>` : ''}
       <label>Site address<input name="address" value="${esc(p.address || '')}"></label>
       <label>Notes<textarea name="notes">${esc(p.notes || '')}</textarea></label>
       ${p.id ? '<div id="co-box" class="co-box"><div class="small muted">Loading change orders…</div></div>' : '<div class="small muted">Save the project first, then add change orders.</div>'}`,
@@ -1822,10 +1825,9 @@ async function renderEmployees(page) {
 // Classification picker: common office, field-leadership and crew titles, plus any
 // already on file, plus "Other…" to type a new one. "Project Manager" is what puts
 // someone in the Project manager list on projects.
+// Union classifications only – Type (not Classification) decides superintendents, PMs and office staff.
 const CLASS_GROUPS = [
-  ['Office', ['Project Manager', 'Assistant Project Manager', 'Estimator', 'Project Engineer', 'Office Manager', 'Accounting', 'Safety', 'Administrative']],
-  ['Field leadership', ['Superintendent', 'General Foreman', 'Foreman']],
-  ['Crew', ['Journeyman', 'Apprentice 1st yr', 'Apprentice 2nd yr', 'Apprentice 3rd yr', 'Apprentice 4th yr', 'Operator', 'Laborer Group 1']],
+  ['Union classification', ['Foreman', 'Journeyman', 'Apprentice 1st yr', 'Apprentice 2nd yr', 'Apprentice 3rd yr', 'Apprentice 4th yr', 'Operator', 'Laborer Group 1']],
 ];
 function classificationOptions(current) {
   const known = new Set(CLASS_GROUPS.flatMap(([, l]) => l).map((x) => x.toLowerCase()));
@@ -1842,8 +1844,8 @@ function employeeModal(e, skills) {
     title: e.id ? fullName(e) : 'New employee',
     wide: true,
     body: `<div class="grid2">
-        <label>Type *<select name="employee_type" ${dis}>${Object.entries(TYPE_LABEL).map(([k, v]) => opt(k, v === 'Union' ? 'Union (field crew)' : v === 'Office staff' ? 'Office staff (not on the field schedule)' : 'Superintendent', e.employee_type || 'union')).join('')}</select></label>
-        <label>Department (office staff)<input name="department" value="${esc(e.department || '')}" placeholder="Estimating, Accounting, PM…" ${dis}></label>
+        <label>Type *<select name="employee_type" ${dis}>${Object.entries({ union: 'Union (field crew)', general_foreman: 'General Foreman', superintendent: 'Superintendent', project_manager: 'Project Manager (office)', staff: 'Office staff (not on the field schedule)' }).map(([k, v]) => opt(k, v, e.employee_type || 'union')).join('')}</select></label>
+        <label>Department (office)<input name="department" value="${esc(e.department || '')}" placeholder="Estimating, Accounting, PM…" ${dis}></label>
         <span></span>
         <label>First name *<input name="first_name" value="${esc(e.first_name || '')}" ${dis}></label>
         <label>Last name *<input name="last_name" value="${esc(e.last_name || '')}" ${dis}></label>
@@ -1853,7 +1855,7 @@ function employeeModal(e, skills) {
         <label>Hire date<input name="hire_date" type="date" value="${esc(e.hire_date || '')}" ${dis}></label>
         <label>Union trade<input name="trade" list="trade-list" value="${esc(e.trade || '')}" placeholder="Carpenter, Laborer, Ironworker…" ${dis}></label>
         <label>Union local<input name="union_local" value="${esc(e.union_local || '')}" placeholder="e.g. 1445" ${dis}></label>
-        <label>Classification<select name="classification" ${dis}>${classificationOptions(e.classification)}</select>
+        <label>Classification (union)<select name="classification" ${dis}>${classificationOptions(e.classification)}</select>
           <input name="class_other" placeholder="Type the classification" style="display:none;margin-top:6px" ${dis}></label>
       </div>
       <datalist id="trade-list">${['Carpenter', 'Laborer', 'Operating Engineer', 'Ironworker', 'Cement Mason', 'Millwright', 'Teamster', 'Electrician', 'Pipefitter', 'Plumber'].map((t) => `<option value="${t}">`).join('')}</datalist>
@@ -1882,11 +1884,8 @@ function employeeModal(e, skills) {
   cls.onchange = () => {
     other.style.display = cls.value === '__other' ? '' : 'none';
     if (cls.value === '__other') other.focus();
-    // Suggest the matching Type (still changeable).
-    if (/^superintendent$/i.test(cls.value)) typeSel.value = 'superintendent';
-    else if (CLASS_GROUPS[0][1].includes(cls.value)) typeSel.value = 'staff';
-    else if (CLASS_GROUPS[2][1].includes(cls.value)) typeSel.value = 'union';
   };
+  void typeSel;
   $('[data-act=save]', m.el).onclick = async () => {
     const f = formData(m.el);
     if (f.classification === '__other') f.classification = (f.class_other || '').trim();
@@ -1923,7 +1922,7 @@ function drawTimeOff(e, list, box) {
     if (last && last.reason === (t.reason || '') && last.status === t.status && addDays(last.to, 1) <= t.off_date && t.off_date <= addDays(last.to, 3)) { last.to = t.off_date; last.ids.push(t.id); last.days += 1; }
     else ranges.push({ from: t.off_date, to: t.off_date, reason: t.reason || '', status: t.status || 'approved', ids: [t.id], days: 1 });
   }
-  const can = canSchedule() || (S.user.role === 'office_admin' && e.employee_type === 'staff');
+  const can = canSchedule() || (S.user.role === 'office_admin' && isOfficeType(e.employee_type));
   box.innerHTML = `<div class="co-head"><b>Time off</b><span class="small muted">Enter time off for any future dates. It shows on the schedule when that week comes up, and they can't be scheduled those days.</span></div>
     ${ranges.length ? `<div class="table-wrap"><table class="list"><tbody>${ranges.map((r, i) => `<tr><td class="nowrap">${esc(dayLabel(r.from, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))}${r.to !== r.from ? ` – ${esc(dayLabel(r.to, { weekday: 'short', month: 'short', day: 'numeric' }))}` : ''}</td>
       <td>${esc(r.reason)}${r.status === 'pending' ? ' <span class="pill warn">Waiting for approval</span>' : ''}</td><td class="small muted">${r.days} day${r.days > 1 ? 's' : ''}</td><td>${can ? `<button class="link" data-del-off="${i}">remove</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">No upcoming time off.</div>'}
@@ -2369,7 +2368,7 @@ async function myTimeOffModal() {
 async function leaveRequestsTab(el) {
   const r = await api('GET', '/leave/requests');
   // Edit / Delete: Workforce Manager for anyone; the Office Manager for office staff.
-  const canEditReq = (g) => S.user.role === 'admin' || g.employee_type === 'staff';
+  const canEditReq = (g) => S.user.role === 'admin' || isOfficeType(g.employee_type);
   const editBtns = (g, list, i) => (canEditReq(g) ? ` <button data-edit="${list}|${i}">Edit</button> <button class="link" data-del="${list}|${i}">delete</button>` : '');
   const row = (g, i, pending) => `<tr>
       <td>${esc(g.first_name)} ${esc(g.last_name)}<div class="small muted">${esc(TYPE_LABEL[g.employee_type] || '')}${g.department ? ` · ${esc(g.department)}` : ''}</div></td>
@@ -2457,7 +2456,7 @@ async function editOffModal(g, after) {
 // Approver enters time off for someone (approved right away). The Office Manager: office staff only.
 async function enterOffModal(after) {
   const [emps, reasons] = await Promise.all([api('GET', '/employees'), api('GET', '/leave/reasons')]);
-  const list = emps.filter((e) => S.user.role !== 'office_admin' || e.employee_type === 'staff');
+  const list = emps.filter((e) => S.user.role !== 'office_admin' || isOfficeType(e.employee_type));
   const t = todayStr();
   const m = modal({
     title: 'Enter time off',
@@ -2485,7 +2484,7 @@ async function leaveBalancesView(el, year) {
   const r = await api('GET', `/leave/balances?year=${year}`);
   const cell = (e, k) => { const x = e.kinds?.[k]; return x ? `<td class="right"><b class="${x.left < 0 ? 'neg' : ''}">${fmtH(x.left)}</b> <span class="small muted">of ${fmtH(x.allowance)}${x.custom ? '' : '*'}</span>${x.pending ? ` <span class="pill warn">${fmtH(x.pending)} pending</span>` : ''}</td>` : '<td class="right muted">—</td>'; };
   el.innerHTML = `<div class="toolbar"><select data-f="year">${[year - 1, year, year + 1].map((y) => opt(y, y, year)).join('')}</select>
-      <span class="small muted">Office staff get PTO and Vacation; superintendents get PTO. * = company default (Admin → Settings: staff PTO ${fmtH(r.defaults.staff_pto)} h, staff Vacation ${fmtH(r.defaults.staff_vacation)} h, superintendent PTO ${fmtH(r.defaults.super_pto)} h).${isLeaveApprover() ? ' Click a person to set their hours.' : ''}</span></div>
+      <span class="small muted">Office staff and project managers get PTO and Vacation; superintendents get PTO. * = company default (Admin → Settings: staff PTO ${fmtH(r.defaults.staff_pto)} h, staff Vacation ${fmtH(r.defaults.staff_vacation)} h, superintendent PTO ${fmtH(r.defaults.super_pto)} h).${isLeaveApprover() ? ' Click a person to set their hours.' : ''}</span></div>
     <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Type</th><th class="right">PTO left</th><th class="right">Vacation left</th></tr></thead>
     <tbody>${r.employees.map((e) => `<tr class="${isLeaveApprover() ? 'click' : ''}" data-eid="${e.id}"><td>${esc(e.last_name)}, ${esc(e.first_name)}${e.department ? `<div class="small muted">${esc(e.department)}</div>` : ''}</td>
       <td>${esc(TYPE_LABEL[e.employee_type])}</td>${cell(e, 'pto')}${cell(e, 'vacation')}</tr>`).join('')

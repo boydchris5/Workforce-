@@ -115,10 +115,12 @@ db.tx(conn, () => {
 
   // Office staff are in the same employee list (type 'staff'). The PM can view the field
   // schedule (it opens on her jobs); Pat is the Office Manager.
-  conn.prepare("UPDATE employees SET employee_type = 'staff', department = 'Project Management' WHERE classification = 'Project Manager'").run();
-  conn.prepare("UPDATE employees SET employee_type = 'superintendent' WHERE classification = 'Superintendent'").run();
+  // Type drives roles; Classification is union-only.
+  conn.prepare("UPDATE employees SET employee_type = 'project_manager', department = 'Project Management', classification = NULL WHERE classification = 'Project Manager'").run();
+  conn.prepare("UPDATE employees SET employee_type = 'superintendent', classification = NULL WHERE classification = 'Superintendent'").run();
+  conn.prepare("UPDATE employees SET employee_type = 'general_foreman', classification = NULL WHERE classification = 'General Foreman'").run();
   const pat = Number(conn.prepare(`INSERT INTO employees (first_name, last_name, phone, classification, department, employee_type, active)
-    VALUES ('Pat', 'Morgan', '316-555-0100', 'Office Manager', 'Accounting', 'staff', 1)`).run().lastInsertRowid);
+    VALUES ('Pat', 'Morgan', '316-555-0100', NULL, 'Accounting', 'staff', 1)`).run().lastInsertRowid);
   const sarah = user('scollins', 'Sarah Collins', 'office');
   conn.prepare('UPDATE users SET employee_id = ?, can_view_schedule = 1 WHERE id = ?').run(pmSarah, sarah);
   conn.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(pat, user('pmorgan', 'Pat Morgan', 'office_admin'));
