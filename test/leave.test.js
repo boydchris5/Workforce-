@@ -142,6 +142,10 @@ test('vacation tier set on the employee; year-end carry-over and payout; superin
   v = (await om('GET', `/leave/balances?year=${year + 1}`)).body.employees.find((e) => e.id === val).kinds;
   assert.equal(v.vacation.carry, 160); assert.equal(v.vacation.paid_out_prev, 120); assert.equal(v.vacation.allowance, 280);
   assert.equal(v.pto.carry, 160); assert.equal(v.pto.allowance, 160);
+  // Superintendent PTO tier set by hand.
+  const newSup = (await boss('POST', '/employees', { first_name: 'New', last_name: 'Super', employee_type: 'superintendent', hire_date: `${year}-03-01`, pto_tier: 2 })).body.id;
+  const ns = (await om('GET', `/leave/balances?year=${year}`)).body.employees.find((e) => e.id === newSup).kinds.pto;
+  assert.equal(ns.grant, 80); assert.match(ns.grant_note, /set on the employee/);
   // Superintendent PTO in whole hours only.
   assert.equal((await sue('POST', '/time-off/request', { from: `${year}-09-14`, reason: 'PTO', hours: 4.5 })).status, 400);
 });
@@ -295,7 +299,7 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   assert.equal(up.prepare('SELECT COUNT(*) AS n FROM time_off WHERE employee_id = ?').get(emp('Sarah').id).n, 0); // cancelled not carried over
   assert.equal(up.prepare("SELECT hours FROM leave_allowances WHERE employee_id = ? AND kind = 'pto'").get(emp('Pat').id).hours, 160);
   assert.equal(up.prepare("SELECT value FROM settings WHERE key = 'staff_pto_default_hours'").get().value, '96');
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 12);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 13);
   up.close();
   require('node:fs').rmSync(file, { force: true });
 });

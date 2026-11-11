@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS employees (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   employee_type TEXT NOT NULL DEFAULT 'union', -- union | general_foreman | superintendent | project_manager | staff (office)
   department TEXT,
-  vacation_tier INTEGER -- 1/2/3 set by hand; NULL = from hire date (Policy Manual 7.2)
+  vacation_tier INTEGER, -- 1/2/3 set by hand; NULL = from hire date (Policy Manual 7.2)
+  pto_tier INTEGER -- superintendent PTO tier set by hand: 0 not eligible / 1 / 2; NULL = from hire date (7.1(A))
 );
 
 -- Yearly time-off allowance in hours, per employee, year and kind.
@@ -344,7 +345,7 @@ const DEFAULT_SETTINGS = {
   super_pto_default_hours: '0',
 };
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -469,6 +470,10 @@ function migrate(db) {
   // v12: vacation tier on the employee; PTO policy default (56 h) replaces the old 0 default.
   if (!db.prepare('PRAGMA table_info(employees)').all().some((c) => c.name === 'vacation_tier')) {
     db.exec('ALTER TABLE employees ADD COLUMN vacation_tier INTEGER;');
+  }
+  // v13: superintendent PTO tier set by hand.
+  if (!db.prepare('PRAGMA table_info(employees)').all().some((c) => c.name === 'pto_tier')) {
+    db.exec('ALTER TABLE employees ADD COLUMN pto_tier INTEGER;');
   }
   if (version < 12 && version > 0) {
     db.exec("UPDATE settings SET value = '56' WHERE key = 'staff_pto_default_hours' AND value IN ('0', '');");

@@ -46,17 +46,24 @@ function policy(s, fallbackYear) {
 // This year's policy amount for one kind of leave, with a short explanation.
 // type: 'staff' | 'project_manager' | 'superintendent'; kind: 'pto' | 'vacation'.
 // vacTier: the employee's Vacation tier set by hand (1, 2 or 3), or null = from hire date.
-function yearlyGrant(pol, type, kind, hire, y, vacTier = null) {
+// ptoTier: a superintendent's PTO tier set by hand (0 = not yet eligible, 1, 2), or null = from hire date.
+function yearlyGrant(pol, type, kind, hire, y, vacTier = null, ptoTier = null) {
   const hy = hire ? Number(hire.slice(0, 4)) : null;
   if (hire && hy > y) return { hours: 0, note: `hired ${hire}` };
   if (type === 'superintendent') {
-    // §7.1(A): nothing until 1 year of service; 40 h/yr through year 5; 80 h/yr after.
-    if (!hire) return { hours: pol.sup[0], note: 'no hire date – using the first-tier rate', missingHire: true };
-    const h = stepped(y, [{ from: plusMonths(hire, 12), rate: pol.sup[0] }, { from: plusMonths(hire, 60), rate: pol.sup[1] }]);
-    const yrs = y - hy;
-    const note = yrs < 1 ? 'eligible after 1 year of service' : yrs === 1 ? 'first year eligible – prorated from 1-year anniversary'
-      : yrs < 5 ? `${pol.sup[0]} h/yr (1–5 years)` : yrs === 5 ? 'moves to the 5-year rate – prorated' : `${pol.sup[1]} h/yr (5+ years)`;
-    return { hours: h, note };
+    // §7.1(A): nothing until 1 year of service; 40 h/yr, then 80 h/yr after 5 years.
+    // Only the year eligibility starts is prorated; otherwise the full year is front-loaded on
+    // Jan 1, at the rate earned by Jan 1 (a step-up takes effect the next Jan 1).
+    if (ptoTier !== null && ptoTier !== undefined && ptoTier !== '') {
+      const t = Math.min(Math.max(Number(ptoTier), 0), 2);
+      return { hours: t === 0 ? 0 : pol.sup[t - 1], note: `${['Not yet eligible', `Tier 1 (${pol.sup[0]} h)`, `Tier 2 (${pol.sup[1]} h)`][t]} – set on the employee`, tier: t };
+    }
+    if (!hire) return { hours: pol.sup[0], note: 'no hire date – using Tier 1 (set the tier or hire date on the employee)', missingHire: true, tier: 1 };
+    const eligible = plusMonths(hire, 12);
+    if (eligible > `${y}-12-31`) return { hours: 0, note: `eligible after 1 year of service (${eligible})`, tier: 0 };
+    if (eligible > `${y}-01-01`) return { hours: Math.round(pol.sup[0] * shareFrom(y, eligible)), note: `first year eligible – prorated from ${eligible}`, tier: 1 };
+    const five = plusMonths(hire, 60) <= `${y}-01-01`;
+    return { hours: five ? pol.sup[1] : pol.sup[0], note: five ? `${pol.sup[1]} h/yr (5+ years)` : `${pol.sup[0]} h/yr (1–5 years; ${pol.sup[1]} h from Jan 1 after the 5-year anniversary)`, tier: five ? 2 : 1 };
   }
   if (kind === 'pto') {
     // §7.1: 56 h each Jan 1, prorated for the hire year.
@@ -74,12 +81,12 @@ function yearlyGrant(pol, type, kind, hire, y, vacTier = null) {
     const quarters = 4 - Math.floor((Number(hire.slice(5, 7)) - 1) / 3);
     return { hours: Math.round((pol.vac[0] / 4) * quarters), note: `hire year – ${pol.vac[0] / 4} h per quarter`, tier: 1 };
   }
-  const h = stepped(y, [{ from: null, rate: pol.vac[0] }, { from: plusMonths(hire, 48), rate: pol.vac[1] }, { from: plusMonths(hire, 120), rate: pol.vac[2] }]);
-  const months = (y - hy) * 12;
-  const note = months < 36 ? `${pol.vac[0]} h/yr (under 4 years)` : months < 60 && plusMonths(hire, 48) >= `${y}-01-01` && plusMonths(hire, 48) <= `${y}-12-31` ? 'reaches 4 years – prorated'
-    : months < 108 ? `${pol.vac[1]} h/yr (4+ years)` : plusMonths(hire, 120) >= `${y}-01-01` && plusMonths(hire, 120) <= `${y}-12-31` ? 'reaches 10 years – prorated' : `${pol.vac[2]} h/yr (10+ years)`;
-  const endTier = plusMonths(hire, 120) <= `${y}-12-31` ? 3 : plusMonths(hire, 48) <= `${y}-12-31` ? 2 : 1;
-  return { hours: h, note, tier: endTier };
+  // After the hire year the full amount is front-loaded on Jan 1, at the tier reached by Jan 1
+  // (a tier increase takes effect the Jan 1 after the anniversary).
+  const jan1 = `${y}-01-01`;
+  const tier = plusMonths(hire, 120) <= jan1 ? 3 : plusMonths(hire, 48) <= jan1 ? 2 : 1;
+  const next = tier === 1 ? plusMonths(hire, 48) : tier === 2 ? plusMonths(hire, 120) : null;
+  return { hours: pol.vac[tier - 1], note: `${tierNames[tier - 1]}${next && next <= `${y}-12-31` ? ` – next tier from Jan 1, ${y + 1}` : ''}`, tier };
 }
 
 // Jan 1 balance from the carry-over and this year's amount.
