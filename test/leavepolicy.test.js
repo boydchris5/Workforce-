@@ -40,9 +40,12 @@ test('superintendent PTO tier set on the employee overrides the hire date', () =
 });
 
 test('carry-over and caps', () => {
-  assert.equal(L.startingBalance(pol, 'staff', 'pto', 140, 56), 160); // tops up to 160
+  assert.equal(L.startingBalance(pol, 'staff', 'pto', 160, 56), 216); // 160 carried + 56 = 216
+  assert.equal(L.startingBalance(pol, 'staff', 'pto', 140, 56), 196);
+  assert.equal(L.startingBalance(pol, 'superintendent', 'pto', 150, 40), 160); // superintendents never above 160
+  assert.deepEqual(L.yearEnd(pol, 'staff', 'pto', 200), { carry: 160, paidOut: 0, forfeited: 40 });
   assert.equal(L.startingBalance(pol, 'staff', 'pto', 60, 56), 116);
   assert.equal(L.startingBalance(pol, 'staff', 'vacation', 160, 120), 280); // may start above the cap
-  assert.deepEqual(L.yearEnd(pol, 'staff', 'vacation', 200), { carry: 160, paidOut: 40 });
-  assert.deepEqual(L.yearEnd(pol, 'superintendent', 'pto', 175), { carry: 160, paidOut: 0 });
+  assert.deepEqual(L.yearEnd(pol, 'staff', 'vacation', 200), { carry: 160, paidOut: 40, forfeited: 0 });
+  assert.deepEqual(L.yearEnd(pol, 'superintendent', 'pto', 175), { carry: 160, paidOut: 0, forfeited: 15 });
 });

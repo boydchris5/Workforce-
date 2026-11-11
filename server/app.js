@@ -1122,6 +1122,7 @@ function createApp(db, opts = {}) {
         allowance: start, grant, grant_note: own ? 'set by hand for this year' : g.note, custom: !!own, note: own?.note || null, missing_hire: !!g.missingHire, tier: g.tier || null,
         carry, carry_custom: !!carryRow, cap: k === 'vacation' ? pol.vacCap : polType === 'superintendent' ? pol.supCap : pol.staffPtoCap,
         paid_out_prev: k === 'vacation' && prevEnd && !carryRow ? prevEnd.paidOut : 0,
+        forfeited_prev: k === 'pto' && prevEnd && !carryRow ? prevEnd.forfeited : 0,
         prior_used: prior, used: prior, scheduled: 0, pending: 0,
       };
     }
@@ -1135,6 +1136,8 @@ function createApp(db, opts = {}) {
       b.left = round2(b.allowance - b.used - b.scheduled);
       // Vacation over the cap at year end is paid out (Policy Manual 7.2).
       if (k === 'vacation') b.projected_payout = Math.max(round2(b.left - b.cap), 0);
+      // PTO over the cap at year end doesn't carry over (office staff / PMs can start a year at cap + 56).
+      else b.projected_forfeit = Math.max(round2(b.left - b.cap), 0);
     }
     return out;
   }

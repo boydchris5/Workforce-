@@ -118,9 +118,9 @@ test('policy allowances: staff PTO 56 + vacation by tier, superintendents 7.1(A)
   assert.equal(b.allowance, 280); assert.equal(b.projected_payout, 120);
   b = (await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'vacation', carry: '' })).body.kinds.vacation;
   assert.equal(b.allowance, 120); assert.equal(b.carry, 0);
-  // PTO tops up to 160, never above: 140 carried + 56 -> 160.
-  b = (await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'pto', carry: 140 })).body.kinds.pto;
-  assert.equal(b.allowance, 160);
+  // PTO: up to 160 carried + 56 -> can start at 216; over 160 at year end won't carry.
+  b = (await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'pto', carry: 160 })).body.kinds.pto;
+  assert.equal(b.allowance, 216); assert.equal(b.projected_forfeit, 56);
   await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'pto', carry: '' });
   assert.equal((await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'vacation', hours: 40 })).status, 400);
   assert.equal((await sue('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', hours: 999 })).status, 403);
@@ -141,7 +141,7 @@ test('vacation tier set on the employee; year-end carry-over and payout; superin
   await om('PUT', `/leave/allowance/${val}`, { year, kind: 'pto', carry: 150 });
   v = (await om('GET', `/leave/balances?year=${year + 1}`)).body.employees.find((e) => e.id === val).kinds;
   assert.equal(v.vacation.carry, 160); assert.equal(v.vacation.paid_out_prev, 120); assert.equal(v.vacation.allowance, 280);
-  assert.equal(v.pto.carry, 160); assert.equal(v.pto.allowance, 160);
+  assert.equal(v.pto.carry, 160); assert.equal(v.pto.allowance, 216); assert.equal(v.pto.forfeited_prev, 46);
   // Superintendent PTO tier set by hand.
   const newSup = (await boss('POST', '/employees', { first_name: 'New', last_name: 'Super', employee_type: 'superintendent', hire_date: `${year}-03-01`, pto_tier: 2 })).body.id;
   const ns = (await om('GET', `/leave/balances?year=${year}`)).body.employees.find((e) => e.id === newSup).kinds.pto;
