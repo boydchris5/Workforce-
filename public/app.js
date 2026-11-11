@@ -1857,6 +1857,7 @@ function employeeModal(e, skills) {
         <label>Phone<input name="phone" type="tel" value="${esc(e.phone || '')}" ${dis}></label>
         <label>Email<input name="email" type="email" value="${esc(e.email || '')}" ${dis}></label>
         <label>Hire date<input name="hire_date" type="date" value="${esc(e.hire_date || '')}" ${dis}></label>
+        <label data-ptier>PTO tier (superintendent)<select name="pto_tier" ${dis}>${[['', 'Auto – from hire date'], ['0', 'Not yet eligible – 0 h'], ['1', 'Tier 1 – 40 h (1–5 years)'], ['2', 'Tier 2 – 80 h (5+ years)']].map(([v, l]) => opt(v, l, e.pto_tier ?? '')).join('')}</select></label>
         <label data-vtier>Vacation tier (office staff / PM)<select name="vacation_tier" ${dis}>${[['', 'Auto – from hire date'], ['1', 'Tier 1 – 40 h (under 4 years)'], ['2', 'Tier 2 – 80 h (4+ years)'], ['3', 'Tier 3 – 120 h (10+ years)']].map(([v, l]) => opt(v, l, e.vacation_tier ?? '')).join('')}</select></label>
         <label>Union trade<input name="trade" list="trade-list" value="${esc(e.trade || '')}" placeholder="Carpenter, Laborer, Ironworker…" ${dis}></label>
         <label>Union local<input name="union_local" value="${esc(e.union_local || '')}" placeholder="e.g. 1445" ${dis}></label>
@@ -1887,7 +1888,8 @@ function employeeModal(e, skills) {
   if (ro) return;
   const cls = $('[name=classification]', m.el); const other = $('[name=class_other]', m.el); const typeSel = $('[name=employee_type]', m.el);
   const vt = $('[data-vtier]', m.el);
-  const syncTier = () => { vt.style.display = isOfficeType(typeSel.value) ? '' : 'none'; };
+  const pt = $('[data-ptier]', m.el);
+  const syncTier = () => { vt.style.display = isOfficeType(typeSel.value) ? '' : 'none'; pt.style.display = typeSel.value === 'superintendent' ? '' : 'none'; };
   typeSel.addEventListener('change', syncTier); syncTier();
   cls.onchange = () => {
     other.style.display = cls.value === '__other' ? '' : 'none';
@@ -2498,7 +2500,7 @@ async function leaveBalancesView(el, year) {
     <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Type</th><th>Hire date / tier</th><th class="right">PTO left</th><th class="right">Vacation left</th><th class="right">Paid out end of ${year - 1}</th><th class="right">Projected payout end of ${year}</th></tr></thead>
     <tbody>${r.employees.map((e) => `<tr class="${isLeaveApprover() ? 'click' : ''}" data-eid="${e.id}"><td>${esc(e.last_name)}, ${esc(e.first_name)}${e.department ? `<div class="small muted">${esc(e.department)}</div>` : ''}</td>
       <td>${esc(TYPE_LABEL[e.employee_type])}</td>
-      <td class="small">${e.hire_date ? esc(e.hire_date) : '<span class="neg">no hire date</span>'}${e.kinds?.vacation ? `<div class="muted">Vacation tier ${e.kinds.vacation.tier || 1}${e.vacation_tier ? ' (set)' : ''}</div>` : ''}</td>
+      <td class="small">${e.hire_date ? esc(e.hire_date) : '<span class="neg">no hire date</span>'}${e.kinds?.vacation ? `<div class="muted">Vacation tier ${e.kinds.vacation.tier || 1}${e.vacation_tier ? ' (set)' : ''}</div>` : e.employee_type === 'superintendent' && e.kinds?.pto ? `<div class="muted">PTO tier ${e.kinds.pto.tier ?? '–'}${e.pto_tier !== null && e.pto_tier !== undefined ? ' (set)' : ''}</div>` : ''}</td>
       ${cell(e, 'pto')}${cell(e, 'vacation')}
       <td class="right">${e.kinds?.vacation?.paid_out_prev ? `<b>${fmtH(e.kinds.vacation.paid_out_prev)}</b>` : '—'}</td>
       <td class="right">${e.kinds?.vacation?.projected_payout ? fmtH(e.kinds.vacation.projected_payout) : '—'}</td></tr>`).join('')
@@ -2622,7 +2624,7 @@ async function adminSettings(el) {
       <label>Superintendents – PTO after 5 years<input type="number" step="1" min="0" name="super_pto_tier2_hours" value="${esc(s.super_pto_tier2_hours ?? 80)}"></label>
       <label>Superintendents – PTO max balance<input type="number" step="1" min="0" name="super_pto_cap" value="${esc(s.super_pto_cap ?? 160)}"></label>
       <label>First year tracked in the app<input type="number" step="1" min="2000" max="2100" name="leave_start_year" value="${esc(s.leave_start_year ?? '')}"></label>
-    </div><div class="small muted" style="margin-top:6px">Each January 1: PTO tops back up toward its max (adding at most the yearly amount); vacation adds the employee's tier amount to what carried over, and anything over the max at year end shows as paid out. Tiers come from the hire date unless a Vacation tier is set on the employee. New hires and tier changes are prorated. Enter each person's carry-over for the first year on Time Off → Balances. Union crew don't have allowances; their time off is still recorded. Union holidays (New Year's, Memorial Day, Independence Day, Labor Day, Veterans Day, Thanksgiving, Christmas – Saturday holidays observed Friday, Sunday holidays Monday) are greyed out on the schedule.</div>
+    </div><div class="small muted" style="margin-top:6px">Each January 1: PTO tops back up toward its max (adding at most the yearly amount); vacation adds the employee's tier amount to what carried over, and anything over the max at year end shows as paid out. Amounts are prorated only in the starting year (hire year; for superintendents, the year they become eligible) – otherwise the full year is front-loaded on January 1, and a tier increase starts the January 1 after the anniversary. Tiers come from the hire date unless a Vacation tier or superintendent PTO tier is set on the employee. Enter each person's carry-over for the first year on Time Off → Balances. Union crew don't have allowances; their time off is still recorded. Union holidays (New Year's, Memorial Day, Independence Day, Labor Day, Veterans Day, Thanksgiving, Christmas – Saturday holidays observed Friday, Sunday holidays Monday) are greyed out on the schedule.</div>
     <div style="margin-top:12px"><button class="primary" data-act="save">Save settings</button></div></div>
     <div class="card" id="email-card"><b>Email notifications</b><div class="small muted">Checking…</div></div>
     <div class="card"><b>Backup</b><p class="small muted">Download a complete copy of the database (schedule history, employees, projects, pay rates). Store it somewhere secure – it contains payroll data.</p>

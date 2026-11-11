@@ -201,6 +201,7 @@ function createApp(db, opts = {}) {
       active: b.active === undefined ? 1 : bool(b.active), notes: str(b.notes, 2000),
       employee_type: str(b.employee_type, 20) || typeFromClassification(b.classification), department: str(b.department, 100),
       vacation_tier: [1, 2, 3].includes(int(b.vacation_tier)) ? int(b.vacation_tier) : null,
+      pto_tier: b.pto_tier === '' || b.pto_tier === null || b.pto_tier === undefined || ![0, 1, 2].includes(int(b.pto_tier)) ? null : int(b.pto_tier),
     };
     if (!e.first_name || !e.last_name) throw bad('First and last name are required.');
     if (!EMPLOYEE_TYPES.includes(e.employee_type)) throw bad('Pick a type: Union, General Foreman, Superintendent, Project Manager or Office staff.');
@@ -224,8 +225,8 @@ function createApp(db, opts = {}) {
   api.post('/employees', canEditPeople, (req, res) => {
     const e = readEmployee(req.body);
     const id = tx(db, () => {
-      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes, employee_type, department, vacation_tier)
-        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes, :employee_type, :department, :vacation_tier)`).run(e);
+      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes, employee_type, department, vacation_tier, pto_tier)
+        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes, :employee_type, :department, :vacation_tier, :pto_tier)`).run(e);
       const id = Number(r.lastInsertRowid);
       saveSkills(id, req.body.skills);
       return id;
@@ -240,7 +241,7 @@ function createApp(db, opts = {}) {
     tx(db, () => {
       const r = db.prepare(`UPDATE employees SET employee_no=:employee_no, first_name=:first_name, last_name=:last_name, phone=:phone, email=:email,
         trade=:trade, union_local=:union_local, classification=:classification, hire_date=:hire_date, active=:active, notes=:notes,
-        employee_type=:employee_type, department=:department, vacation_tier=:vacation_tier WHERE id=:id`).run({ ...e, id });
+        employee_type=:employee_type, department=:department, vacation_tier=:vacation_tier, pto_tier=:pto_tier WHERE id=:id`).run({ ...e, id });
       if (!r.changes) throw new HttpError(404, 'Employee not found.');
       saveSkills(id, req.body.skills);
     });
@@ -1106,10 +1107,10 @@ function createApp(db, opts = {}) {
     const def = Number(s.default_hours) || 8; const t = today();
     const polType = type === 'superintendent' ? 'superintendent' : 'staff';
     const prev = year > pol.startYear && depth < 12 ? leaveBalance(eid, year - 1, depth + 1) : null;
-    const out = { year, employee_type: type, hire_date: e.hire_date || null, vacation_tier: e.vacation_tier || null, first_year: year <= pol.startYear, kinds: {} };
+    const out = { year, employee_type: type, hire_date: e.hire_date || null, vacation_tier: e.vacation_tier || null, pto_tier: e.pto_tier ?? null, first_year: year <= pol.startYear, kinds: {} };
     for (const k of kinds) {
       const own = db.prepare('SELECT hours, note FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k);
-      const g = leavePolicy.yearlyGrant(pol, polType, k, e.hire_date, year, e.vacation_tier);
+      const g = leavePolicy.yearlyGrant(pol, polType, k, e.hire_date, year, e.vacation_tier, e.pto_tier);
       const grant = own ? own.hours : g.hours;
       const carryRow = db.prepare('SELECT hours FROM leave_carry WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k);
       const prevEnd = prev?.kinds[k] ? leavePolicy.yearEnd(pol, polType, k, prev.kinds[k].left) : null;
