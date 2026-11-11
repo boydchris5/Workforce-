@@ -479,21 +479,20 @@
   <p>Everyone sees the <b>Who's out</b> calendar of approved time off for the whole company, with union holidays marked. Above it, each person sees only their own requests and balances.</p>
   <div class="note">A pending request doesn't block scheduling. If the person is scheduled on a requested day, that day can't be approved until they're moved off the schedule – the app tells you which days.</div>
 
-  <h3 id="balances">Time-off balances</h3>
-  <p>Office staff start the calendar year with a <b>PTO</b> allowance and a <b>Vacation</b> allowance; superintendents with a <b>PTO</b> allowance. Union crew don't have allowances. Each balance shows:</p>
+  <h3 id="balances">Time-off balances (Policy Manual §7.1, §7.2, §7.1(A))</h3>
   <table>
-    <tr><td><b>Started with</b></td><td>Their allowance for the year – the company default, or their own amount</td></tr>
-    <tr><td><b>Used</b></td><td>Approved time off up to today</td></tr>
-    <tr><td><b>Approved, coming up</b></td><td>Approved days still ahead</td></tr>
-    <tr><td><b>Pending</b></td><td>Requested, waiting for approval (not taken off yet)</td></tr>
-    <tr><td><b>Hours left</b></td><td>Started with − Used − Approved, coming up</td></tr>
+    <tr><th></th><th>Each year</th><th>Carry-over / max</th></tr>
+    <tr><td><b>PTO</b> – office staff &amp; PMs</td><td>56 h on January 1 (prorated in the hire year)</td><td>Tops back up toward 160 h, adding at most 56 h. Never above 160.</td></tr>
+    <tr><td><b>Vacation</b> – office staff &amp; PMs</td><td>Tier 1: 40 h (under 4 years; 10 h per quarter in the hire year) · Tier 2: 80 h (4+ years) · Tier 3: 120 h (10+ years)</td><td>Added on top of what carried over (up to 160 + 120 = 280). Anything over 160 at year end is <b>paid out</b>.</td></tr>
+    <tr><td><b>PTO</b> – superintendents (§7.1(A))</td><td>None until 1 year of service; 40 h/yr through 5 years; 80 h/yr after (prorated in the year it starts or steps up). Taken in whole hours.</td><td>Never above 160 h; nothing paid out.</td></tr>
   </table>
-  <p>“Other” time off is recorded but doesn't use up hours.</p>
+  <p>Each balance shows <b>Started with</b> (carried over + this year's amount), <b>Used</b>, <b>Approved, coming up</b>, <b>Pending</b> and <b>Hours left</b>, with a line explaining how it was built. Vacation also shows <b>Paid out at end of last year</b> and the <b>Projected payout</b> for this year.</p>
   <ul>
-    <li><b>Company defaults:</b> Admin → Settings – office staff PTO, office staff Vacation and superintendent PTO hours per year.</li>
-    <li><b>Everyone's balances:</b> Time Off → <span class="ui">Balances</span> (or Employees → <span class="ui">Time-off balances</span>). Pick the year and click a person to set their own PTO/Vacation hours and a note (e.g. “10+ years”). Blank = company default.</li>
-    <li><b>One person:</b> open their employee record – the balance is above their time off.</li>
-    <li><b>Starting mid-year:</b> on the employee record click <span class="ui">set allowance / hours already used</span> (or click the person on Time Off → Balances) and enter the PTO and Vacation hours they've <b>already used this year</b> before the app. Those hours count as used, so their balance is correct from today. Don't also enter those days as time off, or they'll count twice.</li>
+    <li><b>Hire date and Vacation tier:</b> tiers come from the employee's hire date. To set a tier by hand, open the employee and pick <b>Vacation tier</b> (Auto, Tier 1, 2 or 3).</li>
+    <li><b>First year in the app:</b> on Time Off → <span class="ui">Balances</span>, click each person and enter <b>Carried over from last year</b> (hours left at the end of last year) and any <b>Already used this year before the app</b>. From then on the carry-over is calculated automatically.</li>
+    <li><b>Overrides:</b> the same window lets you set this year's amount by hand for one person (blank = policy).</li>
+    <li><b>Accounting:</b> Time Off → Balances shows vacation paid out at the end of last year and projected for this year; <span class="ui">Export CSV</span> downloads every number.</li>
+    <li><b>Policy numbers</b> (56, 160, 40/80/120, 40/80) are in Admin → Settings, so a policy change doesn't need a code change.</li>
     <li>Each person sees only their own balance.</li>
   </ul>
 
@@ -703,8 +702,7 @@
     <tr><td>Hard limit (hours / day)</td><td>12</td><td>Scheduling above this is blocked</td></tr>
     <tr><td>Payroll week starts on</td><td>Wednesday</td><td>Verify Hours week and payroll overtime week</td></tr>
     <tr><td>Warn when over (hours / day)</td><td>8</td><td>Scheduling above this is saved with a warning</td></tr>
-    <tr><td>Office staff – PTO / Vacation hours per year</td><td>0 / 0</td><td>Each office staff member's allowances unless they have their own amounts</td></tr>
-    <tr><td>Superintendents – PTO hours per year</td><td>0</td><td>Each superintendent's PTO allowance unless they have their own</td></tr>
+    <tr><td>Time-off policy</td><td>56 / 160 · 40 / 80 / 120 / 160 · 40 / 80 / 160</td><td>PTO per year and max; vacation tiers and max carried over; superintendent PTO after 1 and 5 years and max. See <a href="#balances">Time-off balances</a></td></tr>
   </table>
   <h3 id="email">Email notifications</h3>
   <p>Requests always show in the app (the <span class="ui">Requests</span> button and counts on the Schedule page). To also get emails, the app needs a mailbox to send from. Settings shows whether email is <b>On</b> or <b>Off</b>; when it's on, use <span class="ui">Send me a test email</span>.</p>

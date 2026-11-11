@@ -127,11 +127,14 @@ db.tx(conn, () => {
   const kyle = user('kbrooks', 'Kyle Brooks', 'viewer');
   conn.prepare('UPDATE users SET employee_id = ? WHERE id = ?').run(eid[2], kyle);
 
-  // Allowances: office staff 40 h PTO + 80 h Vacation, superintendents 80 h PTO (Mike: 120).
-  for (const [k, v] of [['staff_pto_default_hours', '40'], ['staff_vacation_default_hours', '80'], ['super_pto_default_hours', '80']]) {
-    conn.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(k, v);
-  }
-  conn.prepare("INSERT INTO leave_allowances (employee_id, year, kind, hours, note) VALUES (?, ?, 'pto', 120, '10+ years')").run(supMike, new Date().getFullYear());
+  // Time-off policy uses hire dates (vacation tiers, superintendent PTO) and each person's
+  // carry-over from last year for the first year in the app.
+  const y = new Date().getFullYear();
+  const hire = conn.prepare('UPDATE employees SET hire_date = ? WHERE id = ?');
+  hire.run('2014-04-01', pmSarah); hire.run('2021-06-15', pmBrian); hire.run('2010-02-01', pat);
+  hire.run('2012-03-05', supMike); hire.run('2025-08-18', supTony);
+  const carry = conn.prepare("INSERT INTO leave_carry (employee_id, year, kind, hours) VALUES (?, ?, ?, ?)");
+  carry.run(pmSarah, y, 'pto', 120); carry.run(pmSarah, y, 'vacation', 150); carry.run(pat, y, 'vacation', 160); carry.run(supMike, y, 'pto', 96);
   // Requests: Sarah (office) wants vacation, Mike (superintendent) asked for a PTO day,
   // Kyle (union) has a pending vacation and an approved past day.
   const off = conn.prepare(`INSERT OR IGNORE INTO time_off (employee_id, off_date, reason, hours, status, note, batch, created_by, created_at)

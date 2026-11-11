@@ -367,3 +367,6 @@ footer.site .dot { color: var(--orange); margin: 0 6px; }
   .board th.holiday, .board td.holiday { background: #E9E9E9 !important; }
   #page > .alert, .legend { display: none !important; }
 }
+
+.leave-how { margin: -4px 0 6px; }
+.payout { margin: 0 0 8px; padding: 6px 10px; background: var(--orange-tint); border-left: 3px solid var(--orange); border-radius: 0 6px 6px 0; }
