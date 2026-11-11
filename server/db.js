@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS employees (
   active INTEGER NOT NULL DEFAULT 1,
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  employee_type TEXT NOT NULL DEFAULT 'union', -- union | superintendent | staff (office)
+  employee_type TEXT NOT NULL DEFAULT 'union', -- union | general_foreman | superintendent | project_manager | staff (office)
   department TEXT
 );
 
@@ -312,7 +312,7 @@ const DEFAULT_SETTINGS = {
   super_pto_default_hours: '0',
 };
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -421,6 +421,17 @@ function migrate(db) {
         db.exec("UPDATE employees SET employee_type = 'staff' WHERE classification LIKE '%project manager%';");
       }
       if (tableSql('office_staff')) migrateOfficeStaff(db);
+    });
+  }
+  // v11: Type (not Classification) decides who is a project manager / general foreman.
+  // Classification becomes union-only, so office titles and "Superintendent" move out of it.
+  if (version < 11 && db.prepare('PRAGMA table_info(employees)').all().some((c) => c.name === 'classification')) {
+    tx(db, () => {
+      db.exec("UPDATE employees SET employee_type = 'project_manager' WHERE classification LIKE '%project manager%' AND employee_type IN ('staff','union');");
+      db.exec("UPDATE employees SET employee_type = 'general_foreman' WHERE classification LIKE '%general foreman%' AND employee_type = 'union';");
+      db.exec("UPDATE employees SET classification = NULL WHERE employee_type IN ('staff','project_manager');");
+      db.exec("UPDATE employees SET classification = NULL WHERE employee_type = 'superintendent' AND classification LIKE '%superintendent%';");
+      db.exec("UPDATE employees SET classification = NULL WHERE employee_type = 'general_foreman' AND classification LIKE '%general foreman%';");
     });
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);

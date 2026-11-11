@@ -60,7 +60,7 @@ test('one employee list: union, superintendent and office staff; every login lin
   ePm = (await boss('POST', '/employees', { first_name: 'Pat', last_name: 'Manager', classification: 'Project Manager' })).body.id;
   assert.equal((await boss('POST', '/employees', { first_name: 'X', last_name: 'Y', employee_type: 'contractor' })).status, 400);
   const types = Object.fromEntries((await boss('GET', '/employees')).body.map((e) => [e.id, e.employee_type]));
-  assert.deepEqual([types[eDan], types[eSue], types[eAlice], types[ePm]], ['union', 'superintendent', 'staff', 'staff']);
+  assert.deepEqual([types[eDan], types[eSue], types[eAlice], types[ePm]], ['union', 'superintendent', 'staff', 'project_manager']);
   job = (await boss('POST', '/projects', { job_number: '99-100', name: 'Test Job', superintendent_employee_id: eSue })).body.id;
   const mk = (b) => boss('POST', '/users', { password: 'password1', ...b });
   assert.equal((await mk({ username: 'om', name: 'Office Mgr', role: 'office_admin', email: 'om@example.com' })).status, 200);
@@ -72,6 +72,16 @@ test('one employee list: union, superintendent and office staff; every login lin
   // The Office Manager adds employees in the same list.
   assert.equal((await om('POST', '/employees', { first_name: 'New', last_name: 'Hire', employee_type: 'staff' })).status, 200);
   assert.equal((await dan('POST', '/employees', { first_name: 'No', last_name: 'Access' })).status, 403);
+});
+
+test('Type drives roles: project managers follow office rules, general foremen union rules', async () => {
+  const gf = (await boss('POST', '/employees', { first_name: 'Gus', last_name: 'Foreman', employee_type: 'general_foreman' })).body.id;
+  const types = Object.fromEntries((await boss('GET', '/employees')).body.map((e) => [e.id, e.employee_type]));
+  assert.equal(types[gf], 'general_foreman');
+  assert.equal((await boss('POST', '/employees', { first_name: 'A', last_name: 'B', classification: 'General Foreman' })).body.id > 0, true);
+  const reasons = (await boss('GET', '/leave/reasons')).body;
+  assert.deepEqual(reasons.project_manager, ['PTO', 'Vacation', 'Other']);
+  assert.ok(reasons.general_foreman.includes('Union business'));
 });
 
 test('holidays show on the schedule and scheduling on one is allowed with a warning', async () => {
@@ -235,8 +245,8 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   old.exec(`VACUUM INTO '${file}'`); old.close();
   const up = db.open(file);
   const emp = (f) => up.prepare('SELECT * FROM employees WHERE first_name = ?').get(f);
-  assert.equal(emp('Sarah').employee_type, 'staff'); assert.equal(emp('Sarah').department, 'PM');
-  assert.equal(emp('Mike').employee_type, 'superintendent'); assert.equal(emp('Kyle').employee_type, 'union');
+  assert.equal(emp('Sarah').employee_type, 'project_manager'); assert.equal(emp('Sarah').department, 'PM'); assert.equal(emp('Sarah').classification, null);
+  assert.equal(emp('Mike').employee_type, 'superintendent'); assert.equal(emp('Mike').classification, null); assert.equal(emp('Kyle').employee_type, 'union'); assert.equal(emp('Kyle').classification, 'Journeyman');
   assert.equal(emp('Pat').employee_type, 'staff'); assert.equal(emp('Pat').email, 'p@example.com');
   assert.equal(up.prepare("SELECT employee_id FROM users WHERE username = 'pmorgan'").get().employee_id, emp('Pat').id);
   assert.equal(up.prepare("SELECT employee_id FROM users WHERE username = 'scollins'").get().employee_id, emp('Sarah').id);
@@ -246,7 +256,7 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   assert.equal(up.prepare('SELECT COUNT(*) AS n FROM time_off WHERE employee_id = ?').get(emp('Sarah').id).n, 0); // cancelled not carried over
   assert.equal(up.prepare("SELECT hours FROM leave_allowances WHERE employee_id = ? AND kind = 'pto'").get(emp('Pat').id).hours, 160);
   assert.equal(up.prepare("SELECT value FROM settings WHERE key = 'staff_pto_default_hours'").get().value, '96');
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 11);
   up.close();
   require('node:fs').rmSync(file, { force: true });
 });
