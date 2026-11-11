@@ -1258,7 +1258,10 @@ function leaveTiles(b) {
     <div class="stat"><div class="v">${fmtH(x.used)}</div><div class="l">Used${x.prior_used ? ` (incl. ${fmtH(x.prior_used)} before app)` : ''}</div></div>
     <div class="stat"><div class="v">${fmtH(x.scheduled)}</div><div class="l">Approved, coming up</div></div>
     <div class="stat ${x.pending ? 'warn' : ''}"><div class="v">${fmtH(x.pending)}</div><div class="l">Waiting for approval</div></div>
-    <div class="stat ${x.left < 0 ? 'bad' : 'ok'}"><div class="v">${fmtH(x.left)}</div><div class="l">Hours left</div></div></div>`).join('');
+    <div class="stat ${x.left < 0 ? 'bad' : 'ok'}"><div class="v">${fmtH(x.left)}</div><div class="l">Hours left</div></div></div>
+    ${x.grant !== undefined ? `<div class="small muted leave-how">Carried over from ${b.year - 1}: <b>${fmtH(x.carry)} h</b>${x.carry_custom ? ' (entered)' : ''} + ${b.year} amount: <b>${fmtH(x.grant)} h</b> (${esc(x.grant_note || '')})
+      ${k === 'vacation' ? ` · max ${fmtH(x.cap)} h carries over` : ` · PTO tops up to a max of ${fmtH(x.cap)} h`}${x.missing_hire ? ' · <span class="neg">no hire date on file</span>' : ''}</div>` : ''}
+    ${k === 'vacation' && (x.paid_out_prev || x.projected_payout) ? `<div class="small payout">${x.paid_out_prev ? `<b>Paid out at end of ${b.year - 1}: ${fmtH(x.paid_out_prev)} h</b>` : ''}${x.paid_out_prev && x.projected_payout ? ' · ' : ''}${x.projected_payout ? `Projected payout at end of ${b.year}: <b>${fmtH(x.projected_payout)} h</b> (over ${fmtH(x.cap)} h)` : ''}</div>` : ''}`).join('');
 }
 
 // Request my own time off. `reasons` depends on the employee type (staff: PTO, Vacation, Other;
@@ -1271,7 +1274,8 @@ function requestOffModal(bal, reasons, after) {
     body: `${left ? `<div class="small">You have ${left} left for ${bal.year}.</div>` : ''}
       <div class="grid2"><label>First day<input type="date" name="from" value="${t}" min="${t}"></label><label>Last day<input type="date" name="to" value="${t}" min="${t}"></label></div>
       <div class="grid2"><label>Type<select name="reason">${(reasons || []).map((x) => opt(x, x)).join('')}</select></label>
-        <label>Hours per day<input type="number" name="hours" step="0.5" min="0.5" max="24" value="${S.settings.default_hours || 8}"></label></div>
+        <label>Hours per day<input type="number" name="hours" step="${bal?.employee_type === 'superintendent' ? 1 : 0.5}" min="${bal?.employee_type === 'superintendent' ? 1 : 0.5}" max="24" value="${S.settings.default_hours || 8}"></label></div>
+      ${bal?.employee_type === 'superintendent' ? '<div class="small muted">Superintendent PTO is taken in whole hours.</div>' : ''}
       <label>Note (optional)<input name="note" maxlength="300" placeholder="e.g. Family trip – back Monday"></label>
       <label class="check"><input type="checkbox" name="weekdays_only" checked> Work days only (skips weekends and union holidays)</label>
       <div class="small muted">Your request goes to the manager for approval. You'll see the answer on Time Off, and by email if your login has an email address.</div>`,
@@ -1853,6 +1857,7 @@ function employeeModal(e, skills) {
         <label>Phone<input name="phone" type="tel" value="${esc(e.phone || '')}" ${dis}></label>
         <label>Email<input name="email" type="email" value="${esc(e.email || '')}" ${dis}></label>
         <label>Hire date<input name="hire_date" type="date" value="${esc(e.hire_date || '')}" ${dis}></label>
+        <label data-vtier>Vacation tier (office staff / PM)<select name="vacation_tier" ${dis}>${[['', 'Auto – from hire date'], ['1', 'Tier 1 – 40 h (under 4 years)'], ['2', 'Tier 2 – 80 h (4+ years)'], ['3', 'Tier 3 – 120 h (10+ years)']].map(([v, l]) => opt(v, l, e.vacation_tier ?? '')).join('')}</select></label>
         <label>Union trade<input name="trade" list="trade-list" value="${esc(e.trade || '')}" placeholder="Carpenter, Laborer, Ironworker…" ${dis}></label>
         <label>Union local<input name="union_local" value="${esc(e.union_local || '')}" placeholder="e.g. 1445" ${dis}></label>
         <label>Classification (union)<select name="classification" ${dis}>${classificationOptions(e.classification)}</select>
@@ -1881,6 +1886,9 @@ function employeeModal(e, skills) {
   });
   if (ro) return;
   const cls = $('[name=classification]', m.el); const other = $('[name=class_other]', m.el); const typeSel = $('[name=employee_type]', m.el);
+  const vt = $('[data-vtier]', m.el);
+  const syncTier = () => { vt.style.display = isOfficeType(typeSel.value) ? '' : 'none'; };
+  typeSel.addEventListener('change', syncTier); syncTier();
   cls.onchange = () => {
     other.style.display = cls.value === '__other' ? '' : 'none';
     if (cls.value === '__other') other.focus();
@@ -1908,7 +1916,7 @@ function drawLeave(e, b, box, reopen) {
   box.innerHTML = `<div class="co-head"><b>Time-off balance – ${b.year}</b><span class="small muted">${isLeaveApprover() ? '<button class="link" data-act="allow">set allowance / hours already used</button>' : ''}</span></div>${leaveTiles(b)}`;
   const a = $('[data-act=allow]', box);
   // The allowance window replaces the employee window; reopen the record after saving.
-  if (a) a.onclick = () => allowanceModal({ ...e, kinds: b.kinds }, b.year, () => (reopen ? reopen() : null));
+  if (a) a.onclick = () => allowanceModal({ ...e, kinds: b.kinds, first_year: b.first_year }, b.year, () => (reopen ? reopen() : null));
 }
 
 // Time off on the employee record: any future date range, with a reason.
@@ -2483,31 +2491,54 @@ async function enterOffModal(after) {
 async function leaveBalancesView(el, year) {
   year = year || Number(todayStr().slice(0, 4));
   const r = await api('GET', `/leave/balances?year=${year}`);
-  const cell = (e, k) => { const x = e.kinds?.[k]; return x ? `<td class="right"><b class="${x.left < 0 ? 'neg' : ''}">${fmtH(x.left)}</b> <span class="small muted">of ${fmtH(x.allowance)}${x.custom ? '' : '*'}</span>${x.pending ? ` <span class="pill warn">${fmtH(x.pending)} pending</span>` : ''}</td>` : '<td class="right muted">—</td>'; };
-  el.innerHTML = `<div class="toolbar"><select data-f="year">${[year - 1, year, year + 1].map((y) => opt(y, y, year)).join('')}</select>
-      <span class="small muted">Office staff and project managers get PTO and Vacation; superintendents get PTO. * = company default (Admin → Settings: staff PTO ${fmtH(r.defaults.staff_pto)} h, staff Vacation ${fmtH(r.defaults.staff_vacation)} h, superintendent PTO ${fmtH(r.defaults.super_pto)} h).${isLeaveApprover() ? ' Click a person to set their hours.' : ''}</span></div>
-    <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Type</th><th class="right">PTO left</th><th class="right">Vacation left</th></tr></thead>
+  const cell = (e, k) => { const x = e.kinds?.[k]; return x ? `<td class="right"><b class="${x.left < 0 ? 'neg' : ''}">${fmtH(x.left)}</b> <span class="small muted">of ${fmtH(x.allowance)}</span>${x.pending ? ` <span class="pill warn">${fmtH(x.pending)} pending</span>` : ''}</td>` : '<td class="right muted">—</td>'; };
+  const p = r.policy;
+  el.innerHTML = `<div class="toolbar"><select data-f="year">${[year - 1, year, year + 1].map((y) => opt(y, y, year)).join('')}</select><span class="spacer"></span><button data-act="csv">Export CSV</button></div>
+    <div class="small muted" style="margin-bottom:8px">Policy (Admin → Settings): office staff &amp; PMs – PTO ${fmtH(p.staffPto)} h/yr, tops up to ${fmtH(p.staffPtoCap)} h; Vacation ${p.vac.map(fmtH).join(' / ')} h by tier, over ${fmtH(p.vacCap)} h at year end is paid out. Superintendents – PTO ${fmtH(p.sup[0])} h/yr after 1 year, ${fmtH(p.sup[1])} h after 5, max ${fmtH(p.supCap)} h.${isLeaveApprover() ? ' Click a person to enter carry-over, overrides or hours already used.' : ''}</div>
+    <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Type</th><th>Hire date / tier</th><th class="right">PTO left</th><th class="right">Vacation left</th><th class="right">Paid out end of ${year - 1}</th><th class="right">Projected payout end of ${year}</th></tr></thead>
     <tbody>${r.employees.map((e) => `<tr class="${isLeaveApprover() ? 'click' : ''}" data-eid="${e.id}"><td>${esc(e.last_name)}, ${esc(e.first_name)}${e.department ? `<div class="small muted">${esc(e.department)}</div>` : ''}</td>
-      <td>${esc(TYPE_LABEL[e.employee_type])}</td>${cell(e, 'pto')}${cell(e, 'vacation')}</tr>`).join('')
-      || '<tr><td colspan="4" class="muted">No superintendents or office staff yet. Set an employee\'s Type on the Employees page.</td></tr>'}</tbody></table></div>`;
+      <td>${esc(TYPE_LABEL[e.employee_type])}</td>
+      <td class="small">${e.hire_date ? esc(e.hire_date) : '<span class="neg">no hire date</span>'}${e.kinds?.vacation ? `<div class="muted">Vacation tier ${e.kinds.vacation.tier || 1}${e.vacation_tier ? ' (set)' : ''}</div>` : ''}</td>
+      ${cell(e, 'pto')}${cell(e, 'vacation')}
+      <td class="right">${e.kinds?.vacation?.paid_out_prev ? `<b>${fmtH(e.kinds.vacation.paid_out_prev)}</b>` : '—'}</td>
+      <td class="right">${e.kinds?.vacation?.projected_payout ? fmtH(e.kinds.vacation.projected_payout) : '—'}</td></tr>`).join('')
+      || '<tr><td colspan="7" class="muted">No superintendents, project managers or office staff yet. Set an employee\'s Type on the Employees page.</td></tr>'}</tbody></table></div>`;
   $('[data-f=year]', el).onchange = (ev) => leaveBalancesView(el, Number(ev.target.value));
+  $('[data-act=csv]', el).onclick = () => {
+    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = [['Name', 'Type', 'Hire date', 'Vacation tier', 'PTO carried over', `PTO ${year} amount`, 'PTO started with', 'PTO used', 'PTO approved coming up', 'PTO left',
+      'Vacation carried over', `Vacation ${year} amount`, 'Vacation started with', 'Vacation used', 'Vacation approved coming up', 'Vacation left', `Vacation paid out end of ${year - 1}`, `Projected vacation payout end of ${year}`]];
+    for (const e of r.employees) {
+      const pt = e.kinds?.pto || {}; const v = e.kinds?.vacation || {};
+      rows.push([`${e.last_name}, ${e.first_name}`, TYPE_LABEL[e.employee_type], e.hire_date || '', v.tier || '', pt.carry, pt.grant, pt.allowance, pt.used, pt.scheduled, pt.left,
+        v.carry ?? '', v.grant ?? '', v.allowance ?? '', v.used ?? '', v.scheduled ?? '', v.left ?? '', v.paid_out_prev ?? '', v.projected_payout ?? '']);
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([rows.map((x) => x.map(q).join(',')).join('\r\n')], { type: 'text/csv' }));
+    a.download = `time-off-balances-${year}.csv`; a.click();
+  };
   if (isLeaveApprover()) $$('tr[data-eid]', el).forEach((tr) => (tr.onclick = () => allowanceModal(r.employees.find((x) => x.id === Number(tr.dataset.eid)), year, () => leaveBalancesView(el, year))));
 }
 
 function allowanceModal(e, year, after) {
   const kinds = Object.entries(e.kinds || {});
   const m = modal({
-    title: `${e.first_name} ${e.last_name} – ${year} allowance`,
+    title: `${e.first_name} ${e.last_name} – ${year} time-off balance`,
     body: `${leaveTiles({ year, kinds: e.kinds })}
-      ${kinds.map(([k, x]) => `<div class="grid2"><label>${KIND_LABEL[k]} hours for ${year}<input type="number" min="0" step="1" data-kind="${k}" value="${x.custom ? x.allowance : ''}" placeholder="${fmtH(x.allowance)} (company default)"></label>
-        <label>${KIND_LABEL[k]} already used in ${year} before the app<input type="number" min="0" step="0.5" data-prior="${k}" value="${x.prior_used || ''}" placeholder="0"></label></div>
-        <label>Note<input data-note="${k}" value="${esc(x.note || '')}" placeholder="e.g. 10+ years"></label>`).join('')}
-      <div class="small muted">Leave allowance hours blank to use the company default. "Already used before the app" is time taken earlier this year that isn't entered as time off in the app – it counts as used, so the balance starts correct today. Don't also enter those days as time off, or they'll count twice.</div>`,
+      ${kinds.map(([k, x]) => `<h3 style="margin:10px 0 4px">${KIND_LABEL[k]}</h3><div class="grid2">
+        <label>Carried over from ${year - 1}<input type="number" step="0.5" data-carry="${k}" value="${x.carry_custom ? x.carry : ''}" placeholder="${fmtH(x.carry)} (${e.first_year ? 'first year – enter leftover hours' : 'automatic'})"></label>
+        <label>${year} amount<input type="number" min="0" step="1" data-kind="${k}" value="${x.custom ? x.grant : ''}" placeholder="${fmtH(x.grant)} – policy (${esc(x.grant_note || '')})"></label>
+        <label>Already used in ${year} before the app<input type="number" min="0" step="0.5" data-prior="${k}" value="${x.prior_used || ''}" placeholder="0"></label>
+        <label>Note<input data-note="${k}" value="${esc(x.note || '')}" placeholder="optional"></label></div>`).join('')}
+      <div class="small muted"><b>Carried over</b>: hours left at the end of ${year - 1}. Enter it for the first year in the app; after that it's calculated (PTO tops up to ${fmtH(e.kinds?.pto?.cap ?? 160)} h; vacation over the max is paid out). <b>${year} amount</b>: leave blank to use the policy (hire date / vacation tier on the employee). <b>Already used before the app</b>: time taken this year that isn't entered as time off in the app – don't also enter those days, or they'll count twice.</div>`,
     footer: '<button data-close>Cancel</button><button class="primary" data-act="go">Save</button>',
   });
   $('[data-act=go]', m.el).onclick = async () => {
     try {
-      for (const [k] of kinds) await api('PUT', `/leave/allowance/${e.id}`, { year, kind: k, hours: $(`[data-kind=${k}]`, m.el).value, note: $(`[data-note=${k}]`, m.el).value, prior_used: $(`[data-prior=${k}]`, m.el).value });
+      for (const [k] of kinds) {
+        await api('PUT', `/leave/allowance/${e.id}`, { year, kind: k, hours: $(`[data-kind=${k}]`, m.el).value, note: $(`[data-note=${k}]`, m.el).value,
+          prior_used: $(`[data-prior=${k}]`, m.el).value, carry: $(`[data-carry=${k}]`, m.el).value });
+      }
       m.close(); toast('Allowance saved'); after();
     } catch (err) { errorBox(m.el, err.message); }
   };
@@ -2579,10 +2610,19 @@ async function adminSettings(el) {
       <label>OT multiplier<input type="number" step="0.1" name="ot_multiplier" value="${esc(s.ot_multiplier)}"></label>
       <label>Default burden % (taxes, WC, GL)<input type="number" step="0.1" name="default_burden_pct" value="${esc(s.default_burden_pct)}"></label>
       <label>Hard limit – never schedule over (hours / day)<input type="number" step="0.5" min="1" max="24" name="max_daily_hours" value="${esc(s.max_daily_hours)}"></label>
-      <label>Office staff – PTO hours per year<input type="number" step="1" min="0" name="staff_pto_default_hours" value="${esc(s.staff_pto_default_hours ?? 0)}"></label>
-      <label>Office staff – Vacation hours per year<input type="number" step="1" min="0" name="staff_vacation_default_hours" value="${esc(s.staff_vacation_default_hours ?? 0)}"></label>
-      <label>Superintendents – PTO hours per year<input type="number" step="1" min="0" name="super_pto_default_hours" value="${esc(s.super_pto_default_hours ?? 0)}"></label>
-    </div><div class="small muted" style="margin-top:6px">Company defaults by calendar year. Set individual amounts on Time Off → Balances or the employee's record. Union crew don't have allowances; their time off is still recorded. Union holidays (New Year's, Memorial Day, Independence Day, Labor Day, Veterans Day, Thanksgiving, Christmas – Saturday holidays observed Friday, Sunday holidays Monday) are greyed out on the schedule.</div>
+    </div>
+    <h3 style="margin:14px 0 6px">Time-off policy (Policy Manual §7.1, §7.2, §7.1(A))</h3><div class="grid2" id="set-pol">
+      <label>Office staff &amp; PMs – PTO hours per year<input type="number" step="1" min="0" name="staff_pto_default_hours" value="${esc(s.staff_pto_default_hours ?? 56)}"></label>
+      <label>Office staff &amp; PMs – PTO max balance<input type="number" step="1" min="0" name="staff_pto_cap" value="${esc(s.staff_pto_cap ?? 160)}"></label>
+      <label>Vacation – Tier 1 (under 4 years)<input type="number" step="1" min="0" name="vac_tier1_hours" value="${esc(s.vac_tier1_hours ?? 40)}"></label>
+      <label>Vacation – Tier 2 (4+ years)<input type="number" step="1" min="0" name="vac_tier2_hours" value="${esc(s.vac_tier2_hours ?? 80)}"></label>
+      <label>Vacation – Tier 3 (10+ years)<input type="number" step="1" min="0" name="vac_tier3_hours" value="${esc(s.vac_tier3_hours ?? 120)}"></label>
+      <label>Vacation – max carried over (rest paid out)<input type="number" step="1" min="0" name="vac_cap" value="${esc(s.vac_cap ?? 160)}"></label>
+      <label>Superintendents – PTO after 1 year<input type="number" step="1" min="0" name="super_pto_tier1_hours" value="${esc(s.super_pto_tier1_hours ?? 40)}"></label>
+      <label>Superintendents – PTO after 5 years<input type="number" step="1" min="0" name="super_pto_tier2_hours" value="${esc(s.super_pto_tier2_hours ?? 80)}"></label>
+      <label>Superintendents – PTO max balance<input type="number" step="1" min="0" name="super_pto_cap" value="${esc(s.super_pto_cap ?? 160)}"></label>
+      <label>First year tracked in the app<input type="number" step="1" min="2000" max="2100" name="leave_start_year" value="${esc(s.leave_start_year ?? '')}"></label>
+    </div><div class="small muted" style="margin-top:6px">Each January 1: PTO tops back up toward its max (adding at most the yearly amount); vacation adds the employee's tier amount to what carried over, and anything over the max at year end shows as paid out. Tiers come from the hire date unless a Vacation tier is set on the employee. New hires and tier changes are prorated. Enter each person's carry-over for the first year on Time Off → Balances. Union crew don't have allowances; their time off is still recorded. Union holidays (New Year's, Memorial Day, Independence Day, Labor Day, Veterans Day, Thanksgiving, Christmas – Saturday holidays observed Friday, Sunday holidays Monday) are greyed out on the schedule.</div>
     <div style="margin-top:12px"><button class="primary" data-act="save">Save settings</button></div></div>
     <div class="card" id="email-card"><b>Email notifications</b><div class="small muted">Checking…</div></div>
     <div class="card"><b>Backup</b><p class="small muted">Download a complete copy of the database (schedule history, employees, projects, pay rates). Store it somewhere secure – it contains payroll data.</p>
@@ -2600,7 +2640,7 @@ async function adminSettings(el) {
     if (tb) tb.onclick = async () => { try { const r = await api('POST', '/notify/test'); toast(`Test email sent to ${r.sent_to}`); } catch (e) { toast(e.message, true); } };
   }).catch(() => {});
   $('[data-act=save]', el).onclick = async () => {
-    await api('PUT', '/settings', formData($('#set-f', el)));
+    await api('PUT', '/settings', { ...formData($('#set-f', el)), ...formData($('#set-pol', el)) });
     toast('Settings saved');
     const me = await api('GET', '/me'); S.settings = me.settings;
   };

@@ -103,30 +103,58 @@ test('time-off types: staff PTO/Vacation/Other, superintendents PTO/Other, no Pe
   assert.equal((await dan('GET', '/leave/mine')).body.balance, null); // union crew have no allowance
 });
 
-test('allowances: staff get PTO + Vacation, superintendents PTO; set by the Office Manager', async () => {
-  await boss('PUT', '/settings', { staff_pto_default_hours: 40, staff_vacation_default_hours: 80, super_pto_default_hours: 120 });
+test('policy allowances: staff PTO 56 + vacation by tier, superintendents 7.1(A); set by the Office Manager', async () => {
+  // Track from this test's year; hire dates drive the tiers.
+  await boss('PUT', '/settings', { leave_start_year: year });
+  conn.prepare('UPDATE employees SET hire_date = ? WHERE id = ?').run('2010-03-01', eAlice); // 10+ years -> vacation tier 3
+  conn.prepare('UPDATE employees SET hire_date = ? WHERE id = ?').run('2015-01-01', eSue); // 5+ years -> 80 h PTO
   let b = (await alice('GET', `/leave/mine?year=${year}`)).body.balance;
   assert.deepEqual(Object.keys(b.kinds), ['pto', 'vacation']);
-  assert.equal(b.kinds.pto.allowance, 40); assert.equal(b.kinds.vacation.allowance, 80);
+  assert.equal(b.kinds.pto.allowance, 56); assert.equal(b.kinds.vacation.allowance, 120); assert.equal(b.kinds.vacation.tier, 3);
   b = (await sue('GET', `/leave/mine?year=${year}`)).body.balance;
-  assert.deepEqual(Object.keys(b.kinds), ['pto']); assert.equal(b.kinds.pto.allowance, 120);
-  assert.equal((await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'vacation', hours: 120, note: '10+ years' })).body.kinds.vacation.allowance, 120);
+  assert.deepEqual(Object.keys(b.kinds), ['pto']); assert.equal(b.kinds.pto.allowance, 80);
+  // Carried over 160 vacation: starts at 280, 120 projected to be paid out; clearing goes back to automatic.
+  b = (await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'vacation', carry: 160 })).body.kinds.vacation;
+  assert.equal(b.allowance, 280); assert.equal(b.projected_payout, 120);
+  b = (await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'vacation', carry: '' })).body.kinds.vacation;
+  assert.equal(b.allowance, 120); assert.equal(b.carry, 0);
+  // PTO tops up to 160, never above: 140 carried + 56 -> 160.
+  b = (await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'pto', carry: 140 })).body.kinds.pto;
+  assert.equal(b.allowance, 160);
+  await om('PUT', `/leave/allowance/${eAlice}`, { year, kind: 'pto', carry: '' });
   assert.equal((await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'vacation', hours: 40 })).status, 400);
   assert.equal((await sue('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', hours: 999 })).status, 403);
   const all = (await om('GET', `/leave/balances?year=${year}`)).body;
   assert.ok(all.employees.some((e) => e.id === eSue) && all.employees.some((e) => e.id === eAlice));
   assert.ok(!all.employees.some((e) => e.id === eDan));
+  assert.equal(all.policy.staffPto, 56);
+});
+
+test('vacation tier set on the employee; year-end carry-over and payout; superintendent whole hours', async () => {
+  // Tier set by hand overrides the hire date.
+  const val = (await boss('POST', '/employees', { first_name: 'Val', last_name: 'Tier', employee_type: 'staff', hire_date: '2024-02-01', vacation_tier: 3 })).body.id;
+  let v = (await om('GET', `/leave/balances?year=${year}`)).body.employees.find((e) => e.id === val).kinds;
+  assert.equal(v.vacation.grant, 120); assert.match(v.vacation.grant_note, /Tier 3.*set on the employee/);
+  assert.equal((await boss('POST', '/employees', { first_name: 'Bad', last_name: 'Tier', employee_type: 'staff', vacation_tier: 9 })).body.id > 0, true); // ignored -> automatic
+  // Year end: 280 vacation unused -> 160 carries, 120 paid out; PTO 150 carried -> 160 next year (capped).
+  await om('PUT', `/leave/allowance/${val}`, { year, kind: 'vacation', carry: 160 });
+  await om('PUT', `/leave/allowance/${val}`, { year, kind: 'pto', carry: 150 });
+  v = (await om('GET', `/leave/balances?year=${year + 1}`)).body.employees.find((e) => e.id === val).kinds;
+  assert.equal(v.vacation.carry, 160); assert.equal(v.vacation.paid_out_prev, 120); assert.equal(v.vacation.allowance, 280);
+  assert.equal(v.pto.carry, 160); assert.equal(v.pto.allowance, 160);
+  // Superintendent PTO in whole hours only.
+  assert.equal((await sue('POST', '/time-off/request', { from: `${year}-09-14`, reason: 'PTO', hours: 4.5 })).status, 400);
 });
 
 test('hours already used before the app count as used, and can be cleared', async () => {
   let b = (await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: 24 })).body.kinds.pto;
-  assert.equal(b.prior_used, 24); assert.equal(b.used, 24); assert.equal(b.left, 120 - 24);
-  assert.equal(b.allowance, 120); // allowance untouched when only prior_used is sent
+  assert.equal(b.prior_used, 24); assert.equal(b.used, 24); assert.equal(b.left, 80 - 24);
+  assert.equal(b.allowance, 80); // allowance untouched when only prior_used is sent
   assert.equal((await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: -5 })).status, 400);
   assert.equal((await sue('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: 0 })).status, 403);
-  assert.equal((await sue('GET', `/leave/mine?year=${year}`)).body.balance.kinds.pto.left, 96);
+  assert.equal((await sue('GET', `/leave/mine?year=${year}`)).body.balance.kinds.pto.left, 56);
   b = (await om('PUT', `/leave/allowance/${eSue}`, { year, kind: 'pto', prior_used: 0 })).body.kinds.pto;
-  assert.equal(b.prior_used, 0); assert.equal(b.left, 120);
+  assert.equal(b.prior_used, 0); assert.equal(b.left, 80);
 });
 
 test('requests: staff -> Office Manager, superintendents -> both managers, union -> Workforce Manager', async () => {
@@ -267,7 +295,7 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   assert.equal(up.prepare('SELECT COUNT(*) AS n FROM time_off WHERE employee_id = ?').get(emp('Sarah').id).n, 0); // cancelled not carried over
   assert.equal(up.prepare("SELECT hours FROM leave_allowances WHERE employee_id = ? AND kind = 'pto'").get(emp('Pat').id).hours, 160);
   assert.equal(up.prepare("SELECT value FROM settings WHERE key = 'staff_pto_default_hours'").get().value, '96');
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 12);
   up.close();
   require('node:fs').rmSync(file, { force: true });
 });

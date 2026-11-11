@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS employees (
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   employee_type TEXT NOT NULL DEFAULT 'union', -- union | general_foreman | superintendent | project_manager | staff (office)
-  department TEXT
+  department TEXT,
+  vacation_tier INTEGER -- 1/2/3 set by hand; NULL = from hire date (Policy Manual 7.2)
 );
 
 -- Yearly time-off allowance in hours, per employee, year and kind.
@@ -81,6 +82,18 @@ CREATE TABLE IF NOT EXISTS leave_allowances (
   kind TEXT NOT NULL CHECK (kind IN ('pto','vacation')),
   hours REAL NOT NULL,
   note TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, year, kind)
+);
+
+-- Balance carried into a year (entered for the first year in the app, or to correct
+-- a year; otherwise the app calculates it from the previous year's ending balance).
+CREATE TABLE IF NOT EXISTS leave_carry (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('pto','vacation')),
+  hours REAL NOT NULL,
   updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (employee_id, year, kind)
@@ -319,13 +332,19 @@ const DEFAULT_SETTINGS = {
   max_daily_hours: '12',
   payroll_week_start: '3', // 0 = Sunday … 3 = Wednesday (payroll week Wed–Tue)
   warn_daily_hours: '8',
-  // Yearly time-off allowances (hours) for anyone without their own amount.
-  staff_pto_default_hours: '0',
+  // Time-off policy (Policy Manual 7.1 PTO, 7.2 Vacation, 7.1(A) Field Superintendents).
+  staff_pto_default_hours: '56', // office staff / PM PTO per year
+  staff_pto_cap: '160', // PTO balance never goes above this
+  vac_tier1_hours: '40', vac_tier2_hours: '80', vac_tier3_hours: '120', // under 4 yrs / 4+ / 10+
+  vac_cap: '160', // vacation over this at year end is paid out
+  super_pto_tier1_hours: '40', super_pto_tier2_hours: '80', // after 1 yr / after 5 yrs
+  super_pto_cap: '160',
+  leave_start_year: String(new Date().getUTCFullYear()), // first year tracked in the app
   staff_vacation_default_hours: '0',
   super_pto_default_hours: '0',
 };
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -446,6 +465,13 @@ function migrate(db) {
       db.exec("UPDATE employees SET classification = NULL WHERE employee_type = 'superintendent' AND classification LIKE '%superintendent%';");
       db.exec("UPDATE employees SET classification = NULL WHERE employee_type = 'general_foreman' AND classification LIKE '%general foreman%';");
     });
+  }
+  // v12: vacation tier on the employee; PTO policy default (56 h) replaces the old 0 default.
+  if (!db.prepare('PRAGMA table_info(employees)').all().some((c) => c.name === 'vacation_tier')) {
+    db.exec('ALTER TABLE employees ADD COLUMN vacation_tier INTEGER;');
+  }
+  if (version < 12 && version > 0) {
+    db.exec("UPDATE settings SET value = '56' WHERE key = 'staff_pto_default_hours' AND value IN ('0', '');");
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

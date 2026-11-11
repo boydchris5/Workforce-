@@ -8,6 +8,7 @@ const { costAssignments, rateLookup, sumInto, round2 } = require('./payroll');
 const procore = require('./procore');
 const { createNotifier, renderEmail } = require('./notify');
 const { holidaysForYear, holidayMap } = require('./holidays');
+const leavePolicy = require('./leavepolicy');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -199,6 +200,7 @@ function createApp(db, opts = {}) {
       classification: str(b.classification, 100), hire_date: date(b.hire_date, 'Hire date'),
       active: b.active === undefined ? 1 : bool(b.active), notes: str(b.notes, 2000),
       employee_type: str(b.employee_type, 20) || typeFromClassification(b.classification), department: str(b.department, 100),
+      vacation_tier: [1, 2, 3].includes(int(b.vacation_tier)) ? int(b.vacation_tier) : null,
     };
     if (!e.first_name || !e.last_name) throw bad('First and last name are required.');
     if (!EMPLOYEE_TYPES.includes(e.employee_type)) throw bad('Pick a type: Union, General Foreman, Superintendent, Project Manager or Office staff.');
@@ -222,8 +224,8 @@ function createApp(db, opts = {}) {
   api.post('/employees', canEditPeople, (req, res) => {
     const e = readEmployee(req.body);
     const id = tx(db, () => {
-      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes, employee_type, department)
-        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes, :employee_type, :department)`).run(e);
+      const r = db.prepare(`INSERT INTO employees (employee_no, first_name, last_name, phone, email, trade, union_local, classification, hire_date, active, notes, employee_type, department, vacation_tier)
+        VALUES (:employee_no, :first_name, :last_name, :phone, :email, :trade, :union_local, :classification, :hire_date, :active, :notes, :employee_type, :department, :vacation_tier)`).run(e);
       const id = Number(r.lastInsertRowid);
       saveSkills(id, req.body.skills);
       return id;
@@ -238,7 +240,7 @@ function createApp(db, opts = {}) {
     tx(db, () => {
       const r = db.prepare(`UPDATE employees SET employee_no=:employee_no, first_name=:first_name, last_name=:last_name, phone=:phone, email=:email,
         trade=:trade, union_local=:union_local, classification=:classification, hire_date=:hire_date, active=:active, notes=:notes,
-        employee_type=:employee_type, department=:department WHERE id=:id`).run({ ...e, id });
+        employee_type=:employee_type, department=:department, vacation_tier=:vacation_tier WHERE id=:id`).run({ ...e, id });
       if (!r.changes) throw new HttpError(404, 'Employee not found.');
       saveSkills(id, req.body.skills);
     });
@@ -1067,7 +1069,6 @@ function createApp(db, opts = {}) {
   const isOffice = (type) => type === 'staff' || type === 'project_manager';
   const reasonKind = (reason) => { const r = String(reason || '').trim().toLowerCase(); return /^pto\b/.test(r) ? 'pto' : /^vacation\b/.test(r) ? 'vacation' : null; };
   const typeOf = (e) => (e && REASONS[e.employee_type] ? e.employee_type : 'union');
-  const defaultAllowance = (type, kind) => Number(getSettings(db)[`${isOffice(type) ? 'staff' : 'super'}_${kind}_default_hours`]) || 0;
 
   // Days in a request: a date range (optionally weekdays only, skipping union holidays) or a list of dates.
   function offDates(b) {
@@ -1092,17 +1093,36 @@ function createApp(db, opts = {}) {
   const offHours = (b) => hours(b.hours, 'Hours per day') ?? Number(getSettings(db).default_hours) ?? 8;
 
   // Yearly balance per kind (PTO, Vacation) for one employee; null for union crew.
-  function leaveBalance(eid, year) {
+  // Yearly balance per kind, following the Policy Manual:
+  //   started with = carried over from last year + this year's amount (PTO topped up to its cap;
+  //   vacation may start above the cap), hours left = started with - used - approved coming up.
+  // The carry-over comes from last year's ending balance (vacation over the cap is paid out),
+  // or is entered by hand for the first year in the app.
+  function leaveBalance(eid, year, depth = 0) {
     const e = empRow.get(eid); const type = typeOf(e);
     const kinds = LEAVE_KINDS[type];
     if (!kinds.length) return null;
-    const def = Number(getSettings(db).default_hours) || 8; const t = today();
-    const out = { year, employee_type: type, kinds: {} };
+    const s = getSettings(db); const pol = leavePolicy.policy(s, Number(today().slice(0, 4)));
+    const def = Number(s.default_hours) || 8; const t = today();
+    const polType = type === 'superintendent' ? 'superintendent' : 'staff';
+    const prev = year > pol.startYear && depth < 12 ? leaveBalance(eid, year - 1, depth + 1) : null;
+    const out = { year, employee_type: type, hire_date: e.hire_date || null, vacation_tier: e.vacation_tier || null, first_year: year <= pol.startYear, kinds: {} };
     for (const k of kinds) {
       const own = db.prepare('SELECT hours, note FROM leave_allowances WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k);
+      const g = leavePolicy.yearlyGrant(pol, polType, k, e.hire_date, year, e.vacation_tier);
+      const grant = own ? own.hours : g.hours;
+      const carryRow = db.prepare('SELECT hours FROM leave_carry WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k);
+      const prevEnd = prev?.kinds[k] ? leavePolicy.yearEnd(pol, polType, k, prev.kinds[k].left) : null;
+      const carry = carryRow ? carryRow.hours : prevEnd ? prevEnd.carry : 0;
+      const start = leavePolicy.startingBalance(pol, polType, k, carry, grant);
       // Hours used before the app tracked them count as used.
       const prior = db.prepare('SELECT hours FROM leave_prior_used WHERE employee_id = ? AND year = ? AND kind = ?').get(eid, year, k)?.hours || 0;
-      out.kinds[k] = { allowance: own ? own.hours : defaultAllowance(type, k), custom: !!own, note: own?.note || null, prior_used: prior, used: prior, scheduled: 0, pending: 0 };
+      out.kinds[k] = {
+        allowance: start, grant, grant_note: own ? 'set by hand for this year' : g.note, custom: !!own, note: own?.note || null, missing_hire: !!g.missingHire, tier: g.tier || null,
+        carry, carry_custom: !!carryRow, cap: k === 'vacation' ? pol.vacCap : polType === 'superintendent' ? pol.supCap : pol.staffPtoCap,
+        paid_out_prev: k === 'vacation' && prevEnd && !carryRow ? prevEnd.paidOut : 0,
+        prior_used: prior, used: prior, scheduled: 0, pending: 0,
+      };
     }
     for (const r of db.prepare(`SELECT off_date, reason, hours, status FROM time_off WHERE employee_id = ? AND off_date BETWEEN ? AND ? AND status IN ('approved','pending')`)
       .all(eid, `${year}-01-01`, `${year}-12-31`)) {
@@ -1110,8 +1130,16 @@ function createApp(db, opts = {}) {
       const h = r.hours ?? def;
       if (r.status === 'pending') b.pending += h; else if (r.off_date <= t) b.used += h; else b.scheduled += h;
     }
-    for (const b of Object.values(out.kinds)) b.left = round2(b.allowance - b.used - b.scheduled);
+    for (const [k, b] of Object.entries(out.kinds)) {
+      b.left = round2(b.allowance - b.used - b.scheduled);
+      // Vacation over the cap at year end is paid out (Policy Manual 7.2).
+      if (k === 'vacation') b.projected_payout = Math.max(round2(b.left - b.cap), 0);
+    }
     return out;
+  }
+  // Field Superintendent PTO is taken in whole hours (Policy Manual 7.1(A)).
+  function checkWholeHours(emp, reason, h) {
+    if (typeOf(emp) === 'superintendent' && reasonKind(reason) === 'pto' && Math.round(h) !== h) throw bad('Superintendent PTO is taken in whole hours.');
   }
   // Group a list of day rows into requests (same batch, or consecutive manager-entered days).
   function groupOff(rows) {
@@ -1144,6 +1172,7 @@ function createApp(db, opts = {}) {
     if (req.user.role === 'office_admin' && !isOffice(emp.employee_type)) throw new HttpError(403, 'The Office Manager enters time off for office staff only.');
     const dates = offDates(req.body);
     const reason = str(req.body.reason, 200); const h = offHours(req.body);
+    checkWholeHours(emp, reason, h);
     const conflicts = []; let added = 0;
     const batch = req.body.from ? require('node:crypto').randomUUID() : null;
     const up = db.prepare(`INSERT INTO time_off (employee_id, off_date, reason, hours, note, batch, created_by, status, created_at, decided_by, decided_at)
@@ -1173,6 +1202,7 @@ function createApp(db, opts = {}) {
     if (!reason) throw bad('Pick a type of time off.');
     if (!REASONS[type].some((x) => x.toLowerCase() === reason.toLowerCase())) throw bad(`Pick one of: ${REASONS[type].join(', ')}.`);
     const h = offHours(req.body); const note = str(req.body.note, 500);
+    checkWholeHours(emp, reason, h);
     const batch = require('node:crypto').randomUUID();
     const skipped = []; const added = []; const notes = [];
     const existing = db.prepare('SELECT status FROM time_off WHERE employee_id = ? AND off_date = ?');
@@ -1317,6 +1347,7 @@ function createApp(db, opts = {}) {
     const reason = str(req.body.reason, 200) || first.reason;
     if (!REASONS[type].some((x) => x.toLowerCase() === String(reason).toLowerCase())) throw bad(`Pick one of: ${REASONS[type].join(', ')}.`);
     const h = offHours(req.body); const note = req.body.note !== undefined ? str(req.body.note, 500) : first.note;
+    checkWholeHours(empRow.get(first.employee_id), reason, h);
     const status = first.status === 'rejected' ? 'pending' : first.status;
     const batch = first.batch || require('node:crypto').randomUUID();
     const conflicts = []; const kept = [];
@@ -1365,7 +1396,7 @@ function createApp(db, opts = {}) {
     const s = getSettings(db);
     res.json({
       year,
-      defaults: { staff_pto: Number(s.staff_pto_default_hours) || 0, staff_vacation: Number(s.staff_vacation_default_hours) || 0, super_pto: Number(s.super_pto_default_hours) || 0 },
+      policy: leavePolicy.policy(s, Number(today().slice(0, 4))),
       employees: db.prepare("SELECT * FROM employees WHERE active = 1 AND employee_type IN ('staff','project_manager','superintendent') ORDER BY employee_type, last_name, first_name").all()
         .map((e) => ({ id: e.id, first_name: e.first_name, last_name: e.last_name, employee_type: e.employee_type, department: e.department, trade: e.trade, ...leaveBalance(e.id, year) })),
     });
@@ -1379,6 +1410,9 @@ function createApp(db, opts = {}) {
     if (!LEAVE_KINDS[typeOf(e)].includes(kind)) throw bad(`${e.first_name} ${e.last_name} doesn't get ${kind === 'vacation' ? 'Vacation' : 'PTO'} hours.`);
     const h = num(req.body.hours);
     if (h !== null && (Number.isNaN(h) || h < 0 || h > 2000)) throw bad('Allowance must be between 0 and 2000 hours.');
+    // Carried over from last year (blank = automatic; needed for the first year in the app).
+    const carry = req.body.carry === undefined ? undefined : num(req.body.carry);
+    if (carry !== undefined && carry !== null && (Number.isNaN(carry) || carry < -2000 || carry > 2000)) throw bad('Carried-over hours must be between -2000 and 2000.');
     // Hours already used this year before the app (optional; blank or 0 clears it).
     const prior = req.body.prior_used === undefined ? undefined : num(req.body.prior_used);
     if (prior !== undefined && prior !== null && (Number.isNaN(prior) || prior < 0 || prior > 2000)) throw bad('Hours already used must be between 0 and 2000.');
@@ -1389,6 +1423,12 @@ function createApp(db, opts = {}) {
           ON CONFLICT (employee_id, year, kind) DO UPDATE SET hours = excluded.hours, note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`)
           .run(eid, year, kind, h, str(req.body.note, 200), req.user.id);
       }
+      if (carry !== undefined) {
+        if (carry === null) db.prepare('DELETE FROM leave_carry WHERE employee_id = ? AND year = ? AND kind = ?').run(eid, year, kind);
+        else db.prepare(`INSERT INTO leave_carry (employee_id, year, kind, hours, updated_by) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (employee_id, year, kind) DO UPDATE SET hours = excluded.hours, updated_by = excluded.updated_by, updated_at = datetime('now')`)
+          .run(eid, year, kind, carry, req.user.id);
+      }
       if (prior !== undefined) {
         if (!prior) db.prepare('DELETE FROM leave_prior_used WHERE employee_id = ? AND year = ? AND kind = ?').run(eid, year, kind);
         else db.prepare(`INSERT INTO leave_prior_used (employee_id, year, kind, hours, updated_by) VALUES (?, ?, ?, ?, ?)
@@ -1396,7 +1436,7 @@ function createApp(db, opts = {}) {
           .run(eid, year, kind, prior, req.user.id);
       }
     });
-    audit(req, 'update', 'leave_allowance', eid, { year, kind, hours: h, prior_used: prior });
+    audit(req, 'update', 'leave_allowance', eid, { year, kind, hours: h, carry, prior_used: prior });
     res.json(leaveBalance(eid, year));
   });
 
@@ -1849,7 +1889,8 @@ function createApp(db, opts = {}) {
 
   api.get('/settings', adminOnly, (_req, res) => res.json(getSettings(db)));
   api.put('/settings', adminOnly, (req, res) => {
-    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours', 'payroll_week_start', 'staff_pto_default_hours', 'staff_vacation_default_hours', 'super_pto_default_hours'];
+    const allowed = ['company_name', 'ot_threshold_hours', 'ot_multiplier', 'default_burden_pct', 'default_hours', 'max_daily_hours', 'warn_daily_hours', 'payroll_week_start', 'staff_pto_default_hours', 'staff_pto_cap', 'vac_tier1_hours', 'vac_tier2_hours', 'vac_tier3_hours', 'vac_cap',
+      'super_pto_tier1_hours', 'super_pto_tier2_hours', 'super_pto_cap', 'leave_start_year'];
     const up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     for (const k of allowed) if (req.body[k] !== undefined && req.body[k] !== null && String(req.body[k]).trim() !== '') up.run(String(req.body[k]).trim().slice(0, 200), k);
     audit(req, 'update', 'settings', null, req.body);
