@@ -93,16 +93,19 @@ function yearlyGrant(pol, type, kind, hire, y, vacTier = null, ptoTier = null) {
 // PTO (staff and superintendents): topped up toward the cap, never above it.
 // Vacation: full carry-over (already capped at year end) plus the year's amount – may exceed the cap.
 function startingBalance(pol, type, kind, carry, grant) {
-  if (kind === 'vacation') return carry + grant;
-  const cap = type === 'superintendent' ? pol.supCap : pol.staffPtoCap;
-  return Math.max(Math.min(cap, carry + grant), Math.min(carry, cap));
+  // Office staff / PM PTO and vacation: the carry-over (capped at year end) plus the full year's
+  // amount, so PTO can start at up to 160 + 56 = 216 and vacation up to 160 + 120 = 280.
+  if (type !== 'superintendent') return carry + grant;
+  // Superintendents (7.1(A)): never above the cap.
+  return Math.max(Math.min(pol.supCap, carry + grant), Math.min(carry, pol.supCap));
 }
 
 // What carries into next year from this year's ending balance, and any payout.
+// Vacation over the cap is paid out; PTO over the cap doesn't carry over and isn't paid (forfeited).
 function yearEnd(pol, type, kind, left) {
-  if (kind === 'vacation') return { carry: Math.min(left, pol.vacCap), paidOut: Math.max(left - pol.vacCap, 0) };
+  if (kind === 'vacation') return { carry: Math.min(left, pol.vacCap), paidOut: Math.max(left - pol.vacCap, 0), forfeited: 0 };
   const cap = type === 'superintendent' ? pol.supCap : pol.staffPtoCap;
-  return { carry: Math.min(left, cap), paidOut: 0 };
+  return { carry: Math.min(left, cap), paidOut: 0, forfeited: Math.max(left - cap, 0) };
 }
 
 module.exports = { policy, yearlyGrant, startingBalance, yearEnd, plusMonths };
