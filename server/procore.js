@@ -141,7 +141,8 @@ function listProjectRoles(projectId) {
   return getPaginated('/project_roles', { project_id: projectId });
 }
 const roleName = (r) => String(r.role?.name || r.role || r.role_name || '').trim();
-const personName = (r) => String(r.user?.name || r.contact?.name || r.name_of_person || (r.role && typeof r.role === 'string' ? r.name : '') || r.login || '').trim();
+// Procore adds the company: "Pat Manager (Fager-McGee Commercial Construction, Inc.)" -> "Pat Manager".
+const personName = (r) => String(r.user?.name || r.contact?.name || r.name_of_person || (r.role && typeof r.role === 'string' ? r.name : '') || r.login || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
 const pickRole = (roles, re) => roles.filter((r) => r.is_active !== false && re.test(roleName(r))).map(personName).find(Boolean) || null;
 
 // Every Procore project, normalized. Project roles (PM / superintendent) are read

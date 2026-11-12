@@ -1689,6 +1689,9 @@ async function procoreProjectsModal(page) {
         <div class="stat"><div class="v">${r.summary.same}</div><div class="l">Already match</div></div>
         <div class="stat"><div class="v">${r.summary.skip}</div><div class="l">Skipped</div></div></div>
       ${r.roles_unavailable ? `<div class="alert warn-box">${esc(r.roles_unavailable)}</div>` : ''}
+      ${r.procore_count !== undefined ? `<details class="small"><summary>Procore sent ${r.procore_count} project${r.procore_count === 1 ? '' : 's'}. Missing a job?</summary>
+        <div class="muted" style="margin:6px 0">If a job number isn't listed here, Procore isn't sharing it with the app. In Procore go to Company Admin → App Management → the Workforce app → Permissions, and give it access to that project (or all projects). New projects may need to be added there.</div>
+        <div>${(r.procore_jobs || []).map(esc).join(', ') || '—'}</div></details>` : ''}
       <div class="small muted">Procore wins for name, address, status, dates, project manager and superintendent. Blank Procore fields never erase anything. Budget hours, starting hours, change orders, color and notes are not touched. Bidding and Pre-Construction projects are skipped.</div>
       <label class="check"><input type="checkbox" data-f="all" ${showAll ? 'checked' : ''}> Show unchanged and skipped projects too</label>
       <div class="table-wrap" style="max-height:440px"><table class="list"><thead><tr><th></th><th>Job #</th><th>Project</th><th>Procore stage</th><th>Changes</th></tr></thead>
