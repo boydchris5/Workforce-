@@ -65,6 +65,12 @@ function createApp(db, opts = {}) {
   const api = express.Router();
   const canSchedule = auth.requireRole('admin', 'super');
   const adminOnly = auth.requireRole('admin');
+  // Verify Hours: the Workforce Manager, superintendents, the Office Manager, and accounting
+  // (any login with Payroll access). Importing / syncing time cards: everyone but superintendents.
+  const canVerify = (req, res, next) => (req.user && (['admin', 'super', 'office_admin'].includes(req.user.role) || req.user.can_view_payroll)
+    ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
+  const canTimecards = (req, res, next) => (req.user && (['admin', 'office_admin'].includes(req.user.role) || req.user.can_view_payroll)
+    ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
   // The Office Manager adds and edits employees too (office staff live in the same list).
   const canEditPeople = auth.requireRole('admin', 'super', 'office_admin');
   // Everyone but the Workforce Manager and superintendents sees approved field work only
@@ -920,11 +926,13 @@ function createApp(db, opts = {}) {
     res.json({ id, approval_status: next.approval_status, warnings: overWarnings([[next.employee_id, next.work_date]]) });
   });
 
-  api.delete('/assignments/:id', canSchedule, (req, res) => {
+  api.delete('/assignments/:id', canVerify, (req, res) => {
     const id = int(req.params.id);
     const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
     if (!cur) throw new HttpError(404, 'Assignment not found.');
-    assertCanEdit(req, cur.project_id);
+    // The Office Manager / accounting only remove time card entries on Verify Hours, never schedule entries.
+    if (['admin', 'super'].includes(req.user.role)) assertCanEdit(req, cur.project_id);
+    else if (cur.source !== 'timecard') throw new HttpError(403, 'Only the Workforce Manager or a superintendent can remove scheduled work.');
     // If this person filled a trade request, the request goes back to open.
     db.prepare("UPDATE crew_request_slots SET status = 'open', assignment_id = NULL, decided_by = NULL, decided_at = NULL WHERE assignment_id = ?").run(id);
     db.prepare('DELETE FROM assignments WHERE id = ?').run(id);
@@ -1504,7 +1512,7 @@ function createApp(db, opts = {}) {
   // Verify Hours works on the payroll week (settings.payroll_week_start, e.g. Wed–Tue).
   const payrollStart = (d) => periodStart(d || new Date().toISOString().slice(0, 10), Number(getSettings(db).payroll_week_start ?? 1));
 
-  api.get('/verification', canSchedule, (req, res) => {
+  api.get('/verification', canVerify, (req, res) => {
     const start = payrollStart(date(req.query.start, 'start'));
     const end = addDays(start, 6);
     const projectId = int(req.query.project_id);
@@ -1683,7 +1691,7 @@ function createApp(db, opts = {}) {
     return { committed: true, preview, result };
   }
 
-  api.post('/timecards/import', adminOnly, (req, res) => {
+  api.post('/timecards/import', canTimecards, (req, res) => {
     const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
     const commit = req.body.commit === true;
     res.json(importTimecardRows(req, rows, commit, str(req.body.filename, 200)));
@@ -1693,7 +1701,7 @@ function createApp(db, opts = {}) {
   // hand-uploaded CSV. Requires PROCORE_CLIENT_ID / PROCORE_CLIENT_SECRET to be
   // set on the server, and a DMSA configured for the Procore app (see
   // procore-sync/README.md).
-  api.post('/timecards/procore-sync', adminOnly, async (req, res) => {
+  api.post('/timecards/procore-sync', canTimecards, async (req, res) => {
     if (!procore.configured()) {
       throw bad('Procore is not configured on this server (PROCORE_CLIENT_ID / PROCORE_CLIENT_SECRET are not set).');
     }
@@ -1713,7 +1721,7 @@ function createApp(db, opts = {}) {
   });
 
   // After adding a missing employee or job, link the leftover time card lines.
-  api.post('/timecards/rematch', adminOnly, (req, res) => {
+  api.post('/timecards/rematch', canTimecards, (req, res) => {
     const from = date(req.body.from, 'From', true); const to = date(req.body.to, 'To', true);
     const left = db.prepare('SELECT * FROM timecard_entries WHERE work_date BETWEEN ? AND ? AND (employee_id IS NULL OR project_id IS NULL)').all(from, to);
     let linked = 0;
@@ -1754,14 +1762,14 @@ function createApp(db, opts = {}) {
     return { id, status: finalStatus, actual_hours: actual };
   }
 
-  api.post('/assignments/:id/verify', canSchedule, (req, res) => {
+  api.post('/assignments/:id/verify', canVerify, (req, res) => {
     const out = applyVerify(req, int(req.params.id), req.body);
     audit(req, 'verify', 'assignment', out.id, out);
     res.json(out);
   });
 
   // Verify many at once: "everyone worked their scheduled hours".
-  api.post('/verification/bulk', canSchedule, (req, res) => {
+  api.post('/verification/bulk', canVerify, (req, res) => {
     const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
     if (!ids.length) throw bad('Nothing selected.');
     const out = tx(db, () => ids.map((id) => {

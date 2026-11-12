@@ -155,6 +155,9 @@ const S = {
   filterTrade: '',
 };
 const canSchedule = () => S.user && ['admin', 'super'].includes(S.user.role);
+// Verify Hours: also the Office Manager and accounting (logins with Payroll access).
+const canVerify = () => S.user && (['admin', 'super', 'office_admin'].includes(S.user.role) || !!S.user.can_view_payroll);
+const canTimecards = () => S.user && (['admin', 'office_admin'].includes(S.user.role) || !!S.user.can_view_payroll);
 // Manager edits any job; a superintendent edits only jobs where they are the listed superintendent.
 const canEditProject = (pid) => {
   if (!S.user) return false;
@@ -179,7 +182,7 @@ const canEditPeople = () => canSchedule() || (S.user && S.user.role === 'office_
 const ROUTES = [
   { path: 'schedule', label: 'Schedule', render: renderSchedule, show: seesField },
   { path: 'my', label: 'My Schedule', render: renderMy, show: () => !isOfficeRole() && S.user.employee_id },
-  { path: 'verify', label: 'Verify Hours', render: renderVerify, show: canSchedule },
+  { path: 'verify', label: 'Verify Hours', render: renderVerify, show: canVerify },
   { path: 'projects', label: 'Projects', render: renderProjects, show: seesField },
   { path: 'employees', label: 'Employees', render: renderEmployees, show: () => seesField() || canEditPeople() },
   { path: 'records', label: 'Records', render: renderRecords, show: seesField },
@@ -1414,8 +1417,8 @@ async function renderVerify(page) {
     <div class="toolbar"><h1 style="margin:0">Verify Hours</h1><span class="spacer"></span>
       <button data-act="prev" aria-label="Previous payroll week">‹</button><strong>Payroll week ${periodLabel}</strong><button data-act="next" aria-label="Next payroll week">›</button></div>
     <div class="toolbar">
-      ${isAdmin() ? '<button class="primary" data-act="import-tc">Import Procore time cards…</button>' : ''}
-      ${isAdmin() ? '<button data-act="procore-sync">Sync from Procore…</button>' : ''}
+      ${canTimecards() ? '<button class="primary" data-act="import-tc">Import Procore time cards…</button>' : ''}
+      ${canTimecards() ? '<button data-act="procore-sync">Sync from Procore…</button>' : ''}
       <select data-act="proj"><option value="">All projects</option>${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, S.verifyProject)).join('')}</select>
       <select data-act="emp" aria-label="Employee"><option value="">All employees</option>${emps.map((e) => opt(e.employee_id, `${e.last_name}, ${e.first_name}`, String(S.verifyEmp))).join('')}</select>
       <div class="seg" role="group" aria-label="View"><button class="${empView ? '' : 'on'}" data-view="day">By day</button><button class="${empView ? 'on' : ''}" data-view="employee">By employee</button></div>
@@ -1424,7 +1427,7 @@ async function renderVerify(page) {
     </div>
     <div class="tc-status small">${imported
       ? r.imports.map((i) => `Time cards imported ${esc(i.imported_at.slice(0, 10))}${i.imported_by_name ? ` by ${esc(i.imported_by_name)}` : ''}: <b>${esc(i.filename || 'file')}</b> – ${i.line_count} lines, ${fmtH(i.total_hours)} h, ${esc(i.period_start)} to ${esc(i.period_end)}`).join('<br>')
-      : `No time cards imported for this payroll week yet.${isAdmin() ? ' Export the Procore time card report and click <b>Import Procore time cards</b>.' : ''}`}</div>
+      : `No time cards imported for this payroll week yet.${canTimecards() ? ' Export the Procore time card report and click <b>Import Procore time cards</b>.' : ''}`}</div>
     <div class="stats">
       <div class="stat"><div class="v">${fmtH(s.planned)}</div><div class="l">Scheduled hours</div></div>
       <div class="stat"><div class="v">${imported ? fmtH(s.timecard) : '—'}</div><div class="l">Time card hours</div></div>
@@ -1465,7 +1468,7 @@ async function renderVerify(page) {
         <td>${esc(u.job_number || '')} <span class="small muted">${esc(u.project_name || '')}</span></td><td class="right">${fmtH(u.hours)}</td>
         <td class="small">${esc([u.cost_code, u.cost_code_name].filter(Boolean).join(' '))}</td><td class="small">${esc(u.reason)}</td>
         <td class="nowrap">${isAdmin() ? `${!u.employee_id ? `<button class="link" data-add-emp="${u.id}">Add employee</button>` : ''}${!u.project_id ? `<button class="link" data-add-job="${u.id}">Add job</button>` : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>
-      ${isAdmin() ? '<div class="toolbar" style="margin-top:8px"><button data-act="rematch">Re-match time cards</button></div>' : ''}` : ''}`;
+      ${canTimecards() ? '<div class="toolbar" style="margin-top:8px"><button data-act="rematch">Re-match time cards</button></div>' : ''}` : ''}`;
 
   const go = (d) => { S.verifyWeek = d; renderVerify(page); };
   $('[data-act=prev]', page).onclick = () => go(addDays(r.start, -7));
@@ -2640,7 +2643,7 @@ async function adminUsers(el) {
   const [users, emps] = await Promise.all([api('GET', '/users'), api('GET', '/employees')]);
   const roleName = { admin: 'Workforce Manager (admin)', super: 'Superintendent', viewer: 'Field staff (view only)', office: 'Office Staff', office_admin: 'Office Manager' };
   const linkedName = (u) => { const e = emps.find((x) => x.id === u.employee_id); return e ? `${fullName(e)} (${TYPE_LABEL[e.employee_type] || ''})` : ''; };
-  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
+  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. The Office Manager and anyone with Payroll access (accounting) can also use Verify Hours and import time cards. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
     <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Email</th><th>Payroll</th><th>Linked</th><th>Status</th></tr></thead>
     <tbody>${users.map((u) => `<tr class="click" data-id="${u.id}"><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(roleName[u.role])}</td>
       <td class="small">${esc(u.email || '')}${['admin', 'office_admin'].includes(u.role) && u.email && u.notify_requests ? ' <span title="Gets an email for each new request">📧</span>' : ''}${u.can_view_schedule ? ' <span class="pill">sees schedule</span>' : ''}</td>

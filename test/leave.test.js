@@ -334,3 +334,21 @@ test('approved time off is locked: superintendents remove union crew days, not t
   assert.equal((await sue('DELETE', `/time-off/${danDay.id}`)).status, 200); // union crew: no balance
   assert.equal((await boss('DELETE', `/time-off/${sueDay.id}`)).status, 200);
 });
+
+test('Verify Hours: the Office Manager and accounting (Payroll access) can use it; other office logins cannot', async () => {
+  const mk = (body) => boss('POST', '/users', { password: 'password1', ...body });
+  assert.equal((await mk({ username: 'acct', name: 'Accounting', role: 'office', can_view_payroll: true })).status, 200);
+  const acct = await login('acct');
+  const d = `${year}-11-04`;
+  const a = (await boss('POST', '/assignments', { project_id: job, employee_ids: [eDan], dates: [d], planned_hours: 8 })).body;
+  const v = (await om('GET', `/verification?start=${d}`)).body;
+  assert.ok(v.rows.length >= 1);
+  assert.equal((await acct('GET', `/verification?start=${d}`)).status, 200);
+  assert.equal((await alice('GET', `/verification?start=${d}`)).status, 403);
+  const row = v.rows.find((x) => x.employee_id === eDan && x.work_date === d);
+  assert.equal((await acct('POST', `/assignments/${row.id}/verify`, { status: 'verified', actual_hours: 7.5 })).body.actual_hours, 7.5);
+  assert.equal((await om('DELETE', `/assignments/${row.id}`)).status, 403); // scheduled work: not theirs to remove
+  assert.equal((await alice('POST', '/timecards/rematch', { from: d, to: d })).status, 403);
+  assert.equal((await om('POST', '/timecards/rematch', { from: d, to: d })).status, 200);
+  assert.ok(a);
+});
