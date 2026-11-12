@@ -485,12 +485,40 @@ function createApp(db, opts = {}) {
     if (!Number.isFinite(n)) throw new Error(`${label} "${v}" is not a number`);
     return n;
   }
-  const employeeByName = (name) => {
-    const t = str(name, 200);
+  // Find an employee from a name typed in a file or sent by Procore. Forgiving:
+  // "Bobby Boudet (Fager-McGee Commercial Construction, Inc.)" -> Robert Boudet.
+  // kind 'pm' / 'super' limits the last-name-only fallback to people of that Type.
+  const NICK = [['robert', 'rob', 'robby', 'bob', 'bobby', 'bert'], ['matthew', 'matt'], ['michael', 'mike', 'mikey'], ['william', 'will', 'bill', 'billy', 'willie'],
+    ['james', 'jim', 'jimmy', 'jamie'], ['thomas', 'tom', 'tommy'], ['daniel', 'dan', 'danny'], ['david', 'dave'], ['christopher', 'chris'], ['joseph', 'joe', 'joey'],
+    ['anthony', 'tony'], ['richard', 'rick', 'ricky', 'rich', 'dick'], ['steven', 'stephen', 'steve'], ['jeffrey', 'jeff'], ['gregory', 'greg'], ['kenneth', 'ken', 'kenny'],
+    ['ronald', 'ron', 'ronnie'], ['donald', 'don', 'donnie'], ['nicholas', 'nick'], ['joshua', 'josh'], ['andrew', 'andy', 'drew'], ['samuel', 'sam'], ['edward', 'ed', 'eddie'],
+    ['jonathan', 'jon', 'john', 'johnny', 'jack'], ['lawrence', 'larry'], ['timothy', 'tim'], ['patrick', 'pat'], ['benjamin', 'ben'], ['alexander', 'alex'], ['zachary', 'zach'],
+    ['jacob', 'jake'], ['charles', 'charlie', 'chuck'], ['gerald', 'jerry'], ['terrence', 'terry'], ['douglas', 'doug'], ['raymond', 'ray'], ['gary'], ['randall', 'randy'],
+    ['katherine', 'kathryn', 'kate', 'katie', 'kathy'], ['elizabeth', 'liz', 'beth', 'betty'], ['jennifer', 'jen', 'jenny'], ['susan', 'sue'], ['margaret', 'maggie', 'peggy'],
+    ['deborah', 'debbie', 'deb'], ['rebecca', 'becky'], ['patricia', 'patty', 'trish']];
+  const nickGroup = (f) => NICK.find((g) => g.includes(f)) || [f];
+  const KIND_TYPES = { pm: ['project_manager'], super: ['superintendent', 'general_foreman', 'union'] };
+  const employeeByName = (name, kind) => {
+    // Drop a trailing "(Company, Inc.)" and suffixes like Jr. / III.
+    const t = String(str(name, 200) || '').replace(/\s*\([^)]*\)\s*$/, '').replace(/[,\s]+(jr|sr|ii|iii|iv)\.?$/i, '').trim();
     if (!t) return { id: null, missing: false };
     const [first, last] = t.includes(',') ? t.split(',').map((x) => x.trim()).reverse() : [t.split(/\s+/).slice(0, -1).join(' '), t.split(/\s+/).slice(-1)[0]];
-    const e = db.prepare('SELECT id FROM employees WHERE first_name = ? COLLATE NOCASE AND last_name = ? COLLATE NOCASE').get(first || '', last || '');
-    return { id: e?.id ?? null, missing: !e };
+    const exact = db.prepare('SELECT id FROM employees WHERE first_name = ? COLLATE NOCASE AND last_name = ? COLLATE NOCASE').get(first || '', last || '');
+    if (exact) return { id: exact.id, missing: false };
+    if (!last) return { id: null, missing: true };
+    const sameLast = db.prepare('SELECT id, first_name, employee_type, active FROM employees WHERE last_name = ? COLLATE NOCASE').all(last);
+    // Nickname / middle name: "Bobby" = Robert, "Matt" = Matthew, "Robert J." = Robert.
+    const firstWord = String(first || '').split(/\s+/)[0].replace(/\.$/, '').toLowerCase();
+    const group = nickGroup(firstWord);
+    const nick = sameLast.filter((e) => { const f = String(e.first_name || '').split(/\s+/)[0].toLowerCase(); return group.includes(f) || nickGroup(f).includes(firstWord); });
+    if (nick.length === 1) return { id: nick[0].id, missing: false };
+    // Last resort: the only active person with that last name and the right Type.
+    const types = KIND_TYPES[kind];
+    if (types) {
+      const one = sameLast.filter((e) => e.active && types.includes(e.employee_type));
+      if (one.length === 1) return { id: one[0].id, missing: false };
+    }
+    return { id: null, missing: true };
   };
 
   api.post('/projects/import', adminOnly, (req, res) => {
@@ -507,7 +535,7 @@ function createApp(db, opts = {}) {
       try {
         const street = str(r.address, 200);
         const cityLine = [str(r.city, 100), [str(r.state, 50), str(r.zip, 20)].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-        const sup = employeeByName(r.superintendent); const pm = employeeByName(r.project_manager);
+        const sup = employeeByName(r.superintendent, 'super'); const pm = employeeByName(r.project_manager, 'pm');
         const rec = {
           job_number: str(r.job_number, 50), name: str(r.name, 200), customer: str(r.customer, 200),
           address: [street, (street || str(r.city)) ? cityLine : ''].filter(Boolean).join(', ') || null,
@@ -596,9 +624,9 @@ function createApp(db, opts = {}) {
       const address = [p.address, cityLine].filter(Boolean).join(', ') || null;
       const rec = { name: str(p.name, 200), address: str(address, 300), status, start_date: isDate(p.start_date) ? p.start_date : null, end_date: isDate(p.end_date) ? p.end_date : null };
       const warn = [];
-      for (const [field, who, label] of [['project_manager_employee_id', p.project_manager, 'Project manager'], ['superintendent_employee_id', p.superintendent, 'Superintendent']]) {
+      for (const [field, who, label, kind] of [['project_manager_employee_id', p.project_manager, 'Project manager', 'pm'], ['superintendent_employee_id', p.superintendent, 'Superintendent', 'super']]) {
         if (!who) continue;
-        const m = employeeByName(who);
+        const m = employeeByName(who, kind);
         if (m.id) rec[field] = m.id; else warn.push(`${label} "${who}" isn't in Employees – left as is`);
       }
       // Blank Procore values never erase app data.
@@ -633,6 +661,9 @@ function createApp(db, opts = {}) {
     }
     res.json({
       committed: commit, summary,
+      // What Procore actually sent, so a job that never shows up can be told apart from one that was skipped.
+      procore_count: pulled.projects.length,
+      procore_jobs: pulled.projects.map((p) => p.job_number).filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
       roles_unavailable: pulled.rolesUnavailable ? 'Procore didn\'t allow reading project roles, so project managers and superintendents were left as they are. In the Procore Developer Portal, give the app read access to the project Directory.' : null,
       results: results.map(({ rec, existing_id, ...x }) => x),
     });

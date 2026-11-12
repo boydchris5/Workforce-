@@ -116,3 +116,25 @@ test('new Procore projects are added; if roles can\'t be read, PM/super are left
   // Existing PM on 4440 kept even though roles couldn't be read.
   assert.ok((await boss('GET', '/projects')).body.find((x) => x.job_number === '4440').project_manager_employee_id);
 });
+
+test('Procore names with the company in parentheses and nicknames still match employees', async () => {
+  const boss = await login('boss');
+  rolesAllowed = true;
+  const rob = (await boss('POST', '/employees', { first_name: 'Robert', last_name: 'Testerly', employee_type: 'superintendent' })).body.id;
+  const mat = (await boss('POST', '/employees', { first_name: 'Matthew', last_name: 'Sampleton', employee_type: 'project_manager' })).body.id;
+  PROCORE_PROJECTS.push({ id: 9, project_number: 'T555', name: 'Nickname Job', active: true, project_stage: { name: 'Course of Construction' } });
+  ROLES[9] = [
+    { role: 'Superintendent', name: 'Bobby Testerly (Example Builders, Inc.)', is_active: true },
+    { role: 'Project Manager', name: 'Matt Sampleton (Example Builders, Inc.)', is_active: true },
+  ];
+  const prev = (await boss('POST', '/projects/procore-sync', {})).body;
+  assert.ok(prev.procore_count >= 9);
+  assert.ok(prev.procore_jobs.includes('T555'));
+  const row = prev.results.find((x) => x.job_number === 'T555');
+  assert.equal(row.action, 'create');
+  assert.equal(row.reason, '');
+  await boss('POST', '/projects/procore-sync', { commit: true });
+  const p = (await boss('GET', '/projects')).body.find((x) => x.job_number === 'T555');
+  assert.equal(p.superintendent_employee_id, rob);
+  assert.equal(p.project_manager_employee_id, mat);
+});
