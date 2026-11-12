@@ -370,3 +370,9 @@ footer.site .dot { color: var(--orange); margin: 0 6px; }
 
 .leave-how { margin: -4px 0 6px; }
 .payout { margin: 0 0 8px; padding: 6px 10px; background: var(--orange-tint); border-left: 3px solid var(--orange); border-radius: 0 6px 6px 0; }
+
+/* Verify Hours: by-employee view */
+table.verify-emp tr.clickable { cursor: pointer; }
+table.verify-emp tr.clickable:hover td { background: var(--hover, rgba(0,0,0,.04)); }
+table.verify-emp tr.total td { border-top: 2px solid var(--line); }
+.emp-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }

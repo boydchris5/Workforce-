@@ -1344,7 +1344,7 @@ async function renderMy(page) {
 // ---------------------------------------------------------------------------
 // Verify hours
 // ---------------------------------------------------------------------------
-S.verifyWeek = null; S.verifyProject = '';
+S.verifyWeek = null; S.verifyProject = ''; S.verifyEmp = ''; S.verifyView = 'day';
 // Verify Hours: the payroll week (e.g. Wed–Tue). Import the weekly time card
 // export (Procore), compare it with the schedule, then adjust any number.
 const RECON = {
@@ -1359,7 +1359,45 @@ async function renderVerify(page) {
   const today = todayStr();
   const imported = r.imports.length > 0;
   const filter = S.verifyFilter || 'all';
-  const shown = r.rows.filter((x) => filter === 'all' || x.recon === filter);
+  // Employees on the schedule or time cards this week, for the employee filter / by-employee view.
+  const emps = [...new Map(r.rows.map((x) => [x.employee_id, x])).values()]
+    .sort((a, b) => a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name));
+  if (S.verifyEmp && !emps.some((e) => String(e.employee_id) === String(S.verifyEmp))) S.verifyEmp = '';
+  const empView = S.verifyView === 'employee';
+  const shown = r.rows.filter((x) => (filter === 'all' || x.recon === filter) && (!S.verifyEmp || String(x.employee_id) === String(S.verifyEmp)));
+  // Totals for a set of rows: scheduled vs time card vs verified actual.
+  const totals = (rows) => {
+    const t = { planned: 0, timecard: 0, actual: 0, days: new Set(), noShows: 0, pending: 0, issues: 0 };
+    for (const x of rows) {
+      t.planned += x.planned_hours; t.timecard += x.timecard_hours ?? 0; t.days.add(x.work_date);
+      if (x.status === 'scheduled') t.pending += 1; else t.actual += x.status === 'no_show' ? 0 : x.actual_hours ?? 0;
+      if (x.status === 'no_show') t.noShows += 1;
+      if (x.recon === 'variance' || x.recon === 'unscheduled' || x.recon === 'no_timecard') t.issues += 1;
+    }
+    return t;
+  };
+  const diff = (d) => (Math.abs(d) < 0.005 ? '<span class="muted">0</span>' : `<b class="${d > 0 ? 'var-up' : 'var-down'}">${d > 0 ? '+' : ''}${fmtH(d)}</b>`);
+  const empRows = emps.map((e) => ({ e, t: totals(shown.filter((x) => x.employee_id === e.employee_id)) })).filter((x) => x.t.days.size);
+  const empTable = () => {
+    const all = totals(shown);
+    const row = (label, t, id) => `<tr${id ? ` data-emp-open="${id}" class="clickable"` : ' class="total"'}><td>${label}</td><td class="right">${t.days.size}</td>
+      <td class="right">${fmtH(t.planned)}</td>${imported ? `<td class="right">${fmtH(t.timecard)}</td><td class="right">${diff(t.timecard - t.planned)}</td>` : ''}
+      <td class="right">${fmtH(t.actual)}${t.pending ? ` <span class="small muted">(${t.pending} pending)</span>` : ''}</td>
+      <td class="right">${t.noShows || ''}</td>${imported ? `<td class="right">${t.issues ? `<span class="pill warn">${t.issues}</span>` : '<span class="pill ok">✓</span>'}</td>` : ''}</tr>`;
+    return `<div class="table-wrap"><table class="list verify-emp">
+      <thead><tr><th>Employee</th><th class="right">Days</th><th class="right">Scheduled</th>${imported ? '<th class="right">Time card</th><th class="right">Time card vs scheduled</th>' : ''}<th class="right">Verified actual</th><th class="right">No-shows</th>${imported ? '<th class="right">To check</th>' : ''}</tr></thead>
+      <tbody>${empRows.map(({ e, t }) => row(`<b>${esc(fullName(e))}</b><div class="small muted">${esc(e.trade || '')}</div>`, t, e.employee_id)).join('')}
+      ${empRows.length > 1 ? row('<b>Total</b>', all) : ''}</tbody></table></div>
+      <div class="small muted" style="margin-top:6px">Click an employee to see their day-by-day entries.</div>`;
+  };
+  const selEmp = S.verifyEmp && emps.find((e) => String(e.employee_id) === String(S.verifyEmp));
+  const empStrip = () => {
+    const t = totals(shown);
+    return `<div class="card emp-strip"><b>${esc(fullName(selEmp))}</b> · ${t.days.size} day${t.days.size === 1 ? '' : 's'} ·
+      Scheduled <b>${fmtH(t.planned)}</b>${imported ? ` · Time card <b>${fmtH(t.timecard)}</b> (${diff(t.timecard - t.planned)})` : ''} ·
+      Verified actual <b>${fmtH(t.actual)}</b>${t.pending ? ` <span class="muted">(${t.pending} pending)</span>` : ''}
+      <button class="link" data-act="clear-emp">Show everyone</button></div>`;
+  };
   const pastPending = r.rows.filter((x) => x.status === 'scheduled' && x.work_date <= today);
   const byDay = {};
   for (const x of shown) (byDay[x.work_date] ||= []).push(x);
@@ -1378,6 +1416,8 @@ async function renderVerify(page) {
       ${isAdmin() ? '<button class="primary" data-act="import-tc">Import Procore time cards…</button>' : ''}
       ${isAdmin() ? '<button data-act="procore-sync">Sync from Procore…</button>' : ''}
       <select data-act="proj"><option value="">All projects</option>${S.projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, S.verifyProject)).join('')}</select>
+      <select data-act="emp" aria-label="Employee"><option value="">All employees</option>${emps.map((e) => opt(e.employee_id, `${e.last_name}, ${e.first_name}`, String(S.verifyEmp))).join('')}</select>
+      <div class="seg" role="group" aria-label="View"><button class="${empView ? '' : 'on'}" data-view="day">By day</button><button class="${empView ? 'on' : ''}" data-view="employee">By employee</button></div>
       <span class="spacer"></span>
       ${pastPending.length ? `<button class="ok" data-act="all">✓ Verify ${pastPending.length} remaining as scheduled</button>` : ''}
     </div>
@@ -1393,7 +1433,8 @@ async function renderVerify(page) {
       <div class="stat ${s.no_show_count ? 'bad' : ''}"><div class="v">${s.no_show_count}</div><div class="l">No-shows</div></div>
     </div>
     ${imported ? `<div class="seg recon-filter">${chip('all', 'All', r.rows.length)}${chip('matched', 'Matches', s.matched)}${chip('variance', 'Differs', s.variances)}${chip('unscheduled', 'Not scheduled', s.unscheduled)}${chip('no_timecard', 'No time card', s.no_timecard)}</div>` : ''}
-    ${shown.length ? Object.entries(byDay).map(([day, rows]) => `
+    ${selEmp && !empView ? empStrip() : ''}
+    ${empView ? (empRows.length ? empTable() : `<div class="card muted">${filter === 'all' ? 'Nothing scheduled or on time cards this payroll week.' : 'Nothing in this group.'}</div>`) : shown.length ? Object.entries(byDay).map(([day, rows]) => `
       <h2>${dayLabel(day, { weekday: 'long', month: 'short', day: 'numeric' })} <span class="muted small">${rows.length} entries · ${fmtH(rows.reduce((a, x) => a + x.planned_hours, 0))} h scheduled${imported ? ` · ${fmtH(rows.reduce((a, x) => a + (x.timecard_hours ?? 0), 0))} h on time cards` : ''}</span></h2>
       <div class="table-wrap"><table class="list verify">
         <thead><tr><th>Project</th><th>Employee</th><th class="right">Scheduled</th>${imported ? '<th class="right">Time card</th>' : ''}<th style="width:100px">Actual</th><th class="right">+/−</th><th>Status</th><th></th></tr></thead>
@@ -1429,6 +1470,10 @@ async function renderVerify(page) {
   $('[data-act=prev]', page).onclick = () => go(addDays(r.start, -7));
   $('[data-act=next]', page).onclick = () => go(addDays(r.start, 7));
   $('[data-act=proj]', page).onchange = (e) => { S.verifyProject = e.target.value; renderVerify(page); };
+  $('[data-act=emp]', page).onchange = (e) => { S.verifyEmp = e.target.value; if (e.target.value) S.verifyView = 'day'; renderVerify(page); };
+  $$('[data-view]', page).forEach((b) => (b.onclick = () => { S.verifyView = b.dataset.view; if (S.verifyView === 'employee') S.verifyEmp = ''; renderVerify(page); }));
+  $$('[data-emp-open]', page).forEach((tr) => (tr.onclick = () => { S.verifyEmp = tr.dataset.empOpen; S.verifyView = 'day'; renderVerify(page); }));
+  const ce = $('[data-act=clear-emp]', page); if (ce) ce.onclick = () => { S.verifyEmp = ''; renderVerify(page); };
   $$('[data-filter]', page).forEach((b) => (b.onclick = () => { S.verifyFilter = b.dataset.filter; renderVerify(page); }));
   const imp = $('[data-act=import-tc]', page); if (imp) imp.onclick = () => importTimecardsModal(page);
   const psync = $('[data-act=procore-sync]', page); if (psync) psync.onclick = () => procoreSyncModal(page, r.start, r.end);
