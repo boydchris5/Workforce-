@@ -1305,14 +1305,25 @@ function createApp(db, opts = {}) {
     res.json({ [approve ? 'approved' : 'rejected']: done.length, conflicts });
   });
 
-  // Managers remove any time off (the Office Manager: office staff); an employee can cancel
-  // their own pending request or approved days still ahead.
+  // Who can remove time off:
+  //  - Workforce Manager (admin): anyone's.
+  //  - Office Manager: office staff / project managers.
+  //  - Superintendent logins: union crew and general foremen (no balances) – not their own or other
+  //    superintendents' PTO, which is approved and locked in.
+  //  - An employee: their own request only while it is still waiting for approval. Once approved
+  //    the hours are locked; the Office Manager or Workforce Manager changes them.
   api.delete('/time-off/:id', (req, res) => {
     const row = db.prepare('SELECT * FROM time_off WHERE id = ?').get(int(req.params.id));
     if (!row) return res.json({ ok: true });
-    const own = row.employee_id === req.user.employee_id && (row.status !== 'approved' || row.off_date > today());
-    const om = req.user.role === 'office_admin' && isOffice(empRow.get(row.employee_id)?.employee_type);
-    if (!['admin', 'super'].includes(req.user.role) && !own && !om) throw new HttpError(403, 'You can only cancel your own requests.');
+    const type = typeOf(empRow.get(row.employee_id));
+    const own = row.employee_id === req.user.employee_id && row.status !== 'approved';
+    const om = req.user.role === 'office_admin' && isOffice(type);
+    const sup = req.user.role === 'super' && ['union', 'general_foreman'].includes(type) && row.employee_id !== req.user.employee_id;
+    if (req.user.role !== 'admin' && !own && !om && !sup) {
+      throw new HttpError(403, row.employee_id === req.user.employee_id && row.status === 'approved'
+        ? 'Approved time off is locked. Ask the Office Manager or Workforce Manager to change it.'
+        : 'You can only cancel your own requests.');
+    }
     db.prepare('DELETE FROM time_off WHERE id = ?').run(row.id);
     audit(req, 'delete', 'time_off', row.id, { employee_id: row.employee_id, off_date: row.off_date, status: row.status });
     res.json({ ok: true });
@@ -1358,6 +1369,17 @@ function createApp(db, opts = {}) {
       upcoming,
       decided: groups.filter((g) => g.status !== 'pending').sort((a, b) => (b.decided_at || '').localeCompare(a.decided_at || '')),
     });
+  });
+
+  // The whole request one day belongs to, so an approver can open it from the calendar –
+  // including past days and people no longer on the employee list.
+  api.get('/time-off/:id/request', leaveApprover, (req, res) => {
+    const day = db.prepare(`${timeOffSelect} WHERE t.id = ?`).get(int(req.params.id));
+    if (!day) throw new HttpError(404, 'That time off no longer exists.');
+    const rows = db.prepare(`${timeOffSelect} WHERE t.employee_id = ? AND t.status = ?`).all(day.employee_id, day.status);
+    const g = groupOff(rows).find((x) => x.ids.includes(day.id));
+    g.employee_active = !!empRow.get(day.employee_id)?.active;
+    res.json(g);
   });
 
   // ---- approver edits / deletes a whole request ----------------------------------------
