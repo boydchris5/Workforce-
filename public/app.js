@@ -297,6 +297,10 @@ async function renderSchedule(page) {
   const leadList = (idKey, nameKey) => [...new Map(data.projects.filter((p) => p[nameKey]).map((p) => [p[idKey], p[nameKey]])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
   const supers = leadList('superintendent_employee_id', 'superintendent_name');
   const pms = leadList('project_manager_employee_id', 'project_manager_name');
+  // A saved PM / superintendent filter that isn't in this week's list would hide every job
+  // while the dropdown shows "All" – clear it.
+  if (S.filterPm && !pms.some(([id]) => String(id) === String(S.filterPm))) S.filterPm = store('wf_pm', '');
+  if (S.filterSuper && !supers.some(([id]) => String(id) === String(S.filterSuper))) S.filterSuper = store('wf_supt', '');
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
   const overDay = t.over_day || [];
   const appr = t.approval || { pending: 0, rejected: 0 };
@@ -394,6 +398,10 @@ function drawBoard() {
     S.onlyWithHours = false; store('wf_only_hours', '0');
     const box = $('[data-act=only-hours]'); if (box) box.checked = false;
     drawBoard();
+  }));
+  $$('[data-act=clear-lead-filters]', el).forEach((btn) => (btn.onclick = () => {
+    S.filterPm = store('wf_pm', ''); S.filterSuper = store('wf_supt', '');
+    renderSchedule($('#page'));
   }));
 }
 
@@ -521,6 +529,7 @@ function projectMobile() {
     <div class="muted small" style="margin-bottom:8px">${dayLabel(day, { weekday: 'long', month: 'long', day: 'numeric' })} · ${d.totals.by_day[day].headcount} people · ${fmtH(d.totals.by_day[day].hours)} hrs</div>
     ${hiddenJobsNote()}
     ${!list.length && S.onlyWithHours ? `<div class="card muted">No jobs have crew this day. <button class="link" data-act="show-all-jobs">Show all jobs</button></div>` : ''}
+    ${!list.length && !S.onlyWithHours && (S.filterPm || S.filterSuper) ? `<div class="card muted">No jobs match the project manager / superintendent filter. <button class="link" data-act="clear-lead-filters">Clear filters</button></div>` : ''}
     ${list.map(({ p, a }) => `<div class="pcard">
       <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
         ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
