@@ -376,3 +376,7 @@ table.verify-emp tr.clickable { cursor: pointer; }
 table.verify-emp tr.clickable:hover td { background: var(--hover, rgba(0,0,0,.04)); }
 table.verify-emp tr.total td { border-top: 2px solid var(--line); }
 .emp-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+
+/* Time Off calendar: approvers click an entry to edit or delete it */
+.cal-chip.clickable { cursor: pointer; }
+.cal-chip.clickable:hover { outline: 1px solid var(--line); }

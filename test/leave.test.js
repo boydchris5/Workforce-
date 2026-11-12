@@ -203,9 +203,11 @@ test('decisions, calendar privacy, cancel rules', async () => {
   // Staff see only their own requests.
   const mine = (await alice('GET', '/leave/mine')).body.requests;
   assert.ok(mine.every((g) => g.employee_id === eAlice));
-  // Can't cancel someone else's; can cancel own approved future days.
+  // Can't cancel someone else's; approved time off is locked for the employee – the Office Manager removes it.
   assert.equal((await dan('DELETE', `/time-off/${aliceReq.ids[0]}`)).status, 403);
-  assert.equal((await alice('DELETE', `/time-off/${aliceReq.ids[0]}`)).status, 200);
+  const locked = await alice('DELETE', `/time-off/${aliceReq.ids[0]}`);
+  assert.equal(locked.status, 403); assert.match(locked.body.error, /locked/);
+  assert.equal((await om('DELETE', `/time-off/${aliceReq.ids[0]}`)).status, 200);
   // The Office Manager enters time off for office staff only.
   assert.equal((await om('POST', '/time-off', { employee_id: eAlice, from: `${year}-08-03`, reason: 'PTO' })).body.added, 1);
   assert.equal((await om('POST', '/time-off', { employee_id: eDan, from: `${year}-08-03`, reason: 'Vacation' })).status, 403);
@@ -302,4 +304,33 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   assert.equal(up.prepare('PRAGMA user_version').get().user_version, 13);
   up.close();
   require('node:fs').rmSync(file, { force: true });
+});
+
+test('approvers open any calendar entry (past days, inactive people) to edit or delete it', async () => {
+  const tess = (await boss('POST', '/employees', { first_name: 'Tess', last_name: 'Testcase', trade: 'Laborer' })).body.id;
+  const past = '2025-03-03';
+  assert.equal((await boss('POST', '/time-off', { employee_id: tess, from: past, to: '2025-03-04', reason: 'Jury duty', hours: 8, weekdays_only: true })).body.added, 2);
+  conn.prepare('UPDATE employees SET active = 0 WHERE id = ?').run(tess); // no longer on the employee list
+  const day = (await boss('GET', '/leave/calendar?start=2025-03-01&end=2025-03-31')).body.days.find((d) => d.employee_id === tess);
+  assert.ok(day, 'still on the calendar');
+  assert.ok(!(await boss('GET', '/leave/requests')).body.upcoming.some((g) => g.employee_id === tess), 'not in the upcoming list');
+  const g = (await boss('GET', `/time-off/${day.id}/request`)).body;
+  assert.equal(g.ids.length, 2); assert.equal(g.employee_active, false);
+  assert.equal((await om('GET', `/time-off/${day.id}/request`)).status, 200);
+  assert.equal((await om('POST', '/time-off/remove', { ids: g.ids })).status, 403); // union crew: Workforce Manager only
+  assert.equal((await dan('GET', `/time-off/${day.id}/request`)).status, 403);
+  assert.equal((await boss('POST', '/time-off/remove', { ids: g.ids })).body.removed, 2);
+  assert.equal((await boss('GET', '/leave/calendar?start=2025-03-01&end=2025-03-31')).body.days.filter((d) => d.employee_id === tess).length, 0);
+});
+
+test('approved time off is locked: superintendents remove union crew days, not their own', async () => {
+  const d = `${year}-10-14`;
+  await boss('POST', '/time-off', { employee_id: eSue, from: d, to: d, reason: 'PTO', hours: 8 });
+  await boss('POST', '/time-off', { employee_id: eDan, from: d, to: d, reason: 'Jury duty', hours: 8 });
+  const cal = (await boss('GET', `/leave/calendar?start=${d}&end=${d}`)).body.days;
+  const sueDay = cal.find((x) => x.employee_id === eSue); const danDay = cal.find((x) => x.employee_id === eDan);
+  const r = await sue('DELETE', `/time-off/${sueDay.id}`);
+  assert.equal(r.status, 403); assert.match(r.body.error, /locked/);
+  assert.equal((await sue('DELETE', `/time-off/${danDay.id}`)).status, 200); // union crew: no balance
+  assert.equal((await boss('DELETE', `/time-off/${sueDay.id}`)).status, 200);
 });

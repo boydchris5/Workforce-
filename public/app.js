@@ -741,7 +741,7 @@ function bindBoard(el) {
   $$('[data-off]', el).forEach((c) => (c.onclick = async (ev) => {
     ev.stopPropagation();
     if (!confirm('Remove this time-off day?')) return;
-    await api('DELETE', `/time-off/${c.dataset.off}`); toast('Time off removed'); renderSchedule($('#page'));
+    try { await api('DELETE', `/time-off/${c.dataset.off}`); toast('Time off removed'); renderSchedule($('#page')); } catch (e) { toast(e.message, true); }
   }));
 }
 
@@ -1301,14 +1301,15 @@ function requestOffModal(bal, reasons, after) {
   };
 }
 
-// My requests (grouped), with Cancel for pending requests and approved days still ahead.
+// My requests (grouped), with Cancel for requests still waiting. Approved time off is locked –
+// only the Office Manager or Workforce Manager can change it.
 function myRequestsTable(list, after) {
   const t = todayStr();
   const html = list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Dates</th><th>Type</th><th class="right">Hours</th><th>Status</th><th>Note</th><th></th></tr></thead><tbody>${list.map((g, i) => `<tr>
       <td class="nowrap">${offSpan(g)}<div class="small muted">${g.days} day${g.days > 1 ? 's' : ''}</div></td><td>${esc(g.reason || '')}</td><td class="right">${fmtH(g.hours)}</td>
       <td>${offPill(g.status)}${g.status === 'rejected' && g.reject_reason ? `<div class="small">${esc(g.reject_reason)}</div>` : ''}</td>
       <td class="small muted">${esc(g.note || '')}</td>
-      <td>${g.status === 'pending' || (g.status === 'approved' && g.start_date > t) ? `<button class="link" data-cancel="${i}">cancel</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+      <td>${g.status === 'pending' ? `<button class="link" data-cancel="${i}">cancel</button>` : g.status === 'approved' ? '<span class="small muted" title="Ask the Office Manager or Workforce Manager to change approved time off">🔒 locked</span>' : ''}</td></tr>`).join('')}</tbody></table></div>`
     : '<div class="small muted">No time off on file.</div>';
   return { html, bind: (root) => $$('[data-cancel]', root).forEach((b) => (b.onclick = async () => {
     const g = list[Number(b.dataset.cancel)];
@@ -2014,7 +2015,7 @@ function drawTimeOff(e, list, box) {
   $$('[data-del-off]', box).forEach((b) => (b.onclick = async () => {
     const r = ranges[Number(b.dataset.delOff)];
     if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = `remove ${r.days} day${r.days > 1 ? 's' : ''}?`; return; }
-    for (const id of r.ids) await api('DELETE', `/time-off/${id}`);
+    try { for (const id of r.ids) await api('DELETE', `/time-off/${id}`); } catch (err) { toast(err.message, true); }
     const full = await api('GET', `/employees/${e.id}`);
     drawTimeOff(e, full.time_off, box);
   }));
@@ -2391,6 +2392,8 @@ async function renderTimeOffCalendar(container) {
   const byDay = {};
   for (const e of r.days) (byDay[e.off_date] ||= []).push(e);
   const today = todayStr();
+  // Approvers can open any entry (past ones too) to edit or delete it. Office Manager: office staff only.
+  const canOpen = isLeaveApprover() ? (e) => S.user.role === 'admin' || isOfficeType(e.employee_type) : null;
   container.innerHTML = `
     <div class="toolbar"><button data-act="cal-prev" aria-label="Previous month">‹</button><strong>${esc(monthLabel(ym))}</strong><button data-act="cal-next" aria-label="Next month">›</button>
       ${ym !== todayStr().slice(0, 7) ? '<button data-act="cal-today">Today</button>' : ''}
@@ -2399,13 +2402,26 @@ async function renderTimeOffCalendar(container) {
       ${DOW.map((d) => `<div class="cal-dow">${d}</div>`).join('')}
       ${weeks.flat().map((d) => { const list = byDay[d] || []; const hol = r.holidays[d]; return `<div class="cal-day ${d.slice(0, 7) !== ym ? 'pad' : ''} ${d === today ? 'today' : ''} ${hol ? 'holiday' : ''}">
         <div class="cal-date">${Number(d.slice(8, 10))}${hol ? ` <span class="cal-hol">${esc(hol)}</span>` : ''}</div>
-        ${list.slice(0, 4).map((e) => `<div class="cal-chip ${esc(e.employee_type)}" title="${esc(`${e.first_name} ${e.last_name} (${TYPE_LABEL[e.employee_type] || ''}) – ${e.reason || 'Off'}`)}">${esc(e.first_name)} ${esc(e.last_name)}</div>`).join('')}
-        ${list.length > 4 ? `<div class="cal-more" title="${esc(list.slice(4).map((e) => `${e.first_name} ${e.last_name}`).join('\n'))}">+${list.length - 4} more</div>` : ''}
+        ${(canOpen ? list : list.slice(0, 4)).map((e) => `<div class="cal-chip ${esc(e.employee_type)}${canOpen && canOpen(e) ? ' clickable" data-off="' + e.id : ''}" title="${esc(`${e.first_name} ${e.last_name} (${TYPE_LABEL[e.employee_type] || ''}) – ${e.reason || 'Off'}${canOpen && canOpen(e) ? ' · click to edit or delete' : ''}`)}">${esc(e.first_name)} ${esc(e.last_name)}</div>`).join('')}
+        ${!canOpen && list.length > 4 ? `<div class="cal-more" title="${esc(list.slice(4).map((e) => `${e.first_name} ${e.last_name}`).join('\n'))}">+${list.length - 4} more</div>` : ''}
       </div>`; }).join('')}
     </div>`;
   $('[data-act=cal-prev]', container).onclick = () => { S.timeOffMonth = addMonths(ym, -1); renderTimeOffCalendar(container); };
   $('[data-act=cal-next]', container).onclick = () => { S.timeOffMonth = addMonths(ym, 1); renderTimeOffCalendar(container); };
   const todayBtn = $('[data-act=cal-today]', container); if (todayBtn) todayBtn.onclick = () => { S.timeOffMonth = todayStr().slice(0, 7); renderTimeOffCalendar(container); };
+  $$('[data-off]', container).forEach((c) => (c.onclick = async () => {
+    let g; try { g = await api('GET', `/time-off/${c.dataset.off}/request`); } catch (e) { return toast(e.message, true); }
+    const again = () => renderTimeOffCalendar(container);
+    const m = modal({
+      title: `Time off – ${g.first_name} ${g.last_name}`,
+      body: `<div>${offSpan(g)} · ${esc(g.reason || '')} · ${g.days} day${g.days > 1 ? 's' : ''} · ${fmtH(g.hours)} h</div>
+        ${g.note ? `<div class="small muted">${esc(g.note)}</div>` : ''}
+        <div class="small muted">${esc(TYPE_LABEL[g.employee_type] || '')}${g.employee_active ? '' : ' · no longer on the employee list'}${g.decided_by_name || g.requested_by_name ? ` · entered/approved by ${esc(g.decided_by_name || g.requested_by_name)}` : ''}</div>`,
+      footer: '<button data-close>Close</button><button class="danger" data-act="del">Delete…</button><button class="primary" data-act="edit">Edit…</button>',
+    });
+    $('[data-act=edit]', m.el).onclick = () => { m.close(); editOffModal(g, again); };
+    $('[data-act=del]', m.el).onclick = () => { m.close(); deleteOffModal(g, again); };
+  }));
 }
 
 async function renderTimeOffApprover(page) {
@@ -2483,8 +2499,12 @@ async function leaveRequestsTab(el) {
   $('[data-act=enter]', el).onclick = () => enterOffModal(() => leaveRequestsTab(el));
   const pick = (v) => { const [list, i] = v.split('|'); return r[list][Number(i)]; };
   $$('[data-edit]', el).forEach((b) => (b.onclick = () => editOffModal(pick(b.dataset.edit), () => leaveRequestsTab(el))));
-  $$('[data-del]', el).forEach((b) => (b.onclick = () => {
-    const g = pick(b.dataset.del);
+  $$('[data-del]', el).forEach((b) => (b.onclick = () => deleteOffModal(pick(b.dataset.del), () => leaveRequestsTab(el))));
+}
+
+// Approver deletes one whole request (all its days).
+function deleteOffModal(g, after) {
+  {
     const m = modal({
       title: `Delete time off – ${g.first_name} ${g.last_name}`,
       body: `<div>${offSpan(g)} · ${esc(g.reason || '')} · ${g.days} day${g.days > 1 ? 's' : ''} (${g.status === 'approved' ? 'approved' : 'pending'})</div>
@@ -2493,9 +2513,9 @@ async function leaveRequestsTab(el) {
       footer: '<button data-close>Cancel</button><button class="danger" data-act="go">Delete</button>',
     });
     $('[data-act=go]', m.el).onclick = async () => {
-      try { await api('POST', '/time-off/remove', { ids: g.ids, reason: $('[name=reason]', m.el).value }); m.close(); toast('Time off deleted'); leaveRequestsTab(el); } catch (e) { errorBox(m.el, e.message); }
+      try { await api('POST', '/time-off/remove', { ids: g.ids, reason: $('[name=reason]', m.el).value }); m.close(); toast('Time off deleted'); after(); } catch (e) { errorBox(m.el, e.message); }
     };
-  }));
+  }
 }
 
 // Approver changes the dates, type, hours or note of one request (it keeps its status).
