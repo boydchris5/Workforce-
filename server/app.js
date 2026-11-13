@@ -989,6 +989,59 @@ function createApp(db, opts = {}) {
   });
 
   // ---- trade requests ("2 carpenters Tuesday"), filled with names by the manager ----
+  // ---- crew request outcomes -> the superintendent who asked -------------------------
+  // Approvals, rejections and filled trade requests are collected for a short while and
+  // sent as one email per superintendent (approving 10 people = 1 email, not 10).
+  const crewNoticeDelay = opts.crewNoticeDelayMs ?? 60_000;
+  const crewQueue = new Map();
+  const requesterRow = db.prepare(`SELECT u.id, u.name, u.role, u.email, e.email AS emp_email FROM users u
+    LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ? AND u.active = 1`);
+  const crewItem = db.prepare(`SELECT p.job_number, p.name AS project_name, e.first_name || ' ' || e.last_name AS who, e.trade
+    FROM projects p LEFT JOIN employees e ON e.id = ? WHERE p.id = ?`);
+  function queueCrewNotice(req, userId, kind, { employeeId = null, projectId, date: day, hours: hrs = null, trade = null, reason = null }) {
+    if (!notifier.configured || !userId || userId === req.user.id) return; // a manager's own entries: no email
+    const info = crewItem.get(employeeId, projectId);
+    if (!info) return;
+    let q = crewQueue.get(userId);
+    if (!q) {
+      q = { items: [], link: appUrl(req, '#/schedule') };
+      crewQueue.set(userId, q);
+      const t = setTimeout(() => flushCrewNotice(userId), crewNoticeDelay); if (t.unref) t.unref();
+    }
+    q.items.push({ kind, job: info.job_number, project: info.project_name, who: info.who || null, trade: trade || info.trade || '', date: day, hours: hrs, reason });
+  }
+  function flushCrewNotice(userId) {
+    const q = crewQueue.get(userId); crewQueue.delete(userId);
+    const u = q && requesterRow.get(userId);
+    const to = u && (u.email || u.emp_email);
+    if (!to || !q.items.length) return;
+    // Group: kind + job + person/trade + reason -> dates.
+    const groups = new Map();
+    for (const it of q.items) {
+      const k = [it.kind, it.job, it.who || '', it.trade, it.reason || ''].join('|');
+      if (!groups.has(k)) groups.set(k, { ...it, dates: [] });
+      groups.get(k).dates.push(it.date);
+    }
+    const LABEL = { approved: 'Approved', filled: 'Filled', rejected: 'Not approved' };
+    const lines = [];
+    for (const kind of ['filled', 'approved', 'rejected']) {
+      const list = [...groups.values()].filter((g) => g.kind === kind).sort((a, b) => a.job.localeCompare(b.job) || String(a.who).localeCompare(String(b.who)));
+      if (!list.length) continue;
+      lines.push(`${LABEL[kind]}:`);
+      for (const g of list) {
+        const person = g.who ? `${g.who}${g.trade ? ` (${g.trade})` : ''}` : `${g.trade || 'Crew'} request`;
+        lines.push(`• ${g.job} ${g.project} – ${person} – ${shortDates(g.dates)}${g.reason ? ` – Reason: ${g.reason}` : ''}`);
+      }
+    }
+    const n = (k) => q.items.filter((x) => x.kind === k).length;
+    const parts = [n('filled') && `${n('filled')} filled`, n('approved') && `${n('approved')} approved`, n('rejected') && `${n('rejected')} not approved`].filter(Boolean);
+    const jobs = [...new Set(q.items.map((x) => x.job))].join(', ');
+    sendEmail([to], `Crew request update – ${jobs}: ${parts.join(', ')}`, {
+      heading: 'Your crew request was answered', lines, link: q.link, linkText: 'See the schedule',
+      footer: 'You get these because you requested crew in the Fager-McGee Workforce app.',
+    });
+  }
+
   api.post('/crew-requests', canSchedule, (req, res) => {
     const b = req.body;
     const projectId = int(b.project_id);
@@ -1030,6 +1083,7 @@ function createApp(db, opts = {}) {
       return aid;
     });
     audit(req, 'fill_trade', 'crew_request', slot.id, { employee_id: eid, trade: slot.trade, date: slot.work_date });
+    queueCrewNotice(req, slot.created_by, 'filled', { employeeId: eid, projectId: slot.project_id, date: slot.work_date, hours: hrs, trade: slot.trade });
     res.json({ assignment_id: id, warnings: overWarnings([[eid, slot.work_date]]) });
   });
 
@@ -1039,7 +1093,14 @@ function createApp(db, opts = {}) {
     if (!ids.length) throw bad('Nothing selected.');
     if (!reason) throw bad('Give a reason for the rejection so the superintendent knows why.');
     let rejected = 0;
-    tx(db, () => { for (const id of ids) rejected += db.prepare(`UPDATE crew_request_slots SET status = 'rejected', reject_reason = ?, decided_by = ?, decided_at = datetime('now') WHERE id = ? AND status = 'open'`).run(reason, req.user.id, id).changes; });
+    const slotRow = db.prepare('SELECT * FROM crew_request_slots WHERE id = ?');
+    tx(db, () => {
+      for (const id of ids) {
+        const ch = db.prepare(`UPDATE crew_request_slots SET status = 'rejected', reject_reason = ?, decided_by = ?, decided_at = datetime('now') WHERE id = ? AND status = 'open'`).run(reason, req.user.id, id).changes;
+        rejected += ch;
+        if (ch) { const s = slotRow.get(id); queueCrewNotice(req, s.created_by, 'rejected', { projectId: s.project_id, date: s.work_date, trade: s.trade, reason }); }
+      }
+    });
     audit(req, 'reject_trade', 'crew_request', null, { count: rejected, reason });
     res.json({ rejected });
   });
@@ -1071,6 +1132,7 @@ function createApp(db, opts = {}) {
         db.prepare("UPDATE assignments SET approval_status = 'approved', approved_by = ?, approved_at = datetime('now'), reject_reason = NULL, updated_at = datetime('now') WHERE id = ?")
           .run(req.user.id, id);
         approved += 1; touched.push([a.employee_id, a.work_date]);
+        queueCrewNotice(req, a.created_by, 'approved', { employeeId: a.employee_id, projectId: a.project_id, date: a.work_date, hours: a.planned_hours });
       }
     });
     audit(req, 'approve', 'assignment', null, { count: approved });
@@ -1085,8 +1147,10 @@ function createApp(db, opts = {}) {
     let rejected = 0;
     tx(db, () => {
       for (const id of ids) {
-        rejected += db.prepare(`UPDATE assignments SET approval_status = 'rejected', reject_reason = ?, approved_by = ?, approved_at = datetime('now'), updated_at = datetime('now')
+        const ch = db.prepare(`UPDATE assignments SET approval_status = 'rejected', reject_reason = ?, approved_by = ?, approved_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ? AND status = 'scheduled'`).run(reason, req.user.id, id).changes;
+        rejected += ch;
+        if (ch) { const a = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id); queueCrewNotice(req, a.created_by, 'rejected', { employeeId: a.employee_id, projectId: a.project_id, date: a.work_date, reason }); }
       }
     });
     audit(req, 'reject', 'assignment', null, { count: rejected, reason });
