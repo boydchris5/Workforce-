@@ -710,14 +710,16 @@
   <p>Requests always show in the app (the <span class="ui">Requests</span> button and counts on the Schedule page). To also get emails, the app needs a mailbox to send from. Settings shows whether email is <b>On</b> or <b>Off</b>; when it's on, use <span class="ui">Send me a test email</span>.</p>
   <p>To turn it on, add these in Render → your service → <b>Environment</b> (the app redeploys):</p>
   <table>
-    <tr><td><code>SMTP_HOST</code></td><td><code>smtp.office365.com</code> for Microsoft 365, or <code>smtp.sendgrid.net</code></td></tr>
-    <tr><td><code>SMTP_PORT</code></td><td><code>587</code></td></tr>
-    <tr><td><code>SMTP_USER</code></td><td>The sending mailbox, e.g. workforce@fager-mcgee.com (for SendGrid: <code>apikey</code>)</td></tr>
-    <tr><td><code>SMTP_PASS</code></td><td>That mailbox's password or app password (for SendGrid: the API key)</td></tr>
-    <tr><td><code>MAIL_FROM</code></td><td>e.g. <code>Fager-McGee Workforce &lt;workforce@fager-mcgee.com&gt;</code></td></tr>
+    <tr><th colspan="2">Microsoft 365 (recommended) – from the Entra app registration</th></tr>
+    <tr><td><code>MS_TENANT_ID</code></td><td>Directory (tenant) ID</td></tr>
+    <tr><td><code>MS_CLIENT_ID</code></td><td>Application (client) ID</td></tr>
+    <tr><td><code>MS_CLIENT_SECRET</code></td><td>The client secret <b>Value</b> (it expires – set a calendar reminder to renew it)</td></tr>
+    <tr><td><code>MAIL_FROM</code></td><td>The sending mailbox, e.g. <code>Fager-McGee Workforce &lt;workforce@fager-mcgee.com&gt;</code></td></tr>
     <tr><td><code>APP_URL</code></td><td>The app's web address, used for the button in each email</td></tr>
+    <tr><th colspan="2">Or any SMTP account (e.g. SendGrid)</th></tr>
+    <tr><td><code>SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS</code></td><td>e.g. <code>smtp.sendgrid.net</code> / <code>587</code> / <code>apikey</code> / the API key</td></tr>
   </table>
-  <div class="note">Microsoft 365: your IT admin may need to allow “Authenticated SMTP” on the sending mailbox. A shared mailbox such as workforce@ works well.</div>
+  <div class="note">Microsoft 365: the app registration needs the Microsoft Graph <b>Mail.Send</b> application permission, limited in Exchange to the one sending mailbox (a shared mailbox such as workforce@ works well), so the app can't send as anyone else.</div>
   <h3>Backup</h3>
   <p><span class="ui">Download database backup</span> saves one file with everything. Download one weekly and keep it somewhere secure – it contains pay rates.</p>
   <h3>Activity log</h3>

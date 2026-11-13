@@ -2713,12 +2713,14 @@ async function adminSettings(el) {
   api('GET', '/notify/status').then((n) => {
     const c = $('#email-card', el); if (!c) return;
     c.innerHTML = `<b>Email notifications</b>
-      ${n.configured ? `<p class="small"><span class="pill ok">On</span> Sending from <b>${esc(n.from || '')}</b> to: ${n.recipients.length ? esc(n.recipients.join(', ')) : '<b>nobody yet</b> – add an email to the Workforce Manager user(s) in Users'}.</p>
+      ${n.configured ? `<p class="small"><span class="pill ok">On</span>${n.method ? ` via ${esc(n.method)}` : ''} – sending from <b>${esc(n.from || '')}</b> to: ${n.recipients.length ? esc(n.recipients.join(', ')) : '<b>nobody yet</b> – add an email to the Workforce Manager user(s) in Users'}.</p>
         <button data-act="test-email">Send me a test email</button>`
         : `<p class="small"><span class="pill">Off</span> Requests still show in the app (Requests button and counts). To also get emails, add these in Render → your service → Environment, then redeploy:</p>
-        <table class="list small"><tbody><tr><td><code>SMTP_HOST</code></td><td>smtp.office365.com (Microsoft 365) or smtp.sendgrid.net</td></tr><tr><td><code>SMTP_PORT</code></td><td>587</td></tr>
-          <tr><td><code>SMTP_USER</code></td><td>the sending mailbox (e.g. workforce@fager-mcgee.com), or "apikey" for SendGrid</td></tr><tr><td><code>SMTP_PASS</code></td><td>that mailbox's password / app password, or the SendGrid API key</td></tr>
-          <tr><td><code>MAIL_FROM</code></td><td>Fager-McGee Workforce &lt;workforce@fager-mcgee.com&gt;</td></tr><tr><td><code>APP_URL</code></td><td>your app's address, for the link in each email</td></tr></tbody></table>`}`;
+        <table class="list small"><tbody><tr><th colspan="2">Microsoft 365 (recommended) – from the Entra app registration</th></tr>
+          <tr><td><code>MS_TENANT_ID</code></td><td>Directory (tenant) ID</td></tr><tr><td><code>MS_CLIENT_ID</code></td><td>Application (client) ID</td></tr>
+          <tr><td><code>MS_CLIENT_SECRET</code></td><td>the client secret <b>Value</b></td></tr>
+          <tr><td><code>MAIL_FROM</code></td><td>Fager-McGee Workforce &lt;workforce@fager-mcgee.com&gt;</td></tr><tr><td><code>APP_URL</code></td><td>your app's address, for the link in each email</td></tr>
+          <tr><th colspan="2">Or any SMTP account</th></tr><tr><td><code>SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS</code></td><td>e.g. smtp.sendgrid.net / 587 / apikey / the API key</td></tr></tbody></table>`}`;
     const tb = $('[data-act=test-email]', c);
     if (tb) tb.onclick = async () => { try { const r = await api('POST', '/notify/test'); toast(`Test email sent to ${r.sent_to}`); } catch (e) { toast(e.message, true); } };
   }).catch(() => {});

@@ -78,8 +78,9 @@ On first start with an empty database, an `admin` login is created. Its password
 | `PROCORE_CLIENT_ID` / `PROCORE_CLIENT_SECRET` | unset | Enables the **Sync from Procore…** buttons on Verify Hours (time cards) and Projects (job information) (OAuth Client Credentials grant; requires a Developer Managed Service Account -- see `procore-sync/README.md`). Without these, only CSV import is available. |
 | `PROCORE_COMPANY_ID` | `4293208` (sandbox) | Which Procore company to sync from |
 | `PROCORE_OAUTH_BASE_URL` / `PROCORE_API_BASE_URL` | sandbox hosts | Override to point at Procore production once ready |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | off | Email notifications (e.g. `smtp.office365.com` / `587` / the sending mailbox / its password). Without `SMTP_HOST`, requests show in-app only |
-| `MAIL_FROM` | `SMTP_USER` | From address, e.g. `Fager-McGee Workforce <workforce@fager-mcgee.com>` |
+| `MS_TENANT_ID` / `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | off | Email through Microsoft 365 (Microsoft Graph): an Entra app registration with the **Mail.Send** application permission, limited to the sending mailbox. Takes priority over SMTP |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | off | Email through any SMTP account (e.g. SendGrid). Without Microsoft 365 or SMTP set, requests show in-app only |
+| `MAIL_FROM` | `SMTP_USER` | From address, e.g. `Fager-McGee Workforce <workforce@fager-mcgee.com>` (required for Microsoft 365: the sending mailbox) |
 | `APP_URL` | request host | The app's address, used for the link in each email |
 
 ## Upgrading
@@ -93,7 +94,7 @@ server/
   index.js    startup + first-run admin
   app.js      API routes (auth, schedule, verification, records, payroll, admin)
   db.js       SQLite schema
-  notify.js   email notifications (SMTP)
+  notify.js   email notifications (Microsoft 365 / Graph, or SMTP)
   holidays.js union holidays (observed dates)
   payroll.js  OT and cost math
   seed.js     demo data
