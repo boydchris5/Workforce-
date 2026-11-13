@@ -1964,10 +1964,10 @@ function createApp(db, opts = {}) {
 
   // Email status (is SMTP set up in the server's environment?) and a test message.
   api.get('/notify/status', adminOnly, (_req, res) => {
-    res.json({ configured: notifier.configured, from: notifier.from, recipients: managerEmails.all().map((r) => r.email) });
+    res.json({ configured: notifier.configured, method: notifier.method || null, from: notifier.from, recipients: managerEmails.all().map((r) => r.email) });
   });
   api.post('/notify/test', adminOnly, async (req, res) => {
-    if (!notifier.configured) throw bad('Email is not set up yet. Add SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and MAIL_FROM in Render → Environment.');
+    if (!notifier.configured) throw bad('Email is not set up yet. Add MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET and MAIL_FROM (Microsoft 365) in Render → Environment.');
     const me = db.prepare('SELECT email FROM users WHERE id = ?').get(req.user.id);
     if (!me.email) throw bad('Add your email address to your user first (Admin → Users).');
     const { text, html } = renderEmail({ heading: 'Test email from the Workforce app', lines: ['Email notifications are working.'], link: appUrl(req, '#/admin') });
