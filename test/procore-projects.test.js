@@ -138,3 +138,20 @@ test('Procore names with the company in parentheses and nicknames still match em
   assert.equal(p.superintendent_employee_id, rob);
   assert.equal(p.project_manager_employee_id, mat);
 });
+
+test('only the ticked jobs are brought in', async () => {
+  const boss = await login('boss');
+  PROCORE_PROJECTS.push({ id: 20, project_number: 'P-1', name: 'Pick Me', active: true, project_stage: { name: 'Course of Construction' } });
+  PROCORE_PROJECTS.push({ id: 21, project_number: 'P-2', name: 'Leave Me', active: true, project_stage: { name: 'Course of Construction' } });
+  const prev = (await boss('POST', '/projects/procore-sync', {})).body;
+  assert.equal(prev.results.find((x) => x.job_number === 'P-1').action, 'create');
+  assert.equal(prev.results.find((x) => x.job_number === 'P-2').action, 'create');
+  assert.equal((await boss('POST', '/projects/procore-sync', { commit: true, jobs: [] })).status, 400); // nothing ticked
+  const done = (await boss('POST', '/projects/procore-sync', { commit: true, jobs: ['p-1'] })).body;
+  assert.deepEqual(done.applied, { create: 1, update: 0 });
+  const all = (await boss('GET', '/projects?all=1')).body;
+  assert.ok(all.some((p) => p.job_number === 'P-1'));
+  assert.ok(!all.some((p) => p.job_number === 'P-2'));
+  // P-2 is still offered next time.
+  assert.equal((await boss('POST', '/projects/procore-sync', {})).body.results.find((x) => x.job_number === 'P-2').action, 'create');
+});

@@ -1733,7 +1733,17 @@ async function procoreProjectsModal(page) {
   try { r = await api('POST', '/projects/procore-sync', {}); } catch (e) { $('.mb', m.el).innerHTML = `<div class="alert bad">${esc(e.message)}</div>`; return; }
   const fmt = (v) => esc(v === null || v === undefined || v === '' ? '—' : String(v));
   const rows = [...r.results].sort((a, b) => ['create', 'update', 'same', 'skip'].indexOf(a.action) - ['create', 'update', 'same', 'skip'].indexOf(b.action) || a.job_number.localeCompare(b.job_number));
+  // Only the ticked jobs are brought in. Nothing is ticked to start.
+  const pickable = (x) => x.action === 'create' || x.action === 'update';
+  const picked = new Set();
+  let showAllNow = false;
+  const updateApply = () => {
+    const ap = $('[data-act=apply]', m.el); if (!ap) return;
+    ap.disabled = !picked.size;
+    ap.textContent = picked.size ? `Bring in ${picked.size} selected project${picked.size === 1 ? '' : 's'}` : 'Tick the projects to bring in';
+  };
   const draw = (showAll) => {
+    showAllNow = showAll;
     const list = showAll ? rows : rows.filter((x) => x.action === 'create' || x.action === 'update');
     $('.mb', m.el).innerHTML = `
       <div class="stats">
@@ -1746,24 +1756,35 @@ async function procoreProjectsModal(page) {
         <div class="muted" style="margin:6px 0">If a job number isn't listed here, Procore isn't sharing it with the app. In Procore go to Company Admin → App Management → the Workforce app → Permissions, and give it access to that project (or all projects). New projects may need to be added there.</div>
         <div>${(r.procore_jobs || []).map(esc).join(', ') || '—'}</div></details>` : ''}
       <div class="small muted">Procore wins for name, address, status, dates, project manager and superintendent. Blank Procore fields never erase anything. Budget hours, starting hours, change orders, color and notes are not touched. Bidding and Pre-Construction projects are skipped.</div>
-      <label class="check"><input type="checkbox" data-f="all" ${showAll ? 'checked' : ''}> Show unchanged and skipped projects too</label>
-      <div class="table-wrap" style="max-height:440px"><table class="list"><thead><tr><th></th><th>Job #</th><th>Project</th><th>Procore stage</th><th>Changes</th></tr></thead>
-      <tbody>${list.map((x) => `<tr><td><span class="pill ${ACT[x.action][1]}">${ACT[x.action][0]}</span></td><td class="nowrap">${esc(x.job_number)}</td><td>${esc(x.name)}</td><td class="small">${esc(x.stage || '')}</td>
+      <div class="toolbar" style="margin:6px 0"><label class="check" style="margin:0"><input type="checkbox" data-f="all" ${showAll ? 'checked' : ''}> Show unchanged and skipped projects too</label>
+        <span class="spacer"></span>${rows.some(pickable) ? '<button data-act="pick-all">Select all new &amp; changed</button><button data-act="pick-none">Clear</button>' : ''}</div>
+      <div class="table-wrap" style="max-height:440px"><table class="list"><thead><tr><th style="width:34px"></th><th></th><th>Job #</th><th>Project</th><th>Procore stage</th><th>Changes</th></tr></thead>
+      <tbody>${list.map((x) => `<tr class="${pickable(x) ? 'click' : ''}" ${pickable(x) ? `data-pick="${esc(x.job_number)}"` : ''}><td>${pickable(x) ? `<input type="checkbox" aria-label="Bring in ${esc(x.job_number)}" ${picked.has(x.job_number) ? 'checked' : ''}>` : ''}</td>
+        <td><span class="pill ${ACT[x.action][1]}">${ACT[x.action][0]}</span></td><td class="nowrap">${esc(x.job_number)}</td><td>${esc(x.name)}</td><td class="small">${esc(x.stage || '')}</td>
         <td class="small">${(x.changes || []).map((c) => `<div><b>${esc(c.field)}:</b> ${x.action === 'create' ? fmt(c.to) : `${fmt(c.from)} → ${fmt(c.to)}`}</div>`).join('')}${x.reason ? `<div class="muted">${esc(x.reason)}</div>` : ''}</td></tr>`).join('')
-        || '<tr><td colspan="5" class="muted">Everything already matches Procore.</td></tr>'}</tbody></table></div>`;
+        || '<tr><td colspan="6" class="muted">Everything already matches Procore.</td></tr>'}</tbody></table></div>`;
     $('[data-f=all]', m.el).onchange = (ev) => draw(ev.target.checked);
+    $$('tr[data-pick]', m.el).forEach((tr) => (tr.onclick = (ev) => {
+      const job = tr.dataset.pick; const box = $('input', tr);
+      if (ev.target !== box) box.checked = !box.checked;
+      if (box.checked) picked.add(job); else picked.delete(job);
+      updateApply();
+    }));
+    const pa = $('[data-act=pick-all]', m.el); if (pa) pa.onclick = () => { rows.filter(pickable).forEach((x) => picked.add(x.job_number)); draw(showAllNow); updateApply(); };
+    const pn = $('[data-act=pick-none]', m.el); if (pn) pn.onclick = () => { picked.clear(); draw(showAllNow); updateApply(); };
   };
   draw(false);
   const n = r.summary.create + r.summary.update;
-  $('.mf', m.el).innerHTML = `<button data-close>Cancel</button>${n ? `<button class="primary" data-act="apply">Apply ${n} change${n === 1 ? '' : 's'}</button>` : ''}`;
+  $('.mf', m.el).innerHTML = `<button data-close>Cancel</button>${n ? '<button class="primary" data-act="apply" disabled>Tick the projects to bring in</button>' : ''}`;
   $$('[data-close]', m.el).forEach((b) => (b.onclick = m.close));
   const ap = $('[data-act=apply]', m.el);
   if (ap) ap.onclick = async () => {
+    if (!picked.size) return;
     ap.disabled = true; ap.textContent = 'Applying…';
     try {
-      const done = await api('POST', '/projects/procore-sync', { commit: true });
-      m.close(); toast(`Procore sync: ${done.summary.create} added, ${done.summary.update} updated`); renderProjects(page);
-    } catch (e) { ap.disabled = false; ap.textContent = 'Apply'; toast(e.message, true); }
+      const done = await api('POST', '/projects/procore-sync', { commit: true, jobs: [...picked] });
+      m.close(); toast(`Procore sync: ${done.applied.create} added, ${done.applied.update} updated`); renderProjects(page);
+    } catch (e) { updateApply(); toast(e.message, true); }
   };
 }
 

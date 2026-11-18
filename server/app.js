@@ -657,9 +657,15 @@ function createApp(db, opts = {}) {
     }
     const summary = { create: 0, update: 0, same: 0, skip: 0 };
     for (const x of results) summary[x.action] += 1;
+    // Apply only the jobs ticked in the preview (`jobs`: job numbers). Without a list, nothing is
+    // left out (older clients / tests).
+    const picked = Array.isArray(req.body.jobs) ? new Set(req.body.jobs.map((j) => String(j).trim().toLowerCase())) : null;
+    const chosen = results.filter((x) => (x.action === 'create' || x.action === 'update') && (!picked || picked.has(x.job_number.toLowerCase())));
+    if (commit && picked && !chosen.length) throw bad('Tick at least one project to bring in.');
+    const applied = { create: chosen.filter((x) => x.action === 'create').length, update: chosen.filter((x) => x.action === 'update').length };
     if (commit) {
       tx(db, () => {
-        for (const x of results) {
+        for (const x of chosen) {
           if (x.action === 'create') {
             const cols = Object.keys(x.rec);
             db.prepare(`INSERT INTO projects (job_number, ${cols.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`).run(x.job_number, ...cols.map((c) => x.rec[c]));
@@ -669,10 +675,10 @@ function createApp(db, opts = {}) {
           }
         }
       });
-      audit(req, 'procore_sync', 'project', null, { ...summary, changes: results.filter((x) => x.action === 'update' || x.action === 'create').map((x) => ({ job: x.job_number, changes: x.changes.map((c) => c.field) })) });
+      audit(req, 'procore_sync', 'project', null, { ...applied, changes: chosen.map((x) => ({ job: x.job_number, changes: x.changes.map((c) => c.field) })) });
     }
     res.json({
-      committed: commit, summary,
+      committed: commit, summary, applied: commit ? applied : undefined,
       // What Procore actually sent, so a job that never shows up can be told apart from one that was skipped.
       procore_count: pulled.projects.length,
       procore_jobs: pulled.projects.map((p) => p.job_number).filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
