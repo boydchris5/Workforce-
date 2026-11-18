@@ -761,7 +761,13 @@ function assignModal(pre) {
     modal({ title: 'Request crew', body: `<div class="alert">${S.user.employee_id ? `You are not the ${S.user.is_pm ? 'project manager' : 'superintendent'} on any active project yet.` : 'Your login is not linked to your employee record.'} Ask the workforce manager to ${S.user.employee_id ? `set you as ${S.user.is_pm ? 'project manager' : 'superintendent'} on your projects` : 'link your login'} so you can request crew.</div>`, footer: '<button data-close>Close</button>' });
     return;
   }
-  const preDates = new Set(pre.dates || [todayStr() >= d.start && todayStr() <= d.end ? todayStr() : d.days[0]]);
+  // Days picked can span several weeks: ‹ › moves the week shown without closing the window.
+  const picked = new Set(pre.dates || [todayStr() >= d.start && todayStr() <= d.end ? todayStr() : d.days[0]]);
+  const weeks = new Map([[d.start, d]]); // schedule data per week shown so far
+  let wk = d;
+  const holOn = (day) => { for (const w of weeks.values()) if (w.holidays?.[day]) return w.holidays[day]; return null; };
+  const dowOf = (day) => DOW[(new Date(day + 'T00:00:00Z').getUTCDay() + 6) % 7];
+  const dayShort = (day) => `${dowOf(day)} ${day.slice(5).replace('-', '/')}`;
   const preEmp = new Set(pre.employee_ids || []);
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
   const skills = [...new Set(S.crew.flatMap((e) => e.skills.map((s) => s.name)))].sort();
@@ -789,8 +795,7 @@ function assignModal(pre) {
         <label>Project<select name="project_id">${projects.map((p) => opt(p.id, `${p.job_number} – ${p.name}`, defProject)).join('')}</select></label>
         <label>Total hours scheduled per day<input name="planned_hours" type="number" step="0.5" min="0" max="24" value="${defHours}"></label>
       </div>
-      <div><div class="small muted" style="margin-bottom:4px">Days <button class="link" data-days="wk">Mon–Fri</button><button class="link" data-days="none">clear</button></div>
-        <div class="days-pick">${d.days.map((day, i) => `<label class="${holidayOn(day) ? 'holiday' : ''}" title="${esc(holidayOn(day) ? `${holidayOn(day)} – union holiday` : '')}"><input type="checkbox" name="dates" data-multi="1" value="${day}" ${preDates.has(day) ? 'checked' : ''}>${DOW[i]} ${day.slice(5).replace('-', '/')}${holidayOn(day) ? ' <span class="hol-mini">holiday</span>' : ''}</label>`).join('')}</div></div>
+      <div id="days-box"></div>
       <div class="trade-only grid2">
         <label>Trade needed<select name="trade">${tradeChoices().map((t) => opt(t, t)).join('')}</select></label>
         <label>How many people<input name="quantity" type="number" min="1" max="30" value="1"></label>
@@ -808,14 +813,48 @@ function assignModal(pre) {
     footer: `${isAdmin() ? '' : '<span class="small muted" style="margin-right:auto">Requests go to the workforce manager for approval.</span>'}<button data-close>Cancel</button><button class="primary" data-act="save">${isAdmin() ? 'Schedule' : 'Send request'}</button>`,
   });
 
-  // Per person per day: jobs already booked (a split day is allowed) or time off.
-  const booked = {}; const offMap = {};
-  for (const a of d.assignments) ((booked[a.employee_id] ||= {})[a.work_date] ||= []).push(a);
-  for (const o of d.time_off) (offMap[o.employee_id] ||= {})[o.off_date] = true;
+  // Per person per day: jobs already booked (a split day is allowed) or time off – across every week shown.
+  let booked = {}; let offMap = {};
+  const indexWeeks = () => {
+    booked = {}; offMap = {};
+    for (const w of weeks.values()) {
+      for (const a of w.assignments) ((booked[a.employee_id] ||= {})[a.work_date] ||= []).push(a);
+      for (const o of w.time_off) (offMap[o.employee_id] ||= {})[o.off_date] = true;
+    }
+  };
+  indexWeeks();
+
+  const drawDays = () => {
+    const otherWeeks = [...picked].filter((day) => day < wk.start || day > wk.end).sort();
+    const label = `${dayLabel(wk.start, { month: 'short', day: 'numeric' })} – ${dayLabel(wk.end, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    $('#days-box', m.el).innerHTML = `<div class="days-head small muted"><span>Days</span>
+        <button type="button" data-wk="-1" aria-label="Previous week">‹</button><b class="days-week">Week of ${esc(label)}</b><button type="button" data-wk="1" aria-label="Next week">›</button>
+        <button type="button" class="link" data-days="wk">Mon–Fri</button><button type="button" class="link" data-days="none">clear week</button>
+        ${picked.size ? `<button type="button" class="link" data-days="all-none">clear all (${picked.size})</button>` : ''}</div>
+      <div class="days-pick">${wk.days.map((day) => `<label class="${holOn(day) ? 'holiday' : ''}" title="${esc(holOn(day) ? `${holOn(day)} – union holiday` : '')}"><input type="checkbox" name="dates" value="${day}" ${picked.has(day) ? 'checked' : ''}>${dayShort(day)}${holOn(day) ? ' <span class="hol-mini">holiday</span>' : ''}</label>`).join('')}</div>
+      ${otherWeeks.length ? `<div class="small muted" style="margin-top:4px">Also picked in other weeks: ${otherWeeks.map((day) => `<span class="pill">${esc(dayShort(day))} <button type="button" class="link" data-unpick="${day}" aria-label="Remove ${day}">✕</button></span>`).join(' ')}</div>` : ''}`;
+    $$('[name=dates]', m.el).forEach((x) => (x.onchange = () => { if (x.checked) picked.add(x.value); else picked.delete(x.value); drawDays(); drawList(); }));
+    $$('[data-days]', m.el).forEach((b) => (b.onclick = (e) => {
+      e.preventDefault();
+      if (b.dataset.days === 'all-none') picked.clear();
+      else wk.days.forEach((day, i) => { if (b.dataset.days === 'wk' && i < 5 && !holOn(day)) picked.add(day); else picked.delete(day); });
+      drawDays(); drawList();
+    }));
+    $$('[data-unpick]', m.el).forEach((b) => (b.onclick = () => { picked.delete(b.dataset.unpick); drawDays(); drawList(); }));
+    $$('[data-wk]', m.el).forEach((b) => (b.onclick = async () => {
+      const start = addDays(wk.start, 7 * Number(b.dataset.wk));
+      if (!weeks.has(start)) {
+        $$('[data-wk]', m.el).forEach((x) => (x.disabled = true));
+        try { weeks.set(start, await api('GET', `/schedule?start=${start}`)); } catch (err) { toast(err.message, true); drawDays(); return; }
+        indexWeeks();
+      }
+      wk = weeks.get(start); drawDays(); drawList();
+    }));
+  };
 
   const drawList = () => {
     const f = Object.fromEntries($$('[data-f]', m.el).map((x) => [x.dataset.f, x.type === 'checkbox' ? x.checked : x.value.toLowerCase()]));
-    const dates = $$('[name=dates]:checked', m.el).map((x) => x.value);
+    const dates = [...picked].sort();
     const checked = new Set($$('#emp-pick input:checked', m.el).map((x) => Number(x.value)));
     for (const id of preEmp) checked.add(id);
     preEmp.clear();
@@ -826,14 +865,14 @@ function assignModal(pre) {
       (!f.skill || e.skills.some((s) => s.name.toLowerCase() === f.skill)));
     const pid = Number($('[name=project_id]', m.el).value);
     const html = rows.map((e) => {
-      const dow = (day) => DOW[d.days.indexOf(day)];
+      const dow = (day) => (day >= wk.start && day <= wk.end ? dowOf(day) : dayShort(day));
       // Blocked: off that day, or already on this same job that day.
       const blocked = dates.filter((day) => offMap[e.id]?.[day] || (booked[e.id]?.[day] || []).some((a) => a.project_id === pid));
       const elsewhere = dates.filter((day) => !blocked.includes(day) && booked[e.id]?.[day]);
       const allBlocked = dates.length > 0 && blocked.length === dates.length;
       const anyBooked = dates.length > 0 && dates.every((day) => blocked.includes(day) || elsewhere.includes(day));
       if (f.availOnly && anyBooked && !checked.has(e.id)) return '';
-      const wk = d.totals.by_employee[e.id] || 0;
+      const wkHrs = wk.totals.by_employee[e.id] || 0;
       const dayTotal = (day) => (booked[e.id]?.[day] || []).reduce((sum, a) => sum + a.planned_hours, 0) + hrs;
       const tags = [
         ...blocked.map((day) => `<span class="pill bad">${dow(day)}: ${offMap[e.id]?.[day] ? 'OFF' : 'already on this job'}</span>`),
@@ -841,7 +880,7 @@ function assignModal(pre) {
       ].join(' ');
       return `<label class="${allBlocked ? 'busy' : ''}"><input type="checkbox" value="${e.id}" ${checked.has(e.id) && !allBlocked ? 'checked' : ''} ${allBlocked ? 'disabled' : ''}>
         <span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc([e.trade, e.classification, e.union_local && 'Local ' + e.union_local].filter(Boolean).join(' · '))}</span></span>
-        <span class="meta">${tags ? tags + '<br>' : ''}${fmtH(wk)} h this wk</span></label>`;
+        <span class="meta">${tags ? tags + '<br>' : ''}${fmtH(wkHrs)} h ${wk === d ? 'this wk' : `wk of ${wk.start.slice(5).replace('-', '/')}`}</span></label>`;
     }).join('');
     $('#emp-pick', m.el).innerHTML = html || `<div class="muted" style="padding:12px">${f.availOnly && dates.length ? 'Everyone matching is already booked or off on the selected day(s). Uncheck “Open only” to add someone for a split day.' : 'No matching employees.'}</div>`;
     const n = $$('#emp-pick input:checked', m.el).length;
@@ -851,12 +890,7 @@ function assignModal(pre) {
   $$('[data-f]', m.el).forEach((x) => (x.oninput = drawList));
   $('[name=project_id]', m.el).onchange = drawList;
   $('[name=planned_hours]', m.el).oninput = drawList;
-  $$('[name=dates]', m.el).forEach((x) => (x.onchange = drawList));
-  $$('[data-days]', m.el).forEach((b) => (b.onclick = (e) => {
-    e.preventDefault();
-    $$('[name=dates]', m.el).forEach((x, i) => (x.checked = b.dataset.days === 'wk' && i < 5 && !holidayOn(x.value)));
-    drawList();
-  }));
+  drawDays();
   drawList();
 
   // Trade requests vs. naming specific people.
@@ -870,7 +904,8 @@ function assignModal(pre) {
   setMode(mode);
 
   $('[data-act=save]', m.el).onclick = async () => {
-    const f = formData(m.el);
+    const f = { ...formData(m.el), dates: [...picked].sort() };
+    if (!f.dates.length) return errorBox(m.el, 'Pick at least one day.');
     if (mode === 'trade') {
       try {
         const r = await api('POST', '/crew-requests', { project_id: Number(f.project_id), trade: f.trade, quantity: f.quantity, dates: f.dates, planned_hours: f.planned_hours, task: f.task });
