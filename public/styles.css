@@ -380,3 +380,8 @@ table.verify-emp tr.total td { border-top: 2px solid var(--line); }
 /* Time Off calendar: approvers click an entry to edit or delete it */
 .cal-chip.clickable { cursor: pointer; }
 .cal-chip.clickable:hover { outline: 1px solid var(--line); }
+
+/* Schedule crew window: week arrows for the days */
+.days-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.days-head [data-wk] { min-width: 34px; padding: 2px 8px; }
+.days-week { color: var(--text); }
