@@ -170,6 +170,8 @@ const canEditProject = (pid) => {
 };
 const myProjects = () => (S.projects || []).filter((p) => p.status !== 'complete' && canEditProject(p.id));
 const isAdmin = () => S.user && S.user.role === 'admin';
+// Procore project sync / spreadsheet import: Workforce Manager and project managers.
+const canSyncProjects = () => isAdmin() || !!(S.user && S.user.is_pm);
 // Time-off reasons. Which ones count against the yearly balance is set in Admin → Settings.
 // Time-off types offered per employee type (from the server; PTO/Vacation use allowance hours).
 const reasonsFor = (e) => (S.reasons || {})[e?.employee_type] || (S.reasons || {}).union || ['Vacation', 'Other'];
@@ -1686,7 +1688,7 @@ async function renderProjects(page) {
     <div class="toolbar"><h1 style="margin:0">Projects</h1><span class="spacer"></span>
       <select data-act="pm"><option value="">All project managers</option>${pms.map(([id, n]) => opt(id, n, filterPm)).join('')}</select>
       <label class="check"><input type="checkbox" data-act="all" ${showAll ? 'checked' : ''}> Show completed</label>
-      ${isAdmin() ? '<button data-act="procore-projects">Sync from Procore…</button><button data-act="import">Import from spreadsheet…</button>' : ''}
+      ${canSyncProjects() ? '<button data-act="procore-projects">Sync from Procore…</button><button data-act="import">Import from spreadsheet…</button>' : ''}
       ${canSchedule() ? '<button class="primary" data-act="new">+ New project</button>' : ''}</div>
     <div class="table-wrap"><table class="list sortable">
       <thead><tr>${cols.map(([k, l, cls]) => `<th class="${cls || ''}"><button class="sort-h ${sort.key === k ? 'on' : ''}" data-sort="${k}" aria-label="Sort by ${esc(l)}">${esc(l)}${sort.key === k ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</button></th>`).join('')}</tr></thead>
@@ -2645,7 +2647,7 @@ async function adminUsers(el) {
   const [users, emps] = await Promise.all([api('GET', '/users'), api('GET', '/employees')]);
   const roleName = { admin: 'Workforce Manager (admin)', super: 'Superintendent', viewer: 'Field staff (view only)', office: 'Office Staff', office_admin: 'Office Manager' };
   const linkedName = (u) => { const e = emps.find((x) => x.id === u.employee_id); return e ? `${fullName(e)} (${TYPE_LABEL[e.employee_type] || ''})` : ''; };
-  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Project managers (an office login linked to an employee whose Type is Project Manager) can request crew on the jobs where they are the project manager; the Workforce Manager approves. The Office Manager and anyone with Payroll access (accounting) can also use Verify Hours and import time cards. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
+  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Project managers (an office login linked to an employee whose Type is Project Manager) can request crew on the jobs where they are the project manager (the Workforce Manager approves), add and edit projects, and sync projects from Procore. The Office Manager and anyone with Payroll access (accounting) can also use Verify Hours and import time cards. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
     <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Email</th><th>Payroll</th><th>Linked</th><th>Status</th></tr></thead>
     <tbody>${users.map((u) => `<tr class="click" data-id="${u.id}"><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(roleName[u.role])}</td>
       <td class="small">${esc(u.email || '')}${['admin', 'office_admin'].includes(u.role) && u.email && u.notify_requests ? ' <span title="Gets an email for each new request">📧</span>' : ''}${u.can_view_schedule ? ' <span class="pill">sees schedule</span>' : ''}</td>
