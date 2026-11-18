@@ -154,17 +154,19 @@ const S = {
   boardSort: store('wf_sort') || 'job',
   filterTrade: '',
 };
-const canSchedule = () => S.user && ['admin', 'super'].includes(S.user.role);
+// Schedule / request crew: Workforce Manager, superintendents and project managers (login linked to a PM).
+const canSchedule = () => S.user && !!S.user.can_schedule;
 // Verify Hours: also the Office Manager and accounting (logins with Payroll access).
 const canVerify = () => S.user && (['admin', 'super', 'office_admin'].includes(S.user.role) || !!S.user.can_view_payroll);
 const canTimecards = () => S.user && (['admin', 'office_admin'].includes(S.user.role) || !!S.user.can_view_payroll);
-// Manager edits any job; a superintendent edits only jobs where they are the listed superintendent.
+// Manager edits any job; superintendents and project managers request crew on jobs where they
+// are the listed superintendent or project manager.
 const canEditProject = (pid) => {
   if (!S.user) return false;
   if (S.user.role === 'admin') return true;
-  if (S.user.role !== 'super' || !S.user.employee_id) return false;
+  if (!S.user.can_schedule || !S.user.employee_id) return false;
   const p = (S.projects || []).find((x) => x.id === Number(pid)) || (S.sched?.projects || []).find((x) => x.id === Number(pid));
-  return !!p && p.superintendent_employee_id === S.user.employee_id;
+  return !!p && (p.superintendent_employee_id === S.user.employee_id || p.project_manager_employee_id === S.user.employee_id);
 };
 const myProjects = () => (S.projects || []).filter((p) => p.status !== 'complete' && canEditProject(p.id));
 const isAdmin = () => S.user && S.user.role === 'admin';
@@ -355,8 +357,8 @@ async function renderSchedule(page) {
       ${offPend ? `<div class="stat warn click" data-act="requests3"><div class="v">${offPend}</div><div class="l">Time-off requests</div></div>` : ''}
     </div>
     ${canSchedule() ? `<div class="legend small"><span class="chip mini approved">✓ Approved</span><span class="chip mini pending">Pending approval</span><span class="chip mini rejected">✕ Rejected</span><span class="chip mini verified">✓✓ Hours verified</span>
-      ${S.user.role === 'super' ? '<span class="muted">You can request crew on the jobs where you are the superintendent. The workforce manager approves them.</span>' : ''}</div>` : ''}
-    ${S.user.role === 'super' && appr.rejected + rejSlots ? `<div class="alert warn-box"><b>${appr.rejected + rejSlots} request${appr.rejected + rejSlots > 1 ? 's were' : ' was'} rejected this week.</b> Click a struck-through name, or <button class="link" data-act="requests2">see the reasons</button>.</div>` : ''}
+      ${canSchedule() && !isAdmin() ? `<span class="muted">You can request crew on the jobs where you are the ${S.user.is_pm ? 'project manager' : 'superintendent'}. The workforce manager approves them.</span>` : ''}</div>` : ''}
+    ${canSchedule() && !isAdmin() && appr.rejected + rejSlots ? `<div class="alert warn-box"><b>${appr.rejected + rejSlots} request${appr.rejected + rejSlots > 1 ? 's were' : ' was'} rejected this week.</b> Click a struck-through name, or <button class="link" data-act="requests2">see the reasons</button>.</div>` : ''}
     ${overDay.length ? `<div class="alert warn-box"><b>⚠ Over ${fmtH(t.warn_daily_hours || 8)} hours in a day:</b> ${overDay.slice(0, 12).map((o) => {
       const e = S.employees.find((x) => x.id === o.employee_id);
       return `${esc(e ? fullName(e) : 'Employee')} ${esc(DOW[data.days.indexOf(o.work_date)])} (${fmtH(o.hours)} h)`;
@@ -754,7 +756,7 @@ function assignModal(pre) {
   const d = S.sched;
   const projects = myProjects();
   if (!projects.length) {
-    modal({ title: 'Request crew', body: `<div class="alert">${S.user.employee_id ? 'You are not the superintendent on any active project yet.' : 'Your login is not linked to your employee record.'} Ask the workforce manager to ${S.user.employee_id ? 'set you as superintendent on your projects' : 'link your login'} so you can request crew.</div>`, footer: '<button data-close>Close</button>' });
+    modal({ title: 'Request crew', body: `<div class="alert">${S.user.employee_id ? `You are not the ${S.user.is_pm ? 'project manager' : 'superintendent'} on any active project yet.` : 'Your login is not linked to your employee record.'} Ask the workforce manager to ${S.user.employee_id ? `set you as ${S.user.is_pm ? 'project manager' : 'superintendent'} on your projects` : 'link your login'} so you can request crew.</div>`, footer: '<button data-close>Close</button>' });
     return;
   }
   const preDates = new Set(pre.dates || [todayStr() >= d.start && todayStr() <= d.end ? todayStr() : d.days[0]]);
@@ -2643,7 +2645,7 @@ async function adminUsers(el) {
   const [users, emps] = await Promise.all([api('GET', '/users'), api('GET', '/employees')]);
   const roleName = { admin: 'Workforce Manager (admin)', super: 'Superintendent', viewer: 'Field staff (view only)', office: 'Office Staff', office_admin: 'Office Manager' };
   const linkedName = (u) => { const e = emps.find((x) => x.id === u.employee_id); return e ? `${fullName(e)} (${TYPE_LABEL[e.employee_type] || ''})` : ''; };
-  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. The Office Manager and anyone with Payroll access (accounting) can also use Verify Hours and import time cards. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
+  el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Project managers (an office login linked to an employee whose Type is Project Manager) can request crew on the jobs where they are the project manager; the Workforce Manager approves. The Office Manager and anyone with Payroll access (accounting) can also use Verify Hours and import time cards. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
     <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Email</th><th>Payroll</th><th>Linked</th><th>Status</th></tr></thead>
     <tbody>${users.map((u) => `<tr class="click" data-id="${u.id}"><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(roleName[u.role])}</td>
       <td class="small">${esc(u.email || '')}${['admin', 'office_admin'].includes(u.role) && u.email && u.notify_requests ? ' <span title="Gets an email for each new request">📧</span>' : ''}${u.can_view_schedule ? ' <span class="pill">sees schedule</span>' : ''}</td>

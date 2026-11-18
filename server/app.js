@@ -63,7 +63,10 @@ function createApp(db, opts = {}) {
       .run(req.user ? req.user.id : null, action, entity, entityId ?? null, details ? JSON.stringify(details) : null);
 
   const api = express.Router();
-  const canSchedule = auth.requireRole('admin', 'super');
+  // Schedule / request crew: the Workforce Manager, superintendents, and project managers (a login
+  // linked to a Project Manager employee). Creating and editing projects stays with admin / superintendents.
+  const canSchedule = (req, res, next) => (req.user && req.user.can_schedule ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
+  const canEditProjects = auth.requireRole('admin', 'super');
   const adminOnly = auth.requireRole('admin');
   // Verify Hours: the Workforce Manager, superintendents, the Office Manager, and accounting
   // (any login with Payroll access). Importing / syncing time cards: everyone but superintendents.
@@ -75,7 +78,7 @@ function createApp(db, opts = {}) {
   const canEditPeople = auth.requireRole('admin', 'super', 'office_admin');
   // Everyone but the Workforce Manager and superintendents sees approved field work only
   // and can't edit it (field staff, and office logins allowed to view the schedule).
-  const viewOnly = (req) => !['admin', 'super'].includes(req.user.role);
+  const viewOnly = (req) => !req.user.can_schedule;
   const today = () => new Date().toISOString().slice(0, 10);
 
   // ---- email notifications -----------------------------------------------------
@@ -417,7 +420,7 @@ function createApp(db, opts = {}) {
 
   const uniqueMsg = (e, msg) => { if (/UNIQUE/.test(e.message)) throw bad(msg); throw e; };
 
-  api.post('/projects', canSchedule, (req, res) => {
+  api.post('/projects', canEditProjects, (req, res) => {
     const p = readProject(req.body);
     let r;
     try {
@@ -429,7 +432,7 @@ function createApp(db, opts = {}) {
     res.json({ id });
   });
 
-  api.put('/projects/:id', canSchedule, (req, res) => {
+  api.put('/projects/:id', canEditProjects, (req, res) => {
     const id = int(req.params.id);
     const p = readProject(req.body);
     let r;
@@ -680,7 +683,7 @@ function createApp(db, opts = {}) {
     res.json(db.prepare(`SELECT c.*, u.name AS created_by_name FROM project_change_orders c LEFT JOIN users u ON u.id = c.created_by
       WHERE c.project_id = ? ORDER BY COALESCE(c.co_date, c.created_at), c.id`).all(int(req.params.id)));
   });
-  api.post('/projects/:id/change-orders', canSchedule, (req, res) => {
+  api.post('/projects/:id/change-orders', canEditProjects, (req, res) => {
     const pid = int(req.params.id);
     assertCanEdit(req, pid);
     const h = num(req.body.hours);
@@ -690,7 +693,7 @@ function createApp(db, opts = {}) {
     audit(req, 'create', 'change_order', pid, { co_number: str(req.body.co_number, 50), hours: h });
     res.json({ id: Number(r.lastInsertRowid) });
   });
-  api.delete('/change-orders/:id', canSchedule, (req, res) => {
+  api.delete('/change-orders/:id', canEditProjects, (req, res) => {
     const c = db.prepare('SELECT * FROM project_change_orders WHERE id = ?').get(int(req.params.id));
     if (!c) throw new HttpError(404, 'Change order not found.');
     assertCanEdit(req, c.project_id);
@@ -715,14 +718,16 @@ function createApp(db, opts = {}) {
   // (pending); the workforce manager (admin) approves or rejects with a reason.
   // Admin-entered work is approved immediately. Rejected rows stay for the
   // record but never count as booked, scheduled, or paid.
-  const projectRow = db.prepare('SELECT id, job_number, name, superintendent_employee_id FROM projects WHERE id = ?');
+  const projectRow = db.prepare('SELECT id, job_number, name, superintendent_employee_id, project_manager_employee_id FROM projects WHERE id = ?');
+  // Superintendents and project managers request crew on jobs where they are the listed
+  // superintendent or project manager.
   function assertCanEdit(req, projectId) {
     if (req.user.role === 'admin') return;
     const p = projectRow.get(projectId);
     if (!p) throw bad('Project not found.');
     if (!req.user.employee_id) throw new HttpError(403, 'Your login is not linked to an employee record, so you have no projects to request crew for. Ask the workforce manager.');
-    if (p.superintendent_employee_id !== req.user.employee_id) {
-      throw new HttpError(403, `You can only request crew on your own projects. ${p.job_number} is run by another superintendent.`);
+    if (p.superintendent_employee_id !== req.user.employee_id && p.project_manager_employee_id !== req.user.employee_id) {
+      throw new HttpError(403, `You can only request crew on your own projects. You are not the superintendent or project manager on ${p.job_number}.`);
     }
   }
   const approvalFor = (req) => (req.user.role === 'admin'
@@ -931,7 +936,7 @@ function createApp(db, opts = {}) {
     const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
     if (!cur) throw new HttpError(404, 'Assignment not found.');
     // The Office Manager / accounting only remove time card entries on Verify Hours, never schedule entries.
-    if (['admin', 'super'].includes(req.user.role)) assertCanEdit(req, cur.project_id);
+    if (req.user.can_schedule) assertCanEdit(req, cur.project_id);
     else if (cur.source !== 'timecard') throw new HttpError(403, 'Only the Workforce Manager or a superintendent can remove scheduled work.');
     // If this person filled a trade request, the request goes back to open.
     db.prepare("UPDATE crew_request_slots SET status = 'open', assignment_id = NULL, decided_by = NULL, decided_at = NULL WHERE assignment_id = ?").run(id);
@@ -974,8 +979,8 @@ function createApp(db, opts = {}) {
   // ---- approvals -------------------------------------------------------------------
   // Pending requests (manager: all; superintendent: own projects) plus recent rejections.
   api.get('/requests', canSchedule, (req, res) => {
-    const mine = req.user.role === 'admin' ? '' : 'AND p.superintendent_employee_id = ?';
-    const args = req.user.role === 'admin' ? [] : [req.user.employee_id ?? -1];
+    const mine = req.user.role === 'admin' ? '' : 'AND (p.superintendent_employee_id = ? OR p.project_manager_employee_id = ?)';
+    const args = req.user.role === 'admin' ? [] : [req.user.employee_id ?? -1, req.user.employee_id ?? -1];
     const since = addDays(new Date().toISOString().slice(0, 10), -14);
     res.json({
       pending: db.prepare(`${assignmentSelect} WHERE a.approval_status = 'pending' ${mine} ORDER BY a.work_date, p.job_number, e.last_name`).all(...args),

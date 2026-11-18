@@ -62,3 +62,32 @@ test('approve, reject and fill: one email per superintendent; none for the manag
   await flush();
   assert.equal(sent.filter((m) => /Crew request update/.test(m.subject)).length, 0);
 });
+
+test('project managers request crew on their own jobs (pending approval) and hear back', async () => {
+  const boss = await login('boss');
+  const pmE = (await boss('POST', '/employees', { first_name: 'Pat', last_name: 'Planner', employee_type: 'project_manager', email: 'pat@example.com' })).body.id;
+  const worker = (await boss('POST', '/employees', { first_name: 'Dee', last_name: 'Delta', trade: 'Laborer' })).body.id;
+  assert.equal((await boss('POST', '/users', { username: 'pat', name: 'Pat Planner', role: 'office', employee_id: pmE, password: 'password1' })).status, 200);
+  const mine = (await boss('POST', '/projects', { job_number: 'PM-1', name: 'PM Job', project_manager_employee_id: pmE })).body.id;
+  const other = (await boss('POST', '/projects', { job_number: 'PM-2', name: 'Someone Else' })).body.id;
+  const pat = await login('pat');
+  const me = (await pat('GET', '/me')).body.user;
+  assert.equal(me.can_schedule, true); assert.equal(me.is_pm, true);
+  const d = '2030-04-01';
+  const r = await pat('POST', '/assignments', { project_id: mine, employee_ids: [worker], dates: [d], planned_hours: 8 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal((await pat('POST', '/assignments', { project_id: other, employee_ids: [worker], dates: ['2030-04-02'], planned_hours: 8 })).status, 403);
+  assert.equal((await pat('POST', '/crew-requests', { project_id: mine, trade: 'Carpenter', quantity: 1, dates: [d] })).status, 200);
+  assert.equal((await pat('PUT', `/projects/${mine}`, { job_number: 'PM-1', name: 'Renamed' })).status, 403); // projects stay with managers
+  const reqs = (await pat('GET', '/requests')).body;
+  assert.equal(reqs.pending.length, 1); assert.equal(reqs.pending[0].approval_status, 'pending');
+  assert.equal(reqs.open_slots.length, 1);
+  sent.length = 0;
+  await boss('POST', '/assignments/approve', { ids: [reqs.pending[0].id] });
+  await flush();
+  assert.ok(sent.some((m) => m.to === 'pat@example.com' && /PM-1: 1 approved/.test(m.subject)));
+  // Other office logins still can't schedule.
+  assert.equal((await boss('POST', '/users', { username: 'ofc', name: 'Office Person', role: 'office', password: 'password1' })).status, 200);
+  const ofc = await login('ofc');
+  assert.equal((await ofc('POST', '/assignments', { project_id: mine, employee_ids: [worker], dates: ['2030-04-03'], planned_hours: 8 })).status, 403);
+});
