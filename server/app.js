@@ -64,9 +64,12 @@ function createApp(db, opts = {}) {
 
   const api = express.Router();
   // Schedule / request crew: the Workforce Manager, superintendents, and project managers (a login
-  // linked to a Project Manager employee). Creating and editing projects stays with admin / superintendents.
+  // linked to a Project Manager employee).
   const canSchedule = (req, res, next) => (req.user && req.user.can_schedule ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
-  const canEditProjects = auth.requireRole('admin', 'super');
+  // Add / edit projects and change orders: Workforce Manager, superintendents, project managers.
+  const canEditProjects = canSchedule;
+  // Procore project sync and spreadsheet import: Workforce Manager and project managers.
+  const canSyncProjects = (req, res, next) => (req.user && (req.user.role === 'admin' || req.user.is_pm) ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
   const adminOnly = auth.requireRole('admin');
   // Verify Hours: the Workforce Manager, superintendents, the Office Manager, and accounting
   // (any login with Payroll access). Importing / syncing time cards: everyone but superintendents.
@@ -530,7 +533,7 @@ function createApp(db, opts = {}) {
     return { id: null, missing: true };
   };
 
-  api.post('/projects/import', adminOnly, (req, res) => {
+  api.post('/projects/import', canSyncProjects, (req, res) => {
     const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
     if (!rows.length) throw bad('The file has no rows.');
     if (rows.length > 2000) throw bad('Import at most 2,000 projects at a time.');
@@ -599,7 +602,7 @@ function createApp(db, opts = {}) {
   // Budget hours, starting hours, change orders, color and notes stay app-only.
   // Bidding / Pre-Construction projects are skipped; inactive or closed-out projects are
   // only used to mark an existing app project Complete.
-  api.post('/projects/procore-sync', adminOnly, async (req, res) => {
+  api.post('/projects/procore-sync', canSyncProjects, async (req, res) => {
     if (!procore.configured()) throw bad('Procore is not set up on this server (PROCORE_CLIENT_ID / PROCORE_CLIENT_SECRET are not set in Render).');
     const commit = req.body.commit === true;
     const skipStage = (st) => /bidding|pre-?\s?construction/i.test(st || '');

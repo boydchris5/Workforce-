@@ -78,7 +78,13 @@ test('project managers request crew on their own jobs (pending approval) and hea
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal((await pat('POST', '/assignments', { project_id: other, employee_ids: [worker], dates: ['2030-04-02'], planned_hours: 8 })).status, 403);
   assert.equal((await pat('POST', '/crew-requests', { project_id: mine, trade: 'Carpenter', quantity: 1, dates: [d] })).status, 200);
-  assert.equal((await pat('PUT', `/projects/${mine}`, { job_number: 'PM-1', name: 'Renamed' })).status, 403); // projects stay with managers
+  // PMs add / edit projects and import them; deleting stays with the Workforce Manager.
+  assert.equal((await pat('PUT', `/projects/${mine}`, { job_number: 'PM-1', name: 'PM Job', project_manager_employee_id: pmE })).status, 200);
+  const added = await pat('POST', '/projects', { job_number: 'PM-3', name: 'New From PM', project_manager_employee_id: pmE });
+  assert.equal(added.status, 200);
+  assert.equal((await pat('DELETE', `/projects/${added.body.id}`)).status, 403);
+  assert.equal((await pat('POST', '/projects/import', { rows: [{ job_number: 'PM-4', name: 'Imported' }] })).status, 200);
+  assert.equal((await pat('POST', `/projects/${mine}/change-orders`, { co_number: '1', description: 'Extra', hours: 10 })).status, 200);
   const reqs = (await pat('GET', '/requests')).body;
   assert.equal(reqs.pending.length, 1); assert.equal(reqs.pending[0].approval_status, 'pending');
   assert.equal(reqs.open_slots.length, 1);
@@ -90,4 +96,6 @@ test('project managers request crew on their own jobs (pending approval) and hea
   assert.equal((await boss('POST', '/users', { username: 'ofc', name: 'Office Person', role: 'office', password: 'password1' })).status, 200);
   const ofc = await login('ofc');
   assert.equal((await ofc('POST', '/assignments', { project_id: mine, employee_ids: [worker], dates: ['2030-04-03'], planned_hours: 8 })).status, 403);
+  assert.equal((await ofc('POST', '/projects', { job_number: 'X-1', name: 'Nope' })).status, 403);
+  assert.equal((await ofc('POST', '/projects/import', { rows: [{ job_number: 'X-2', name: 'Nope' }] })).status, 403);
 });
