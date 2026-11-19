@@ -81,6 +81,7 @@ On first start with an empty database, an `admin` login is created. Its password
 | `PROCORE_OAUTH_BASE_URL` / `PROCORE_API_BASE_URL` | sandbox hosts | Override to point at Procore production once ready |
 | `MS_TENANT_ID` / `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | off | Email through Microsoft 365 (Microsoft Graph): an Entra app registration with the **Mail.Send** application permission, limited to the sending mailbox. Takes priority over SMTP |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | off | Email through any SMTP account (e.g. SendGrid). Without Microsoft 365 or SMTP set, requests show in-app only |
+| `TIMEOFF_FEED_TOKEN` | off | Turns on the read-only time-off feed `GET /api/feed/time-off` for outside dashboards (no login; send the token as `Authorization: Bearer …` or `?token=`). At least 16 characters. Optional `start`, `end`, `department=Estimating,Pre-Con`. Returns approved and pending days with name, department, type and hours only |
 | `MAIL_FROM` | `SMTP_USER` | From address, e.g. `Fager-McGee Workforce <workforce@fager-mcgee.com>` (required for Microsoft 365: the sending mailbox) |
 | `APP_URL` | request host | The app's address, used for the link in each email |
 
