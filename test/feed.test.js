@@ -56,7 +56,15 @@ test('approved and pending only, filtered by department, no notes or reasons', a
 
 test('MCP connector: token in the path, read-only get_time_off tool', async () => {
   const rpc = (tok, body) => fetch(`${base}/mcp/${tok}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) });
-  assert.equal((await rpc('wrong-token-wrong-token', { jsonrpc: '2.0', id: 1, method: 'ping' })).status, 401);
+  assert.equal((await rpc('wrong-token-wrong-token', { jsonrpc: '2.0', id: 1, method: 'ping' })).status, 404);
+  const root = `http://127.0.0.1:${server.address().port}`;
+  for (const u of ['/.well-known/oauth-protected-resource', '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource/api/mcp/x', '/register']) {
+    const r = await fetch(root + u, { method: u === '/register' ? 'POST' : 'GET' });
+    assert.equal(r.status, 404, u);
+    assert.match(r.headers.get('content-type'), /json/);
+  }
+  // Token also accepted as ?token= on /api/mcp.
+  assert.equal((await fetch(`${base}/mcp?token=${TOKEN}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'ping' }) })).status, 200);
   assert.equal((await fetch(`http://127.0.0.1:${off.address().port}/api/mcp/x`, { method: 'POST' })).status, 404);
   assert.equal((await fetch(`${base}/mcp/${TOKEN}`)).status, 405);
   const init = await (await rpc(TOKEN, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } })).json();
