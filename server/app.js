@@ -229,9 +229,14 @@ function createApp(db, opts = {}) {
       default: return fail(-32601, `Method not found: ${msg.method}`);
     }
   }
-  api.all('/mcp/:token', (req, res) => {
+  // Token may be the rest of the path (any characters, even "/"), ?token=, or a Bearer header.
+  // A wrong token answers 404, not 401: claude.ai reads 401 as "this connector uses OAuth"
+  // and then fails trying to register with a sign-in service this app doesn't have.
+  api.all(['/mcp', '/mcp/*rest'], (req, res) => {
     if (!feedOn()) throw new HttpError(404, feedOffMsg);
-    if (!tokenOk(req.params.token)) throw new HttpError(401, 'Wrong or missing feed token.');
+    const pathTok = Array.isArray(req.params.rest) ? req.params.rest.join('/') : req.params.rest;
+    const given = pathTok || req.query.token || (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    if (!tokenOk(given)) throw new HttpError(404, 'Wrong or missing feed token. Check the connector URL ends with the TIMEOFF_FEED_TOKEN value from Render.');
     if (req.method !== 'POST') { res.set('Allow', 'POST'); return res.status(405).json({ error: 'Use POST.' }); }
     const body = req.body;
     if (Array.isArray(body)) {
@@ -2182,6 +2187,10 @@ function createApp(db, opts = {}) {
   // Browsers must re-check the app's files on every load (a cheap 304 when
   // unchanged) so a new deploy shows up immediately instead of after a cache delay.
   const noCache = (res) => res.set('Cache-Control', 'no-cache');
+  // No OAuth here: answer discovery probes with 404 instead of the app's HTML page, so
+  // connector clients (claude.ai) treat /api/mcp/<token> as a no-sign-in server.
+  app.all(/^\/\.well-known\//, (_req, res) => res.status(404).json({ error: 'Not found.' }));
+  app.use('/register', (_req, res) => res.status(404).json({ error: 'Not found.' }));
   app.use(express.static(path.join(__dirname, '..', 'public'), { setHeaders: noCache }));
   app.get(/^\/(?!api\/).*/, (_req, res) => { noCache(res); res.sendFile(path.join(__dirname, '..', 'public', 'index.html')); });
 
