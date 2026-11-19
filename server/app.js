@@ -135,6 +135,44 @@ function createApp(db, opts = {}) {
     res.json({ ok: true });
   });
 
+  // ---- read-only time-off feed (no login; secret token) ----------------------------
+  // For dashboards outside the app (e.g. the Estimating calendar). Set TIMEOFF_FEED_TOKEN in
+  // Render; without it the feed is off. Sends names, department, dates, hours, type and status
+  // (approved / pending) only – never notes, rejection reasons or balances.
+  //   GET /api/feed/time-off?start=YYYY-MM-DD&end=YYYY-MM-DD&department=Estimating,Pre-Con
+  //   token: "Authorization: Bearer <token>" header, or ?token=<token>
+  const feedToken = opts.feedToken !== undefined ? opts.feedToken : process.env.TIMEOFF_FEED_TOKEN;
+  const feedCors = (res) => res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Cache-Control': 'no-store' });
+  api.options('/feed/time-off', (_req, res) => { feedCors(res); res.status(204).end(); });
+  api.get('/feed/time-off', (req, res) => {
+    feedCors(res);
+    if (!feedToken || String(feedToken).length < 16) throw new HttpError(404, 'The time-off feed is not turned on (set TIMEOFF_FEED_TOKEN in Render, at least 16 characters).');
+    const given = String((req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.query.token || '');
+    const a = Buffer.from(given); const b = Buffer.from(String(feedToken));
+    if (a.length !== b.length || !require('node:crypto').timingSafeEqual(a, b)) throw new HttpError(401, 'Wrong or missing feed token.');
+    const start = req.query.start ? date(req.query.start, 'start', true) : today();
+    const end = req.query.end ? date(req.query.end, 'end', true) : addDays(start, 90);
+    if (end < start) throw bad('end is before start.');
+    if (daysBetween(start, end) > 400) throw bad('Pick at most about a year (400 days).');
+    const depts = String(req.query.department || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const rows = db.prepare(`SELECT t.id, t.employee_id, t.off_date, t.reason, t.hours, t.status, t.batch, e.first_name, e.last_name, e.department, e.employee_type
+      FROM time_off t JOIN employees e ON e.id = t.employee_id
+      WHERE t.status IN ('approved', 'pending') AND t.off_date BETWEEN ? AND ? AND e.active = 1
+      ORDER BY e.last_name, e.first_name, t.off_date`).all(start, end)
+      .filter((r) => !depts.length || depts.includes(String(r.department || '').trim().toLowerCase()));
+    const requests = groupOff(rows).map((g) => ({
+      name: `${g.first_name} ${g.last_name}`, first_name: g.first_name, last_name: g.last_name, department: g.department || null,
+      type: g.reason || null, status: g.status, start_date: g.start_date, end_date: g.end_date, days: g.days, hours: g.hours,
+      dates: rows.filter((r) => g.ids.includes(r.id)).map((r) => r.off_date),
+    })).sort((x, y) => x.start_date.localeCompare(y.start_date) || x.name.localeCompare(y.name));
+    res.json({
+      generated_at: new Date().toISOString(), start, end, departments: depts.length ? depts : 'all',
+      requests,
+      days: rows.map((r) => ({ date: r.off_date, name: `${r.first_name} ${r.last_name}`, department: r.department || null, type: r.reason || null, hours: r.hours ?? 8, status: r.status })),
+      holidays: holidayMap(start, end),
+    });
+  });
+
   api.use(auth.requireAuth);
 
   api.get('/me', (req, res) => {
