@@ -146,9 +146,11 @@ function createApp(db, opts = {}) {
   api.options('/feed/time-off', (_req, res) => { feedCors(res); res.status(204).end(); });
   api.get('/feed/time-off', (req, res) => {
     feedCors(res);
-    if (!feedToken || String(feedToken).length < 16) throw new HttpError(404, 'The time-off feed is not turned on (set TIMEOFF_FEED_TOKEN in Render, at least 16 characters).');
-    const given = String((req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.query.token || '');
-    const a = Buffer.from(given); const b = Buffer.from(String(feedToken));
+    if (!feedToken || String(feedToken).trim().length < 16) throw new HttpError(404, 'The time-off feed is not turned on (set TIMEOFF_FEED_TOKEN in Render, at least 16 characters).');
+    // Forgive stray spaces / quotes around a pasted token (in Render or in the link).
+    const clean = (t) => String(t || '').trim().replace(/^["']+|["']+$/g, '').trim();
+    const given = clean((req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.query.token);
+    const a = Buffer.from(given); const b = Buffer.from(clean(feedToken));
     if (a.length !== b.length || !require('node:crypto').timingSafeEqual(a, b)) throw new HttpError(401, 'Wrong or missing feed token.');
     const start = req.query.start ? date(req.query.start, 'start', true) : today();
     const end = req.query.end ? date(req.query.end, 'end', true) : addDays(start, 90);

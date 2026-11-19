@@ -36,6 +36,8 @@ test('needs the token; off when no token is set', async () => {
   const r = await fetch(`${base}/feed/time-off?start=2030-06-01&end=2030-06-30`, { headers: { Authorization: `Bearer ${TOKEN}` } });
   assert.equal(r.status, 200);
   assert.equal(r.headers.get('access-control-allow-origin'), '*');
+  // Stray spaces / quotes around the token are forgiven.
+  assert.equal((await fetch(`${base}/feed/time-off?token=%20%22${TOKEN}%22%20`)).status, 200);
 });
 
 test('approved and pending only, filtered by department, no notes or reasons', async () => {
