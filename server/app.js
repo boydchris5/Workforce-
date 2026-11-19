@@ -515,14 +515,17 @@ function createApp(db, opts = {}) {
     const t = String(str(name, 200) || '').replace(/\s*\([^)]*\)\s*$/, '').replace(/[,\s]+(jr|sr|ii|iii|iv)\.?$/i, '').trim();
     if (!t) return { id: null, missing: false };
     const [first, last] = t.includes(',') ? t.split(',').map((x) => x.trim()).reverse() : [t.split(/\s+/).slice(0, -1).join(' '), t.split(/\s+/).slice(-1)[0]];
-    const exact = db.prepare('SELECT id FROM employees WHERE first_name = ? COLLATE NOCASE AND last_name = ? COLLATE NOCASE').get(first || '', last || '');
+    // Prefer an active record when an old, inactive duplicate has the same name.
+    const exact = db.prepare('SELECT id FROM employees WHERE first_name = ? COLLATE NOCASE AND last_name = ? COLLATE NOCASE ORDER BY active DESC, id DESC').get(first || '', last || '');
     if (exact) return { id: exact.id, missing: false };
     if (!last) return { id: null, missing: true };
-    const sameLast = db.prepare('SELECT id, first_name, employee_type, active FROM employees WHERE last_name = ? COLLATE NOCASE').all(last);
+    const sameLast = db.prepare('SELECT id, first_name, employee_type, active FROM employees WHERE last_name = ? COLLATE NOCASE ORDER BY active DESC, id DESC').all(last);
     // Nickname / middle name: "Bobby" = Robert, "Matt" = Matthew, "Robert J." = Robert.
     const firstWord = String(first || '').split(/\s+/)[0].replace(/\.$/, '').toLowerCase();
     const group = nickGroup(firstWord);
     const nick = sameLast.filter((e) => { const f = String(e.first_name || '').split(/\s+/)[0].toLowerCase(); return group.includes(f) || nickGroup(f).includes(firstWord); });
+    const nickActive = nick.filter((e) => e.active);
+    if (nickActive.length === 1) return { id: nickActive[0].id, missing: false };
     if (nick.length === 1) return { id: nick[0].id, missing: false };
     // Last resort: the only active person with that last name and the right Type.
     const types = KIND_TYPES[kind];

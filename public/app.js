@@ -1835,7 +1835,7 @@ function projectModal(p) {
   };
   const supers = pick(isSuperOrForeman, p.superintendent_employee_id);
   const pms = pick(isProjectManager, p.project_manager_employee_id);
-  const label = (e) => `${e.last_name}, ${e.first_name} – ${e.employee_type === 'union' ? (e.classification || 'Union') : TYPE_LABEL[e.employee_type] || ''}`;
+  const label = (e) => `${e.last_name}, ${e.first_name} – ${e.employee_type === 'union' ? (e.classification || 'Union') : TYPE_LABEL[e.employee_type] || ''}${e.active ? '' : ' (inactive – pick the active one)'}`;
   const m = modal({
     title: p.id ? `Edit ${p.job_number}` : 'New project',
     body: `<div class="grid2">

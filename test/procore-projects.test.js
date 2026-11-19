@@ -155,3 +155,18 @@ test('only the ticked jobs are brought in', async () => {
   // P-2 is still offered next time.
   assert.equal((await boss('POST', '/projects/procore-sync', {})).body.results.find((x) => x.job_number === 'P-2').action, 'create');
 });
+
+test('an inactive duplicate with the same name is never picked over the active employee', async () => {
+  const boss = await login('boss');
+  const oldId = (await boss('POST', '/employees', { first_name: 'Dup', last_name: 'Person', employee_type: 'superintendent' })).body.id;
+  const newId = (await boss('POST', '/employees', { first_name: 'Dup', last_name: 'Person', employee_type: 'superintendent' })).body.id;
+  conn.prepare('UPDATE employees SET active = 0 WHERE id = ?').run(oldId);
+  conn.prepare('UPDATE employees SET active = 1 WHERE id = ?').run(newId);
+  // Make the inactive one the "first" match by id order, as in real data.
+  assert.ok(oldId < newId);
+  PROCORE_PROJECTS.push({ id: 30, project_number: 'DUP-1', name: 'Dup Job', active: true, project_stage: { name: 'Course of Construction' } });
+  ROLES[30] = [{ role: 'Superintendent', name: 'Dup Person (Example Builders, Inc.)', is_active: true }];
+  await boss('POST', '/projects/procore-sync', { commit: true, jobs: ['DUP-1'] });
+  const p = (await boss('GET', '/projects?all=1')).body.find((x) => x.job_number === 'DUP-1');
+  assert.equal(p.superintendent_employee_id, newId);
+});
