@@ -9,6 +9,7 @@ const procore = require('./procore');
 const { createNotifier, renderEmail } = require('./notify');
 const { holidaysForYear, holidayMap } = require('./holidays');
 const leavePolicy = require('./leavepolicy');
+const { mountEstimating } = require('./estimating');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -2096,7 +2097,7 @@ function createApp(db, opts = {}) {
 
   // ---- users & settings (admin) -----------------------------------------------------
   api.get('/users', canSchedule, (req, res) => {
-    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at, u.email, u.notify_requests, u.can_view_schedule' : 'u.id, u.name, u.role';
+    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate' : 'u.id, u.name, u.role';
     res.json(db.prepare(`SELECT ${cols} FROM users u WHERE u.active = 1 OR ? ORDER BY u.name`).all(req.user.role === 'admin' ? 1 : 0));
   });
 
@@ -2108,6 +2109,7 @@ function createApp(db, opts = {}) {
       active: b.active === undefined ? 1 : bool(b.active),
       email: str(b.email, 200), notify_requests: b.notify_requests === undefined ? 1 : bool(b.notify_requests),
       can_view_schedule: bool(b.can_view_schedule),
+      can_estimate: bool(b.can_estimate),
     };
     if (!u.username || !u.name) throw bad('Username and name are required.');
     if (!USER_ROLES.includes(u.role)) throw bad('Invalid role.');
@@ -2121,8 +2123,8 @@ function createApp(db, opts = {}) {
     const { u, pw } = readUser(req.body, true);
     let r;
     try {
-      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, office_staff_id, active, email, notify_requests, can_view_schedule)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule);
+      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, office_staff_id, active, email, notify_requests, can_view_schedule, can_estimate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate);
     } catch (e) { uniqueMsg(e, 'That username is taken.'); }
     audit(req, 'create', 'user', Number(r.lastInsertRowid), { username: u.username, role: u.role });
     res.json({ id: Number(r.lastInsertRowid) });
@@ -2133,15 +2135,15 @@ function createApp(db, opts = {}) {
     const { u, pw } = readUser(req.body, false);
     if (id === req.user.id && (u.role !== 'admin' || !u.active)) throw bad('You cannot remove your own admin access.');
     try {
-      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, office_staff_id=?, active=?, email=?, notify_requests=?, can_view_schedule=? WHERE id=?`)
-        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule, id);
+      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, office_staff_id=?, active=?, email=?, notify_requests=?, can_view_schedule=?, can_estimate=? WHERE id=?`)
+        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate, id);
     } catch (e) { uniqueMsg(e, 'That username is taken.'); }
     if (pw) {
       db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(pw), id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
     }
     if (!u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
-    audit(req, 'update', 'user', id, { role: u.role, payroll: u.can_view_payroll, active: u.active, password_reset: !!pw });
+    audit(req, 'update', 'user', id, { role: u.role, payroll: u.can_view_payroll, estimating: u.can_estimate, active: u.active, password_reset: !!pw });
     res.json({ id });
   });
 
@@ -2180,6 +2182,9 @@ function createApp(db, opts = {}) {
     audit(req, 'backup', 'database', null);
     res.download(file, `workforce-backup-${new Date().toISOString().slice(0, 10)}.db`, () => require('node:fs').rm(file, { force: true }, () => {}));
   });
+
+  // ---- Estimating: possible bids, Go / No-Go scorecard ------------------------------
+  mountEstimating(api, db, { audit, bad, str, num, int, date, HttpError, adminOnly });
 
   app.use('/api', api);
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
