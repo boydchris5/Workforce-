@@ -183,8 +183,8 @@ const isOfficeRole = () => S.user && ['office', 'office_admin'].includes(S.user.
 // Office logins only see Time Off, unless allowed to view the field schedule (e.g. project managers).
 const seesField = () => !isOfficeRole() || !!S.user.can_view_schedule;
 const canEditPeople = () => canSchedule() || (S.user && S.user.role === 'office_admin');
-// Estimating (possible bids, Go / No-Go): the Workforce Manager and logins given Estimating access.
-const canEstimate = () => S.user && (S.user.role === 'admin' || !!S.user.can_estimate);
+// Estimating (the bid board, possible bids, Go / No-Go): office logins only, never field or superintendents.
+const canEstimate = () => S.user && ['admin', 'office', 'office_admin'].includes(S.user.role);
 const ROUTES = [
   { path: 'schedule', label: 'Schedule', render: renderSchedule, show: seesField },
   { path: 'my', label: 'My Schedule', render: renderMy, show: () => !isOfficeRole() && S.user.employee_id },
@@ -2709,7 +2709,7 @@ async function adminUsers(el) {
   el.innerHTML = `<div class="toolbar"><span class="muted small">Superintendents can schedule and verify hours. Project managers (an office login linked to an employee whose Type is Project Manager) can request crew on the jobs where they are the project manager (the Workforce Manager approves), add and edit projects, and sync projects from Procore. The Office Manager and anyone with Payroll access (accounting) can also use Verify Hours and import time cards. Field staff can view the schedule and their own assignments. Office Staff/Office Manager see Time Off (the Office Manager also adds employees); tick “Can view the field schedule” for office logins such as project managers (view only – the schedule opens on their own jobs). Link every login to the person's employee record so they can request time off and see their balance. Payroll access is granted separately.</span><span class="spacer"></span><button class="primary" data-act="new">+ New user</button></div>
     <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Email</th><th>Payroll</th><th>Linked</th><th>Status</th></tr></thead>
     <tbody>${users.map((u) => `<tr class="click" data-id="${u.id}"><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(roleName[u.role])}</td>
-      <td class="small">${esc(u.email || '')}${['admin', 'office_admin'].includes(u.role) && u.email && u.notify_requests ? ' <span title="Gets an email for each new request">📧</span>' : ''}${u.can_view_schedule ? ' <span class="pill">sees schedule</span>' : ''}${u.can_estimate ? ' <span class="pill">estimating</span>' : ''}</td>
+      <td class="small">${esc(u.email || '')}${['admin', 'office_admin'].includes(u.role) && u.email && u.notify_requests ? ' <span title="Gets an email for each new request">📧</span>' : ''}${u.can_view_schedule ? ' <span class="pill">sees schedule</span>' : ''}</td>
       <td>${u.role === 'admin' || u.can_view_payroll ? '<span class="pill warn">🔒 Yes</span>' : ''}</td>
       <td>${esc(linkedName(u))}</td>
       <td>${u.active ? '<span class="pill ok">active</span>' : '<span class="pill">disabled</span>'}</td></tr>`).join('')}</tbody></table></div>`;
@@ -2726,7 +2726,6 @@ async function adminUsers(el) {
         </div>
         <label class="check" data-link="office"><input type="checkbox" name="can_view_schedule" ${u.can_view_schedule ? 'checked' : ''}> Can view the field schedule, projects, employees and records (view only – e.g. project managers)</label>
         <label class="check"><input type="checkbox" name="notify_requests" ${u.notify_requests !== 0 ? 'checked' : ''}> 📧 Email me each new request (Workforce Manager: crew, trade, union and superintendent time off · Office Manager: office staff and superintendent time off)</label>
-        <label class="check"><input type="checkbox" name="can_estimate" ${u.can_estimate ? 'checked' : ''}> Can use Estimating (possible bids, Go / No-Go, bid amounts)</label>
         <label class="check"><input type="checkbox" name="can_view_payroll" ${u.can_view_payroll ? 'checked' : ''}> 🔒 Can view private payroll forecast &amp; pay rates</label>
         <label class="check"><input type="checkbox" name="active" ${u.active !== 0 ? 'checked' : ''}> Account active</label>`,
       footer: '<button data-close>Cancel</button><button class="primary" data-act="save">Save</button>',
@@ -2798,130 +2797,20 @@ async function adminSettings(el) {
 boot();
 
 // ---------------------------------------------------------------------------
-// Estimating: possible bids and the Go / No-Go scorecard
+// Estimating: the FM Bid Board (public/estimating/board.html), shown full width in a frame so it looks
+// and works exactly like the board the team used in Claude. Its data lives in this app.
 // ---------------------------------------------------------------------------
-const EST_VIEWS = [['leads', 'Undecided'], ['go', 'Go'], ['no_go', 'No-Go'], ['all', 'All']];
-const RATE_LABEL = { good: 'Good', ok: 'OK', poor: 'Poor' };
-const SUGGEST = { go: ['Suggested Go', 'ok'], review: ['Your call', 'warn'], no_go: ['Suggested No-Go', 'bad'] };
-const estDate = (d) => (d ? dayLabel(d, { weekday: 'short', month: 'short', day: 'numeric' }) : 'No bid date');
-
-async function renderEstimating(page) {
-  S.estView = S.estView || 'leads';
-  const [cfg, all] = await Promise.all([api('GET', '/estimating/config'), api('GET', '/estimating/bids')]);
-  S.estCfg = cfg;
-  const counts = { leads: 0, go: 0, no_go: 0, all: all.length };
-  all.forEach((b) => { if (b.status === 'Lead') counts.leads += 1; if (b.decision) counts[b.decision] += 1; });
-  const inView = all.filter((b) => S.estView === 'all' || (S.estView === 'leads' ? b.status === 'Lead' : b.decision === S.estView));
-  const month = todayStr().slice(0, 7);
-  const decidedMonth = all.filter((b) => b.decided_at && b.decided_at.slice(0, 7) === month);
-  const suggestedGo = all.filter((b) => b.status === 'Lead' && b.score.suggestion === 'go').length;
-  page.innerHTML = `
-    <div class="toolbar"><h1 style="margin:0">Estimating · Possible bids</h1><span class="spacer"></span>
-      <div class="seg">${EST_VIEWS.map(([k, l]) => `<button data-view="${k}" class="${S.estView === k ? 'on' : ''}">${l} (${counts[k]})</button>`).join('')}</div>
-      ${isAdmin() ? '<button data-act="weights">Scorecard weights…</button>' : ''}
-      <button class="primary" data-act="new">+ Add a possible bid</button></div>
-    <div class="stats">
-      <div class="stat"><div class="l">Waiting on Go / No-Go</div><div class="v">${counts.leads}</div></div>
-      <div class="stat"><div class="l">Scored as suggested Go</div><div class="v">${suggestedGo}</div></div>
-      <div class="stat"><div class="l">Go this month</div><div class="v">${decidedMonth.filter((b) => b.decision === 'go').length}</div></div>
-      <div class="stat"><div class="l">No-Go this month</div><div class="v">${decidedMonth.filter((b) => b.decision === 'no_go').length}</div></div>
-    </div>
-    <p class="small muted" style="margin:0 0 12px">Rate each question Good, OK or Poor. Territory and Size are gates: Poor on either suggests No-Go whatever the total.
-      ${cfg.scorecard.go_at}+ suggests Go, ${cfg.scorecard.review_at}–${cfg.scorecard.go_at - 1} is your call, under ${cfg.scorecard.review_at} suggests No-Go. Your call always wins.</p>
-    <div id="est-list">${inView.map(estCard).join('') || `<div class="card muted">${S.estView === 'leads' ? 'Nothing waiting on a decision. Add a possible bid when one comes in.' : 'No bids here yet.'}</div>`}</div>`;
-  $$('[data-view]', page).forEach((b) => (b.onclick = () => { S.estView = b.dataset.view; renderEstimating(page); }));
-  $('[data-act=new]', page).onclick = () => estBidModal({}, page);
+function renderEstimating(page) {
+  page.classList.add('est-page');
+  page.classList.toggle('admin', isAdmin());
+  page.innerHTML = `<iframe class="est-frame" src="/estimating/board.html" title="FM Bid Board"></iframe>
+    ${isAdmin() ? '<div class="est-admin"><button data-act="weights">Go / No-Go scorecard weights…</button><button data-act="import">Import bid board data…</button></div>' : ''}`;
   const w = $('[data-act=weights]', page); if (w) w.onclick = () => estWeightsModal(page);
-  $$('.est-card', page).forEach((card) => bindEstCard(card, all.find((b) => b.id === Number(card.dataset.id)), page));
+  const imp = $('[data-act=import]', page); if (imp) imp.onclick = () => estImportModal(page);
 }
 
-function estCard(b) {
-  const cfg = S.estCfg; const sc = b.score;
-  const sug = sc.suggestion ? SUGGEST[sc.suggestion] : null;
-  const facts = [b.owner, b.location, b.sector, b.delivery, b.est_value ? money(b.est_value) : b.value_label, b.source && `via ${b.source}`].filter(Boolean);
-  const decided = b.decision
-    ? `<div class="est-decided ${b.decision}"><b>${b.decision === 'go' ? 'Go' : 'No-Go'}</b> · ${esc(b.decided_by_name || '')} · ${esc(estDate((b.decided_at || '').slice(0, 10)))}
-        ${b.decision_score !== null && b.decision_score !== undefined ? ` · scored ${b.decision_score}` : ''}${b.decision_reason ? ` · ${esc(b.decision_reason)}` : ''}${b.decision_note ? `<div class="small">${esc(b.decision_note)}</div>` : ''}
-        ${['Lead', 'Not started', 'Passed'].includes(b.status) ? '<button class="mini-btn" data-act="undo">Undo decision</button>' : ''}</div>`
-    : `<div class="est-decide">
-        <label>Note (why)<input name="note" maxlength="500" placeholder="One line, e.g. good owner, open week"></label>
-        <label>If No-Go, because<select name="reason">${cfg.nobid_reasons.map((r) => opt(r, r, sc.reason)).join('')}</select></label>
-        <div class="est-btns"><button class="primary" data-act="go">Go</button><button class="danger" data-act="no_go">No-Go</button></div>
-      </div>`;
-  return `<div class="card est-card ${b.decision ? 'decided' : ''}" data-id="${b.id}">
-    <div class="est-head">
-      <div class="est-date"><b>${esc(estDate(b.bid_date))}</b>${b.bid_time ? `<span class="small muted">${esc(b.bid_time)}</span>` : ''}</div>
-      <div class="est-title"><button class="linklike" data-act="edit">${esc(b.project)}</button><div class="small muted">${esc(facts.join(' · '))}</div></div>
-      <div class="est-score ${sug ? sug[1] : ''}" title="${sc.rated} of ${sc.of} questions rated"><div class="v">${sc.rated ? sc.score : '—'}</div><div class="l">${sug ? sug[0] : `${sc.rated} of ${sc.of} rated`}</div></div>
-    </div>
-    <div class="est-q">${cfg.scorecard.questions.map((q) => `<div class="est-row">
-        <div class="est-ql"><b>${esc(q.label)}</b>${q.gate ? ' <span class="pill">gate</span>' : ''} <span class="small muted">${q.weight} pts</span>
-          <div class="small muted">Good: ${esc(q.good)} · Poor: ${esc(q.poor)}</div></div>
-        <div class="seg est-rate" role="group" aria-label="${esc(q.label)}">${['good', 'ok', 'poor'].map((r) => `<button data-q="${q.key}" data-r="${r}" class="${b.ratings[q.key] === r ? 'on' : ''}" aria-pressed="${b.ratings[q.key] === r}" ${b.decision ? 'disabled' : ''}>${RATE_LABEL[r]}</button>`).join('')}</div>
-      </div>`).join('')}</div>
-    ${b.notes ? `<div class="small" style="margin-top:8px">${esc(b.notes)}</div>` : ''}
-    ${decided}
-  </div>`;
-}
-
-function bindEstCard(card, b, page) {
-  $('[data-act=edit]', card).onclick = () => estBidModal(b, page);
-  $$('[data-q]', card).forEach((btn) => (btn.onclick = async () => {
-    const ratings = { ...b.ratings };
-    if (ratings[btn.dataset.q] === btn.dataset.r) delete ratings[btn.dataset.q]; else ratings[btn.dataset.q] = btn.dataset.r;
-    try {
-      const nb = await api('PUT', `/estimating/bids/${b.id}/scorecard`, { ratings });
-      const div = document.createElement('div'); div.innerHTML = estCard(nb);
-      const fresh = div.firstElementChild; card.replaceWith(fresh); bindEstCard(fresh, nb, page);
-    } catch (e) { toast(e.message, true); }
-  }));
-  const decide = async (decision) => {
-    const note = $('[name=note]', card)?.value || '';
-    const reason = $('[name=reason]', card)?.value || '';
-    try {
-      await api('POST', `/estimating/bids/${b.id}/decision`, { decision, note, reason });
-      toast(decision === 'go' ? `Go: ${b.project} is on the bid board` : decision === 'no_go' ? `No-Go logged: ${b.project}` : 'Decision undone');
-      renderEstimating(page);
-    } catch (e) { toast(e.message, true); }
-  };
-  const go = $('[data-act=go]', card); if (go) go.onclick = () => decide('go');
-  const ng = $('[data-act=no_go]', card); if (ng) ng.onclick = () => decide('no_go');
-  const un = $('[data-act=undo]', card); if (un) un.onclick = () => decide('undecided');
-}
-
-function estBidModal(b, page) {
-  const cfg = S.estCfg;
-  const m = modal({
-    title: b.id ? `Edit ${b.project}` : 'Add a possible bid',
-    body: `<div class="grid2">
-        <label>Project name<input name="project" value="${esc(b.project || '')}" maxlength="200"></label>
-        <label>How we heard about it<select name="source"><option value="">—</option>${cfg.sources.map((s) => opt(s, s, b.source)).join('')}</select></label>
-        <label>Bid date<input type="date" name="bid_date" value="${esc(b.bid_date || '')}"></label>
-        <label>Bid time<input name="bid_time" value="${esc(b.bid_time || '')}" placeholder="2:00 PM" maxlength="30"></label>
-        <label>Owner<input name="owner" value="${esc(b.owner || '')}"></label>
-        <label>Architect<input name="architect" value="${esc(b.architect || '')}"></label>
-        <label>Location (city, county)<input name="location" value="${esc(b.location || '')}" placeholder="Marion, Williamson Co."></label>
-        <label>Sector<select name="sector"><option value="">—</option>${cfg.sectors.map((s) => opt(s, s, b.sector)).join('')}</select></label>
-        <label>Delivery<select name="delivery"><option value="">—</option>${cfg.delivery.map((s) => opt(s, s, b.delivery)).join('')}</select></label>
-        <label>Estimated value ($)<input name="est_value" inputmode="decimal" value="${esc(b.est_value ?? '')}" placeholder="2500000"></label>
-        <label>Published value as written<input name="value_label" value="${esc(b.value_label || '')}" placeholder="Under $3,000,000"></label>
-      </div>
-      <label>Notes<textarea name="notes" rows="3">${esc(b.notes || '')}</textarea></label>`,
-    footer: `${b.id && isAdmin() ? '<button class="danger" data-act="del">Delete</button>' : ''}<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
-  });
-  $('[data-act=save]', m.el).onclick = async () => {
-    const f = formData(m.el); f.est_value = String(f.est_value || '').replace(/[$,\s]/g, '');
-    try { await api(b.id ? 'PUT' : 'POST', b.id ? `/estimating/bids/${b.id}` : '/estimating/bids', f); m.close(); toast('Saved'); renderEstimating(page); } catch (e) { errorBox(m.el, e.message); }
-  };
-  const del = $('[data-act=del]', m.el);
-  if (del) del.onclick = async () => {
-    if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'Click again to delete'; return; }
-    try { await api('DELETE', `/estimating/bids/${b.id}`); m.close(); toast('Deleted'); renderEstimating(page); } catch (e) { errorBox(m.el, e.message); }
-  };
-}
-
-function estWeightsModal(page) {
-  const sc = S.estCfg.scorecard;
+async function estWeightsModal(page) {
+  const sc = (await api('GET', '/estimating/config')).scorecard;
   const total = sc.questions.reduce((s, q) => s + Number(q.weight), 0);
   const m = modal({
     title: 'Go / No-Go scorecard weights',
@@ -2935,5 +2824,23 @@ function estWeightsModal(page) {
     const f = formData(m.el);
     const weights = Object.fromEntries(sc.questions.map((q) => [q.key, Number(f[`w_${q.key}`])]));
     try { await api('PUT', '/estimating/config', { weights, go_at: Number(f.go_at), review_at: Number(f.review_at) }); m.close(); toast('Weights saved'); renderEstimating(page); } catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+function estImportModal(page) {
+  const m = modal({
+    title: 'Import bid board data',
+    body: `<p class="small" style="margin-top:0">Pick the bid board export file (.json) Claude made from the Claude bid board. Bids, pre-bids, competitors and settings load into the app. Anything already here with the same ID is replaced, so importing twice is safe.</p>
+      <input type="file" accept="application/json,.json" name="file">`,
+    footer: '<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="go">Import</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    const f = $('[name=file]', m.el).files[0];
+    if (!f) return errorBox(m.el, 'Pick the export file first.');
+    try {
+      const data = JSON.parse(await f.text());
+      const r = await api('POST', '/estimating/import', data);
+      m.close(); toast(`Imported ${Object.entries(r.imported).map(([k, v]) => `${v} ${k}`).join(', ')}`); renderEstimating(page);
+    } catch (e) { errorBox(m.el, e instanceof SyntaxError ? 'That file is not a bid board export.' : e.message); }
   };
 }

@@ -2184,7 +2184,7 @@ function createApp(db, opts = {}) {
   });
 
   // ---- Estimating: possible bids, Go / No-Go scorecard ------------------------------
-  mountEstimating(api, db, { audit, bad, str, num, int, date, HttpError, adminOnly });
+  mountEstimating(api, db, { audit, bad, num, int, HttpError, adminOnly });
 
   app.use('/api', api);
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
@@ -2196,6 +2196,15 @@ function createApp(db, opts = {}) {
   // connector clients (claude.ai) treat /api/mcp/<token> as a no-sign-in server.
   app.all(/^\/\.well-known\//, (_req, res) => res.status(404).json({ error: 'Not found.' }));
   app.use('/register', (_req, res) => res.status(404).json({ error: 'Not found.' }));
+  // The bid board page (Estimating tab) runs in a frame inside the app, from this same site.
+  app.use('/estimating', (_req, res, next) => {
+    res.set({ 'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'" });
+    next();
+  });
+  // PDF export for the bid board (served from the app, no outside CDN).
+  const distOf = (pkg) => path.dirname(require.resolve(pkg)); // both packages keep their browser builds in dist/
+  const vendor = { 'jspdf.umd.min.js': path.join(distOf('jspdf'), 'jspdf.umd.min.js'), 'jspdf.plugin.autotable.min.js': path.join(distOf('jspdf-autotable'), 'jspdf.plugin.autotable.min.js') };
+  app.get('/vendor/:file', (req, res, next) => (Object.hasOwn(vendor, req.params.file) ? res.sendFile(vendor[req.params.file]) : next()));
   app.use(express.static(path.join(__dirname, '..', 'public'), { setHeaders: noCache }));
   app.get(/^\/(?!api\/).*/, (_req, res) => { noCache(res); res.sendFile(path.join(__dirname, '..', 'public', 'index.html')); });
 
