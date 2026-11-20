@@ -391,3 +391,9 @@ table.verify-emp tr.total td { border-top: 2px solid var(--line); }
 .site-addr a:hover { text-decoration: underline; color: var(--orange, #F15A22); }
 .site-addr { margin: 2px 0; }
 @media print { .site-addr a { text-decoration: none; } }
+
+/* Estimating: the FM Bid Board runs full width in a frame */
+main.est-page { max-width: none; padding: 0; }
+.est-frame { display: block; width: 100%; height: calc(100vh - 64px); height: calc(100dvh - 64px); border: 0; background: #fff; }
+.est-page.admin .est-frame { height: calc(100vh - 116px); height: calc(100dvh - 116px); }
+.est-admin { display: flex; gap: 8px; justify-content: flex-end; padding: 8px 16px; background: var(--card); border-top: 1px solid var(--line); }

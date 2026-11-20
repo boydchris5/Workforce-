@@ -183,6 +183,8 @@ const isOfficeRole = () => S.user && ['office', 'office_admin'].includes(S.user.
 // Office logins only see Time Off, unless allowed to view the field schedule (e.g. project managers).
 const seesField = () => !isOfficeRole() || !!S.user.can_view_schedule;
 const canEditPeople = () => canSchedule() || (S.user && S.user.role === 'office_admin');
+// Estimating (the bid board, possible bids, Go / No-Go): office logins only, never field or superintendents.
+const canEstimate = () => S.user && ['admin', 'office', 'office_admin'].includes(S.user.role);
 const ROUTES = [
   { path: 'schedule', label: 'Schedule', render: renderSchedule, show: seesField },
   { path: 'my', label: 'My Schedule', render: renderMy, show: () => !isOfficeRole() && S.user.employee_id },
@@ -190,6 +192,7 @@ const ROUTES = [
   { path: 'projects', label: 'Projects', render: renderProjects, show: seesField },
   { path: 'employees', label: 'Employees', render: renderEmployees, show: () => seesField() || canEditPeople() },
   { path: 'records', label: 'Records', render: renderRecords, show: seesField },
+  { path: 'estimating', label: 'Estimating', render: renderEstimating, show: canEstimate },
   { path: 'payroll', label: '🔒 Payroll', render: renderPayroll, show: () => S.user.can_view_payroll, cls: 'private' },
   // Distinct from the field scheduler above: office staff request their own time off,
   // an Office Manager approves everyone's. The Workforce Manager (admin) sees it too.
@@ -207,7 +210,7 @@ function currentRoute() {
 }
 
 // The user guide opens at the section for the page you're on.
-const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', timeoff: 'timeoff', admin: 'admin' };
+const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', timeoff: 'timeoff', estimating: 'estimating', admin: 'admin' };
 const helpLink = (path) => `/help.html#${HELP_SECTIONS[path] || 'welcome'}`;
 
 function shell() {
@@ -2799,3 +2802,52 @@ async function adminSettings(el) {
 }
 
 boot();
+
+// ---------------------------------------------------------------------------
+// Estimating: the FM Bid Board (public/estimating/board.html), shown full width in a frame so it looks
+// and works exactly like the board the team used in Claude. Its data lives in this app.
+// ---------------------------------------------------------------------------
+function renderEstimating(page) {
+  page.classList.add('est-page');
+  page.classList.toggle('admin', isAdmin());
+  page.innerHTML = `<iframe class="est-frame" src="/estimating/board.html" title="FM Bid Board"></iframe>
+    ${isAdmin() ? '<div class="est-admin"><button data-act="weights">Go / No-Go scorecard weights…</button><button data-act="import">Import bid board data…</button></div>' : ''}`;
+  const w = $('[data-act=weights]', page); if (w) w.onclick = () => estWeightsModal(page);
+  const imp = $('[data-act=import]', page); if (imp) imp.onclick = () => estImportModal(page);
+}
+
+async function estWeightsModal(page) {
+  const sc = (await api('GET', '/estimating/config')).scorecard;
+  const total = sc.questions.reduce((s, q) => s + Number(q.weight), 0);
+  const m = modal({
+    title: 'Go / No-Go scorecard weights',
+    body: `<p class="small muted" style="margin-top:0">The score is the share of points earned, so it reads 0–100 whatever the weights add up to (now ${total}).</p>
+      <div class="grid2">${sc.questions.map((q) => `<label>${esc(q.label)}${q.gate ? ' (gate)' : ''}<input type="number" min="0" max="100" step="1" name="w_${q.key}" value="${esc(q.weight)}"></label>`).join('')}
+        <label>Suggested Go at or above<input type="number" min="1" max="100" name="go_at" value="${esc(sc.go_at)}"></label>
+        <label>Your call at or above (below = suggested No-Go)<input type="number" min="0" max="99" name="review_at" value="${esc(sc.review_at)}"></label></div>`,
+    footer: '<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>',
+  });
+  $('[data-act=save]', m.el).onclick = async () => {
+    const f = formData(m.el);
+    const weights = Object.fromEntries(sc.questions.map((q) => [q.key, Number(f[`w_${q.key}`])]));
+    try { await api('PUT', '/estimating/config', { weights, go_at: Number(f.go_at), review_at: Number(f.review_at) }); m.close(); toast('Weights saved'); renderEstimating(page); } catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+function estImportModal(page) {
+  const m = modal({
+    title: 'Import bid board data',
+    body: `<p class="small" style="margin-top:0">Pick the bid board export file (.json) Claude made from the Claude bid board. Bids, pre-bids, competitors and settings load into the app. Anything already here with the same ID is replaced, so importing twice is safe.</p>
+      <input type="file" accept="application/json,.json" name="file">`,
+    footer: '<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="go">Import</button>',
+  });
+  $('[data-act=go]', m.el).onclick = async () => {
+    const f = $('[name=file]', m.el).files[0];
+    if (!f) return errorBox(m.el, 'Pick the export file first.');
+    try {
+      const data = JSON.parse(await f.text());
+      const r = await api('POST', '/estimating/import', data);
+      m.close(); toast(`Imported ${Object.entries(r.imported).map(([k, v]) => `${v} ${k}`).join(', ')}`); renderEstimating(page);
+    } catch (e) { errorBox(m.el, e instanceof SyntaxError ? 'That file is not a bid board export.' : e.message); }
+  };
+}

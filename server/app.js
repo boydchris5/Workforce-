@@ -9,6 +9,7 @@ const procore = require('./procore');
 const { createNotifier, renderEmail } = require('./notify');
 const { holidaysForYear, holidayMap } = require('./holidays');
 const leavePolicy = require('./leavepolicy');
+const { mountEstimating } = require('./estimating');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -144,19 +145,19 @@ function createApp(db, opts = {}) {
   const feedToken = opts.feedToken !== undefined ? opts.feedToken : process.env.TIMEOFF_FEED_TOKEN;
   const feedCors = (res) => res.set({ 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Cache-Control': 'no-store' });
   api.options('/feed/time-off', (_req, res) => { feedCors(res); res.status(204).end(); });
-  api.get('/feed/time-off', (req, res) => {
-    feedCors(res);
-    if (!feedToken || String(feedToken).trim().length < 16) throw new HttpError(404, 'The time-off feed is not turned on (set TIMEOFF_FEED_TOKEN in Render, at least 16 characters).');
-    // Forgive stray spaces / quotes around a pasted token (in Render or in the link).
-    const clean = (t) => String(t || '').trim().replace(/^["']+|["']+$/g, '').trim();
-    const given = clean((req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.query.token);
-    const a = Buffer.from(given); const b = Buffer.from(clean(feedToken));
-    if (a.length !== b.length || !require('node:crypto').timingSafeEqual(a, b)) throw new HttpError(401, 'Wrong or missing feed token.');
-    const start = req.query.start ? date(req.query.start, 'start', true) : today();
-    const end = req.query.end ? date(req.query.end, 'end', true) : addDays(start, 90);
+  // Forgive stray spaces / quotes around a pasted token (in Render or in the link).
+  const cleanToken = (t) => String(t || '').trim().replace(/^["']+|["']+$/g, '').trim();
+  const feedOn = () => !!feedToken && String(feedToken).trim().length >= 16;
+  const tokenOk = (given) => {
+    const a = Buffer.from(cleanToken(given)); const b = Buffer.from(cleanToken(feedToken));
+    return a.length === b.length && require('node:crypto').timingSafeEqual(a, b);
+  };
+  function timeOffFeed(q) {
+    const start = q.start ? date(q.start, 'start', true) : today();
+    const end = q.end ? date(q.end, 'end', true) : addDays(start, 90);
     if (end < start) throw bad('end is before start.');
     if (daysBetween(start, end) > 400) throw bad('Pick at most about a year (400 days).');
-    const depts = String(req.query.department || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const depts = String(q.department || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
     const rows = db.prepare(`SELECT t.id, t.employee_id, t.off_date, t.reason, t.hours, t.status, t.batch, e.first_name, e.last_name, e.department, e.employee_type
       FROM time_off t JOIN employees e ON e.id = t.employee_id
       WHERE t.status IN ('approved', 'pending') AND t.off_date BETWEEN ? AND ? AND e.active = 1
@@ -167,12 +168,84 @@ function createApp(db, opts = {}) {
       type: g.reason || null, status: g.status, start_date: g.start_date, end_date: g.end_date, days: g.days, hours: g.hours,
       dates: rows.filter((r) => g.ids.includes(r.id)).map((r) => r.off_date),
     })).sort((x, y) => x.start_date.localeCompare(y.start_date) || x.name.localeCompare(y.name));
-    res.json({
+    return {
       generated_at: new Date().toISOString(), start, end, departments: depts.length ? depts : 'all',
       requests,
       days: rows.map((r) => ({ date: r.off_date, name: `${r.first_name} ${r.last_name}`, department: r.department || null, type: r.reason || null, hours: r.hours ?? 8, status: r.status })),
       holidays: holidayMap(start, end),
-    });
+    };
+  }
+  const feedOffMsg = 'The time-off feed is not turned on (set TIMEOFF_FEED_TOKEN in Render, at least 16 characters).';
+  api.get('/feed/time-off', (req, res) => {
+    feedCors(res);
+    if (!feedOn()) throw new HttpError(404, feedOffMsg);
+    if (!tokenOk((req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.query.token)) throw new HttpError(401, 'Wrong or missing feed token.');
+    res.json(timeOffFeed(req.query));
+  });
+
+  // ---- read-only MCP connector for Claude (same data and token as the feed) ----------
+  // Add in claude.ai as a custom connector with URL https://<app>/api/mcp/<TIMEOFF_FEED_TOKEN>.
+  // Streamable HTTP, JSON responses only; one read-only tool, get_time_off.
+  const MCP_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
+  const MCP_TOOL = {
+    name: 'get_time_off',
+    title: 'Get time off',
+    description: 'Approved and pending time off from the FM Workforce app: who is out, which days, type and hours. Names, departments, dates, type, hours and status only (no notes or balances). Also returns union holidays in the range.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        start: { type: 'string', description: 'First date, YYYY-MM-DD. Default today.' },
+        end: { type: 'string', description: 'Last date, YYYY-MM-DD. Default start + 90 days. At most 400 days after start.' },
+        department: { type: 'string', description: 'Comma-separated departments, e.g. "Estimating,Pre-Con". Default all.' },
+      },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  };
+  function mcpHandle(msg) {
+    const reply = (result) => ({ jsonrpc: '2.0', id: msg.id, result });
+    const fail = (code, message) => ({ jsonrpc: '2.0', id: msg.id ?? null, error: { code, message } });
+    if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return fail(-32600, 'Invalid request');
+    if (msg.id === undefined) return null; // notification
+    const p = msg.params || {};
+    switch (msg.method) {
+      case 'initialize':
+        return reply({
+          protocolVersion: MCP_VERSIONS.includes(p.protocolVersion) ? p.protocolVersion : MCP_VERSIONS[1],
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: 'fm-workforce', title: 'FM Workforce', version: '1.0.0' },
+          instructions: 'Read-only time off from the Fager-McGee Workforce app. Use get_time_off with a date range and department filter.',
+        });
+      case 'ping': return reply({});
+      case 'tools/list': return reply({ tools: [MCP_TOOL] });
+      case 'tools/call': {
+        if (p.name !== MCP_TOOL.name) return fail(-32602, `Unknown tool: ${p.name}`);
+        try {
+          const data = timeOffFeed(p.arguments || {});
+          return reply({ content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data });
+        } catch (e) {
+          return reply({ content: [{ type: 'text', text: e.message || 'Something went wrong.' }], isError: true });
+        }
+      }
+      default: return fail(-32601, `Method not found: ${msg.method}`);
+    }
+  }
+  // Token may be the rest of the path (any characters, even "/"), ?token=, or a Bearer header.
+  // A wrong token answers 404, not 401: claude.ai reads 401 as "this connector uses OAuth"
+  // and then fails trying to register with a sign-in service this app doesn't have.
+  api.all(['/mcp', '/mcp/*rest'], (req, res) => {
+    if (!feedOn()) throw new HttpError(404, feedOffMsg);
+    const pathTok = Array.isArray(req.params.rest) ? req.params.rest.join('/') : req.params.rest;
+    const given = pathTok || req.query.token || (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    if (!tokenOk(given)) throw new HttpError(404, 'Wrong or missing feed token. Check the connector URL ends with the TIMEOFF_FEED_TOKEN value from Render.');
+    if (req.method !== 'POST') { res.set('Allow', 'POST'); return res.status(405).json({ error: 'Use POST.' }); }
+    const body = req.body;
+    if (Array.isArray(body)) {
+      const out = body.map(mcpHandle).filter(Boolean);
+      return out.length ? res.json(out) : res.status(202).end();
+    }
+    const out = mcpHandle(body);
+    return out ? res.json(out) : res.status(202).end();
   });
 
   api.use(auth.requireAuth);
@@ -2024,7 +2097,7 @@ function createApp(db, opts = {}) {
 
   // ---- users & settings (admin) -----------------------------------------------------
   api.get('/users', canSchedule, (req, res) => {
-    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at, u.email, u.notify_requests, u.can_view_schedule' : 'u.id, u.name, u.role';
+    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate' : 'u.id, u.name, u.role';
     res.json(db.prepare(`SELECT ${cols} FROM users u WHERE u.active = 1 OR ? ORDER BY u.name`).all(req.user.role === 'admin' ? 1 : 0));
   });
 
@@ -2036,6 +2109,7 @@ function createApp(db, opts = {}) {
       active: b.active === undefined ? 1 : bool(b.active),
       email: str(b.email, 200), notify_requests: b.notify_requests === undefined ? 1 : bool(b.notify_requests),
       can_view_schedule: bool(b.can_view_schedule),
+      can_estimate: bool(b.can_estimate),
     };
     if (!u.username || !u.name) throw bad('Username and name are required.');
     if (!USER_ROLES.includes(u.role)) throw bad('Invalid role.');
@@ -2049,8 +2123,8 @@ function createApp(db, opts = {}) {
     const { u, pw } = readUser(req.body, true);
     let r;
     try {
-      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, office_staff_id, active, email, notify_requests, can_view_schedule)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule);
+      r = db.prepare(`INSERT INTO users (username, name, password_hash, role, can_view_payroll, employee_id, office_staff_id, active, email, notify_requests, can_view_schedule, can_estimate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(u.username, u.name, auth.hashPassword(pw), u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate);
     } catch (e) { uniqueMsg(e, 'That username is taken.'); }
     audit(req, 'create', 'user', Number(r.lastInsertRowid), { username: u.username, role: u.role });
     res.json({ id: Number(r.lastInsertRowid) });
@@ -2061,15 +2135,15 @@ function createApp(db, opts = {}) {
     const { u, pw } = readUser(req.body, false);
     if (id === req.user.id && (u.role !== 'admin' || !u.active)) throw bad('You cannot remove your own admin access.');
     try {
-      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, office_staff_id=?, active=?, email=?, notify_requests=?, can_view_schedule=? WHERE id=?`)
-        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule, id);
+      db.prepare(`UPDATE users SET username=?, name=?, role=?, can_view_payroll=?, employee_id=?, office_staff_id=?, active=?, email=?, notify_requests=?, can_view_schedule=?, can_estimate=? WHERE id=?`)
+        .run(u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate, id);
     } catch (e) { uniqueMsg(e, 'That username is taken.'); }
     if (pw) {
       db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(pw), id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
     }
     if (!u.active) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
-    audit(req, 'update', 'user', id, { role: u.role, payroll: u.can_view_payroll, active: u.active, password_reset: !!pw });
+    audit(req, 'update', 'user', id, { role: u.role, payroll: u.can_view_payroll, estimating: u.can_estimate, active: u.active, password_reset: !!pw });
     res.json({ id });
   });
 
@@ -2109,12 +2183,28 @@ function createApp(db, opts = {}) {
     res.download(file, `workforce-backup-${new Date().toISOString().slice(0, 10)}.db`, () => require('node:fs').rm(file, { force: true }, () => {}));
   });
 
+  // ---- Estimating: possible bids, Go / No-Go scorecard ------------------------------
+  mountEstimating(api, db, { audit, bad, num, int, HttpError, adminOnly });
+
   app.use('/api', api);
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
 
   // Browsers must re-check the app's files on every load (a cheap 304 when
   // unchanged) so a new deploy shows up immediately instead of after a cache delay.
   const noCache = (res) => res.set('Cache-Control', 'no-cache');
+  // No OAuth here: answer discovery probes with 404 instead of the app's HTML page, so
+  // connector clients (claude.ai) treat /api/mcp/<token> as a no-sign-in server.
+  app.all(/^\/\.well-known\//, (_req, res) => res.status(404).json({ error: 'Not found.' }));
+  app.use('/register', (_req, res) => res.status(404).json({ error: 'Not found.' }));
+  // The bid board page (Estimating tab) runs in a frame inside the app, from this same site.
+  app.use('/estimating', (_req, res, next) => {
+    res.set({ 'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'" });
+    next();
+  });
+  // PDF export for the bid board (served from the app, no outside CDN).
+  const distOf = (pkg) => path.dirname(require.resolve(pkg)); // both packages keep their browser builds in dist/
+  const vendor = { 'jspdf.umd.min.js': path.join(distOf('jspdf'), 'jspdf.umd.min.js'), 'jspdf.plugin.autotable.min.js': path.join(distOf('jspdf-autotable'), 'jspdf.plugin.autotable.min.js') };
+  app.get('/vendor/:file', (req, res, next) => (Object.hasOwn(vendor, req.params.file) ? res.sendFile(vendor[req.params.file]) : next()));
   app.use(express.static(path.join(__dirname, '..', 'public'), { setHeaders: noCache }));
   app.get(/^\/(?!api\/).*/, (_req, res) => { noCache(res); res.sendFile(path.join(__dirname, '..', 'public', 'index.html')); });
 

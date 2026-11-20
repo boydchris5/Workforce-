@@ -42,7 +42,7 @@ function cookieHeader(token, secure) {
 
 function sessionMiddleware(db) {
   const find = db.prepare(`
-    SELECT u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.can_view_schedule, e.employee_type
+    SELECT u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.can_view_schedule, u.can_estimate, e.employee_type
     FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN employees e ON e.id = u.employee_id
     WHERE s.token = ? AND s.expires_at > ? AND u.active = 1`);
   return (req, _res, next) => {
@@ -54,7 +54,7 @@ function sessionMiddleware(db) {
         // A login linked to a Project Manager employee requests crew on their own jobs, like a superintendent.
         const isPm = u.role !== 'admin' && u.employee_type === 'project_manager';
         req.user = { ...u, can_view_payroll: u.role === 'admin' || !!u.can_view_payroll, is_pm: isPm,
-          can_schedule: ['admin', 'super'].includes(u.role) || isPm, can_view_schedule: u.can_view_schedule || (isPm ? 1 : 0) };
+          can_schedule: ['admin', 'super'].includes(u.role) || isPm, can_view_schedule: u.can_view_schedule || (isPm ? 1 : 0), can_estimate: ['admin', 'office', 'office_admin'].includes(u.role) };
         req.sessionToken = token;
       }
     }

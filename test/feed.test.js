@@ -53,3 +53,29 @@ test('approved and pending only, filtered by department, no notes or reasons', a
   const all = await (await fetch(`${base}/feed/time-off?token=${TOKEN}&start=2030-06-01&end=2030-06-30`)).json();
   assert.ok(all.requests.some((x) => x.department === 'Accounting'));
 });
+
+test('MCP connector: token in the path, read-only get_time_off tool', async () => {
+  const rpc = (tok, body) => fetch(`${base}/mcp/${tok}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) });
+  assert.equal((await rpc('wrong-token-wrong-token', { jsonrpc: '2.0', id: 1, method: 'ping' })).status, 404);
+  const root = `http://127.0.0.1:${server.address().port}`;
+  for (const u of ['/.well-known/oauth-protected-resource', '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource/api/mcp/x', '/register']) {
+    const r = await fetch(root + u, { method: u === '/register' ? 'POST' : 'GET' });
+    assert.equal(r.status, 404, u);
+    assert.match(r.headers.get('content-type'), /json/);
+  }
+  // Token also accepted as ?token= on /api/mcp.
+  assert.equal((await fetch(`${base}/mcp?token=${TOKEN}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'ping' }) })).status, 200);
+  assert.equal((await fetch(`http://127.0.0.1:${off.address().port}/api/mcp/x`, { method: 'POST' })).status, 404);
+  assert.equal((await fetch(`${base}/mcp/${TOKEN}`)).status, 405);
+  const init = await (await rpc(TOKEN, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } })).json();
+  assert.equal(init.result.protocolVersion, '2025-06-18');
+  assert.ok(init.result.capabilities.tools);
+  assert.equal((await rpc(TOKEN, { jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
+  const list = await (await rpc(TOKEN, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).json();
+  assert.deepEqual(list.result.tools.map((t) => t.name), ['get_time_off']);
+  const call = await (await rpc(TOKEN, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_time_off', arguments: { start: '2030-06-01', end: '2030-06-30', department: 'Estimating,Pre-Con' } } })).json();
+  assert.deepEqual(call.result.structuredContent.requests.map((x) => [x.name, x.status]), [['Ann Estimator', 'approved'], ['Pete Precon', 'pending']]);
+  assert.ok(!/family trip|doctor|busy week|Accounts/.test(JSON.stringify(call)));
+  const badCall = await (await rpc(TOKEN, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_time_off', arguments: { start: '2030-06-30', end: '2030-06-01' } } })).json();
+  assert.equal(badCall.result.isError, true);
+});
