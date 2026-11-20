@@ -280,3 +280,31 @@ button.monthband:hover .mc{color:var(--fm-white)}
 #gng-recent{margin-top:12px}
 #gng-recent li{display:flex;justify-content:space-between;gap:10px;align-items:center}
 @media (max-width:680px){.gq,.gdec{grid-template-columns:1fr}}
+
+/* Bid card layout: details left, results + notes in a side panel; finished bids collapse to one line */
+.cbody{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,340px);gap:14px 20px;align-items:start}
+.cleft{display:flex;flex-direction:column;gap:12px;min-width:0}
+.cside{display:flex;flex-direction:column;gap:12px;min-width:0}
+.cside:empty{display:none}
+.cbody:has(.cside:empty){grid-template-columns:minmax(0,1fr)}
+.facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px 20px}
+.fact.wide{grid-column:1/-1}
+.pbs .ib{align-self:flex-start}
+.desc p{max-width:none}
+.cside .res{box-sizing:border-box;width:100%;max-width:100%}.cside .res table{width:100%}
+.cside textarea.note{min-height:5.5em}
+.romlow{display:flex;flex-direction:column;gap:3px;border-left:4px solid var(--fm-line);padding:4px 10px;background:var(--fm-tint)}
+.card.compact{padding:8px 14px;align-items:center}
+.card.compact .dblk{padding:4px}
+.card.compact .dblk .dd{font-size:20px}
+.card.compact .cmain{gap:4px}
+.csum{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;font-size:13px;color:var(--fm-mid)}
+.csum .cs.strong{color:var(--fm-char);font-weight:700}
+.csum .cs.muted{color:var(--fm-soft);max-width:40ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.csum .tag{margin-left:0}
+@media (max-width:900px){.cbody{grid-template-columns:minmax(0,1fr)}}
+.facts .dt-wrap{flex-wrap:nowrap}
+.facts .dt-wrap .dt{min-width:0;width:9.5em}
+.facts .dt-wrap .tm{min-width:0;width:7em}
+.facts .fact:has(.dt-wrap){grid-column:span 2}
+@media (max-width:520px){.facts .fact:has(.dt-wrap){grid-column:auto}.facts .dt-wrap{flex-wrap:wrap}}
