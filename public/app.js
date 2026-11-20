@@ -473,6 +473,12 @@ function chip(a, label) {
     <span class="nm">${label ? esc(label) : `<span class="nm-s">${esc(shortName(a))}</span><span class="nm-f">${esc(fullName(a))}</span>`}</span>${hrs}${ap !== 'rejected' ? over : ''}${apMark}</div>`;
 }
 
+// Job site address as a tap-to-open map link (empty when the project has no address).
+function siteLink(address, cls = 'small site-addr') {
+  if (!address) return '';
+  return `<div class="${cls}"><a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" rel="noopener" title="Open in Maps">📍 ${esc(address)}</a></div>`;
+}
+
 function projectSub(p) {
   const budget = p.total_budget_hours ?? p.budget_hours;
   const pct = budget ? Math.round((p.hours_through_week / budget) * 100) : null;
@@ -502,7 +508,7 @@ function projectBoard() {
     <tbody>${projects.map((p) => {
       const pt = t.by_project[p.id] || { hours: 0, headcount: 0, days: {} };
       return `<tr>
-        <th class="proj"><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>${projectSub(p)}</th>
+        <th class="proj"><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>${siteLink(p.address)}${projectSub(p)}</th>
         ${d.days.map((day, i) => {
           const list = byCell[`${p.id}|${day}`] || [];
           const ct = pt.days[day];
@@ -542,7 +548,7 @@ function projectMobile() {
     ${!list.length && !S.onlyWithHours && (S.filterPm || S.filterSuper) ? `<div class="card muted">No jobs match the project manager / superintendent filter. <button class="link" data-act="clear-lead-filters">Clear filters</button></div>` : ''}
     ${list.map(({ p, a }) => `<div class="pcard">
       <div class="ph"><div><div class="proj-name"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span>${esc(p.job_number)} – ${esc(p.name)}</div>
-        ${p.address ? `<div class="small"><a href="https://maps.google.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a></div>` : ''}${projectSub(p)}</div>
+        ${siteLink(p.address)}${projectSub(p)}</div>
         <div class="right nowrap"><b>${a.filter((x) => x.approval_status !== 'rejected').length}</b> ppl<br><span class="small muted">${fmtH(a.filter((x) => x.approval_status !== 'rejected').reduce((sum, x) => sum + x.planned_hours, 0))} h</span></div></div>
       <div class="pb">${a.map((x) => chip(x, [fullName(x), x.trade].filter(Boolean).join(' · '))).join('')}${slotChips(p.id, day)}${a.length || slotGroups(p.id, day).length ? '' : '<div class="small muted">Nobody scheduled</div>'}
         ${canEditProject(p.id) ? `<button class="add-btn" style="margin-top:6px;min-height:36px" data-add="${p.id}|${day}">${isAdmin() ? '+ Add crew' : '+ Request crew'}</button>` : ''}</div>
@@ -664,6 +670,7 @@ function dispatchBoard(el) {
         const editable = canEditProject(p.id);
         return `<section class="djob ${editable ? '' : 'locked'}" data-drop="job:${p.id}" style="border-top-color:${esc(p.color || '#F15A22')}">
           <header><div class="djob-title">${esc(p.job_number)} <span>${esc(p.name)}</span></div>
+            ${siteLink(p.address)}
             <div class="small muted">Supt: ${esc(p.superintendent_name || '—')} · PM: ${esc(p.project_manager_name || '—')}</div>
             <div class="djob-tot"><b>${new Set(liveList.map((a) => a.employee_id)).size}</b> ppl · <b>${fmtH(liveList.reduce((sum, a) => sum + a.planned_hours, 0))}</b> h
               ${isAdmin() && pending.length ? `<button class="ok mini-btn" data-approve-job="${p.id}">✓ Approve ${pending.length}</button>` : ''}</div></header>
@@ -1368,7 +1375,7 @@ async function renderMy(page) {
   const today = todayStr();
   const card = (a) => `<div class="pcard" style="${a.work_date === today ? 'border-color:var(--orange);border-width:2px' : ''}${a.work_date < today ? ';opacity:.6' : ''}">
       <div class="ph"><div><b>${dayLabel(a.work_date, { weekday: 'long', month: 'short', day: 'numeric' })}</b>${a.work_date === today ? ' <span class="pill warn">Today</span>' : ''}
-        <div class="proj-name" style="margin-top:4px"><span class="proj-swatch" style="background:${esc(a.color || '#F15A22')}"></span>${esc(a.job_number)} – ${esc(a.project_name)}</div>
+        <div class="proj-name" style="margin-top:4px"><span class="proj-swatch" style="background:${esc(a.color || '#F15A22')}"></span>${esc(a.job_number)} – ${esc(a.project_name)}</div>${siteLink(a.project_address)}
         ${a.task ? `<div class="small muted">${esc(a.task)}</div>` : ''}</div>
         <div class="right nowrap"><b>${fmtH(a.planned_hours)} hrs</b></div></div>
     </div>`;
@@ -1734,7 +1741,7 @@ async function renderProjects(page) {
         const pct = p.budget_pct !== null ? Math.round(p.budget_pct * 100) : null;
         return `<tr class="${canSchedule() ? 'click' : ''}" data-id="${p.id}">
           <td class="nowrap"><span class="proj-swatch" style="background:${esc(p.color || '#F15A22')}"></span><b>${esc(p.job_number)}</b></td>
-          <td>${esc(p.name)}<div class="small muted">${esc([p.customer, p.address].filter(Boolean).join(' · '))}</div></td>
+          <td>${esc(p.name)}${p.customer ? `<div class="small muted">${esc(p.customer)}</div>` : ''}${siteLink(p.address)}</td>
           <td>${esc(p.project_manager_name || '')}</td>
           <td>${esc(p.superintendent_name || '')}</td><td>${statusPill(p.status)}</td>
           <td class="small nowrap">${esc(p.start_date || '')}${p.end_date ? ' → ' + esc(p.end_date) : ''}</td>
@@ -1855,7 +1862,7 @@ function projectModal(p) {
         <label>Board color<input type="color" name="color" value="${esc(p.color || '#F15A22')}"></label>
       </div>
       ${!supers.length || !pms.length ? `<div class="small muted">The lists come from Employees by Type: Superintendent, General Foreman or a union Foreman for superintendent / foreman; Project Manager for project manager. ${!pms.length ? 'No one has Type Project Manager yet.' : ''}</div>` : ''}
-      <label>Site address<input name="address" value="${esc(p.address || '')}"></label>
+      <label>Job site address<input name="address" value="${esc(p.address || '')}" placeholder="e.g. 1200 River Rd, Murphysboro, IL 62966"></label>
       <label>Notes<textarea name="notes">${esc(p.notes || '')}</textarea></label>
       ${p.id ? '<div id="co-box" class="co-box"><div class="small muted">Loading change orders…</div></div>' : '<div class="small muted">Save the project first, then add change orders.</div>'}`,
     footer: `${p.id && isAdmin() ? '<button class="danger" data-act="del">Delete</button>' : ''}<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save</button>`,
