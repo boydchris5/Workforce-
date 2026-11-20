@@ -397,3 +397,29 @@ main.est-page { max-width: none; padding: 0; }
 .est-frame { display: block; width: 100%; height: calc(100vh - 64px); height: calc(100dvh - 64px); border: 0; background: #fff; }
 .est-page.admin .est-frame { height: calc(100vh - 116px); height: calc(100dvh - 116px); }
 .est-admin { display: flex; gap: 8px; justify-content: flex-end; padding: 8px 16px; background: var(--card); border-top: 1px solid var(--line); }
+
+/* Tools menu (grouped, like Procore's tool picker) */
+header.top { position: relative; }
+header.top .spacer { flex: 1; }
+.tools-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 0; background: var(--charcoal, #2D2D2D); color: #fff; border: 0; border-radius: 6px; padding: 5px 12px; min-height: 0; cursor: pointer; text-align: left; line-height: 1.15; }
+.tools-btn:hover, .tools-btn.open { background: #444; }
+.tools-kicker { font-size: 11px; color: #cfcfcf; letter-spacing: .02em; }
+.tools-cur { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.tools-cur .caret { font-size: 11px; color: var(--orange, #F15A22); }
+.tools-panel { position: absolute; left: 0; right: 0; top: 100%; z-index: 60; background: #2D2D2D; color: #fff; padding: 14px 28px 22px; box-shadow: 0 12px 28px rgba(0,0,0,.3); border-bottom: 4px solid var(--orange, #F15A22); }
+.tools-panel[hidden] { display: none; }
+.tools-head { font-size: 13px; color: #cfcfcf; margin-bottom: 10px; }
+.tools-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px 36px; max-width: 1200px; }
+.tools-col h3 { font-size: 16px; margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid #666; color: #fff; }
+.tools-col a { display: block; padding: 6px 0; color: #e6e6e6; text-decoration: none; font-size: 15px; }
+.tools-col a:hover { color: var(--orange, #F15A22); }
+.tools-col a.active { color: var(--orange, #F15A22); font-weight: 700; }
+.tools-col a.active::before { content: '▸ '; }
+@media (max-width: 860px) {
+  .tools-panel { padding: 10px 16px 16px; max-height: calc(100vh - 70px); overflow-y: auto; }
+  .tools-cols { grid-template-columns: 1fr; gap: 14px; }
+  .tools-col a { padding: 9px 0; font-size: 16px; }
+  .tools-cur { font-size: 14px; }
+  header.top .brand { flex: 0 0 auto; }
+}
+@media print { .tools-btn, .tools-panel { display: none !important; } }

@@ -308,3 +308,9 @@ button.monthband:hover .mc{color:var(--fm-white)}
 .facts .dt-wrap .tm{min-width:0;width:7em}
 .facts .fact:has(.dt-wrap){grid-column:span 2}
 @media (max-width:520px){.facts .fact:has(.dt-wrap){grid-column:auto}.facts .dt-wrap{flex-wrap:wrap}}
+
+/* Three pages from one board (?view=) */
+.band .no{display:none}
+body[data-view=gng] #tiles,body[data-view=gng] #filters,body[data-view=gng] #cal-sec,body[data-view=gng] #sched-sec,body[data-view=gng] #hist-sec{display:none}
+body[data-view=history] #tiles,body[data-view=history] #filters,body[data-view=history] #cal-sec,body[data-view=history] #gng-sec,body[data-view=history] #sched-sec{display:none}
+body[data-view=schedule] #gng-sec,body[data-view=schedule] #hist-sec{display:none}

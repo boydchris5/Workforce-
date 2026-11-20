@@ -186,20 +186,23 @@ const canEditPeople = () => canSchedule() || (S.user && S.user.role === 'office_
 // Estimating (the bid board, possible bids, Go / No-Go): office logins only, never field or superintendents.
 const canEstimate = () => S.user && ['admin', 'office', 'office_admin'].includes(S.user.role);
 const ROUTES = [
-  { path: 'schedule', label: 'Schedule', render: renderSchedule, show: seesField },
-  { path: 'my', label: 'My Schedule', render: renderMy, show: () => !isOfficeRole() && S.user.employee_id },
-  { path: 'verify', label: 'Verify Hours', render: renderVerify, show: canVerify },
-  { path: 'projects', label: 'Projects', render: renderProjects, show: seesField },
-  { path: 'employees', label: 'Employees', render: renderEmployees, show: () => seesField() || canEditPeople() },
-  { path: 'records', label: 'Records', render: renderRecords, show: seesField },
-  { path: 'estimating', label: 'Estimating', render: renderEstimating, show: canEstimate },
-  { path: 'payroll', label: '🔒 Payroll', render: renderPayroll, show: () => S.user.can_view_payroll, cls: 'private' },
+  { path: 'schedule', label: 'Schedule', render: renderSchedule, show: seesField, group: 'field' },
+  { path: 'my', label: 'My Schedule', render: renderMy, show: () => !isOfficeRole() && S.user.employee_id, group: 'field' },
+  { path: 'verify', label: 'Verify Hours', render: renderVerify, show: canVerify, group: 'field' },
+  { path: 'records', label: 'Records', render: renderRecords, show: seesField, group: 'field' },
+  { path: 'projects', label: 'Projects', render: renderProjects, show: seesField, group: 'resources' },
+  { path: 'employees', label: 'Employees', render: renderEmployees, show: () => seesField() || canEditPeople(), group: 'resources' },
+  // Estimating: one bid board, three pages.
+  { path: 'estimating', label: 'Bid Board Schedule', render: (pg) => renderEstimating(pg, 'schedule'), show: canEstimate, group: 'precon' },
+  { path: 'estimating-gng', label: 'Go / No-Go', render: (pg) => renderEstimating(pg, 'gng'), show: canEstimate, group: 'precon' },
+  { path: 'estimating-history', label: 'Bid Results & History', render: (pg) => renderEstimating(pg, 'history'), show: canEstimate, group: 'precon' },
+  { path: 'payroll', label: '🔒 Payroll', render: renderPayroll, show: () => S.user.can_view_payroll, cls: 'private', group: 'company' },
   // Distinct from the field scheduler above: office staff request their own time off,
   // an Office Manager approves everyone's. The Workforce Manager (admin) sees it too.
   // Open to every role -- field staff/supers get read-only calendar visibility
   // into who's out; only office/office_admin/admin can request or approve.
-  { path: 'timeoff', label: 'Time Off', render: renderTimeOff },
-  { path: 'admin', label: 'Admin', render: renderAdmin, show: isAdmin },
+  { path: 'timeoff', label: 'Time Off', render: renderTimeOff, group: 'resources' },
+  { path: 'admin', label: 'Admin', render: renderAdmin, show: isAdmin, group: 'company' },
 ];
 
 function currentRoute() {
@@ -210,26 +213,45 @@ function currentRoute() {
 }
 
 // The user guide opens at the section for the page you're on.
-const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', timeoff: 'timeoff', estimating: 'estimating', admin: 'admin' };
+const HELP_SECTIONS = { schedule: 'schedule', my: 'my-schedule', verify: 'verify', projects: 'projects', employees: 'employees', records: 'records', payroll: 'payroll', timeoff: 'timeoff', estimating: 'estimating', 'estimating-gng': 'estimating', 'estimating-history': 'estimating', admin: 'admin' };
 const helpLink = (path) => `/help.html#${HELP_SECTIONS[path] || 'welcome'}`;
 
+// Tools menu: pages grouped under headings (like Procore's tool picker). Each person only sees
+// the pages their login allows; empty groups are left out.
+const MENU_GROUPS = [['field', 'Field Operations'], ['resources', 'Resources'], ['precon', 'Preconstruction'], ['company', 'Company']];
 function shell() {
   const r = currentRoute();
   const roleName = ROLE_NAMES[S.user.role];
+  const visible = ROUTES.filter((x) => !x.show || x.show());
+  const groupName = Object.fromEntries(MENU_GROUPS);
+  const cols = MENU_GROUPS.map(([key, title]) => {
+    const items = visible.filter((x) => (x.group || 'company') === key)
+      .map((x) => `<a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a>`);
+    if (key === 'company') items.push(`<a href="${helpLink(r.path)}" target="_blank" rel="noopener">? Help &amp; user guide</a>`, '<a href="#" data-act="account">My account</a>');
+    return items.length ? `<div class="tools-col"><h3>${esc(title)}</h3>${items.join('')}</div>` : '';
+  }).join('');
   $('#app').innerHTML = `
     <header class="top">
-      <button class="menu-btn" aria-label="Menu">☰</button>
-      <a class="brand" href="#/schedule" title="${esc(S.settings.company_name || '')}"><img src="/logo.jpg" alt="Fager-McGee Commercial Construction"></a>
-      <nav>${ROUTES.filter((x) => !x.show || x.show()).map((x) => `<a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a>`).join('')}<a href="${helpLink(r.path)}" target="_blank" rel="noopener" class="nav-account">? Help &amp; user guide</a><a href="#" class="nav-account" data-act="account">My account</a></nav>
+      <a class="brand" href="#/${visible[0].path}" title="${esc(S.settings.company_name || '')}"><img src="/logo.jpg" alt="Fager-McGee Commercial Construction"></a>
+      <button class="tools-btn" aria-haspopup="true" aria-expanded="false" aria-controls="tools-panel">
+        <span class="tools-kicker">${esc(groupName[r.group || 'company'] || 'Tools')}</span>
+        <span class="tools-cur">${esc(r.label)} <span class="caret">▾</span></span></button>
+      <span class="spacer"></span>
       <a class="help-link" href="${helpLink(r.path)}" target="_blank" rel="noopener" title="Open the user guide for this page">? Help</a>
       <div class="who" title="Account">${esc(S.user.name)} · ${roleName} ▾</div>
+      <div id="tools-panel" class="tools-panel" role="navigation" aria-label="Tools" hidden><div class="tools-head">Select a tool</div><div class="tools-cols">${cols}</div></div>
     </header>
     <main id="page"></main>
     <footer class="site">${FOOTER}</footer>`;
-  $('.menu-btn').onclick = () => $('header.top nav').classList.toggle('open');
-  $$('header.top nav a').forEach((a) => a.addEventListener('click', () => $('header.top nav').classList.remove('open')));
+  const btn = $('.tools-btn'); const panel = $('#tools-panel');
+  const setOpen = (open) => { panel.hidden = !open; btn.setAttribute('aria-expanded', String(open)); btn.classList.toggle('open', open); };
+  btn.onclick = (e) => { e.stopPropagation(); setOpen(panel.hidden); };
+  panel.onclick = (e) => e.stopPropagation();
+  document.onclick = () => setOpen(false);
+  document.onkeydown = (e) => { if (e.key === 'Escape' && !panel.hidden) { setOpen(false); btn.focus(); } };
+  $$('a', panel).forEach((a) => a.addEventListener('click', () => setOpen(false)));
   $('.who').onclick = accountMenu;
-  $('[data-act=account]').onclick = (e) => { e.preventDefault(); accountMenu(); };
+  $('[data-act=account]', panel).onclick = (e) => { e.preventDefault(); accountMenu(); };
   r.render($('#page'));
 }
 
@@ -2807,11 +2829,15 @@ boot();
 // Estimating: the FM Bid Board (public/estimating/board.html), shown full width in a frame so it looks
 // and works exactly like the board the team used in Claude. Its data lives in this app.
 // ---------------------------------------------------------------------------
-function renderEstimating(page) {
+function renderEstimating(page, view = 'schedule') {
+  const adminBar = isAdmin() && view !== 'history';
   page.classList.add('est-page');
-  page.classList.toggle('admin', isAdmin());
-  page.innerHTML = `<iframe class="est-frame" src="/estimating/board.html" title="FM Bid Board"></iframe>
-    ${isAdmin() ? '<div class="est-admin"><button data-act="weights">Go / No-Go scorecard weights…</button><button data-act="import">Import bid board data…</button></div>' : ''}`;
+  page.classList.toggle('admin', adminBar);
+  const bid = new URLSearchParams(location.hash.split('?')[1] || '').get('bid');
+  const src = `/estimating/board.html?view=${view}${bid && view === 'schedule' ? `&bid=${encodeURIComponent(bid)}` : ''}`;
+  const titles = { schedule: 'Bid Board Schedule', gng: 'Go / No-Go', history: 'Bid Results & History' };
+  page.innerHTML = `<iframe class="est-frame" src="${esc(src)}" title="${esc(titles[view])}"></iframe>
+    ${adminBar ? `<div class="est-admin">${view === 'gng' ? '<button data-act="weights">Go / No-Go scorecard weights…</button>' : '<button data-act="import">Import bid board data…</button>'}</div>` : ''}`;
   const w = $('[data-act=weights]', page); if (w) w.onclick = () => estWeightsModal(page);
   const imp = $('[data-act=import]', page); if (imp) imp.onclick = () => estImportModal(page);
 }
@@ -2830,7 +2856,7 @@ async function estWeightsModal(page) {
   $('[data-act=save]', m.el).onclick = async () => {
     const f = formData(m.el);
     const weights = Object.fromEntries(sc.questions.map((q) => [q.key, Number(f[`w_${q.key}`])]));
-    try { await api('PUT', '/estimating/config', { weights, go_at: Number(f.go_at), review_at: Number(f.review_at) }); m.close(); toast('Weights saved'); renderEstimating(page); } catch (e) { errorBox(m.el, e.message); }
+    try { await api('PUT', '/estimating/config', { weights, go_at: Number(f.go_at), review_at: Number(f.review_at) }); m.close(); toast('Weights saved'); renderEstimating(page, 'gng'); } catch (e) { errorBox(m.el, e.message); }
   };
 }
 
