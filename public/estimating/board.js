@@ -1,5 +1,5 @@
 (function () {
-  const S = { ignored: new Set(), bids: [], deadlines: [], team: { estimators: [] }, sp: { folders: [] }, sync: null, filter: 'all', types: new Set(['bid', 'lead', 'pre', 'must', 'q', 'int', 'sent', 'off']), timeoff: null, editing: null, confirmDel: null, undo: null, canWrite: true, db: null, loaded: false, spFolders: null };
+  const S = { expanded: new Set(), ignored: new Set(), bids: [], deadlines: [], team: { estimators: [] }, sp: { folders: [] }, sync: null, filter: 'all', types: new Set(['bid', 'lead', 'pre', 'must', 'q', 'int', 'sent', 'off']), timeoff: null, editing: null, confirmDel: null, undo: null, canWrite: true, db: null, loaded: false, spFolders: null };
   const STATUSES = ['Lead', 'Not started', 'In progress', 'Submitted', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid', 'Passed'];
   const LEGACY = { 'Docs received': 'Not started', 'Concept': 'Not started', 'Estimating': 'In progress', 'Updating prior estimate': 'In progress', 'Bid forms executed': 'In progress', 'No bid': 'Passed' };
   const SECTORS = ['Public – CDB', 'Public – K-12', 'Public – Higher Ed (non-CDB)', 'Public – Municipal/County', 'Healthcare – Hospital', 'Healthcare – Medical Office/Clinic', 'Private – Industrial', 'Private – Commercial'];
@@ -291,7 +291,10 @@
     if (!rows.length) { tb.appendChild(el('div', 'card empty', S.loaded ? 'No bids match this filter.' : 'Loading bids…')); return; }
     rows.forEach(b => {
       const id = b._id; const closed = CLOSED.has(statusOf(b));
-      const card = el('article', 'card' + (closed ? ' closed' : '') + (S.editing === id ? ' open' : '')); card.id = 'bid-' + id;
+      // Finished bids (submitted, won, lost…) shrink to a one-line summary until opened.
+      const compact = closed && S.editing !== id && !S.expanded.has(id);
+      const toggleOpen = () => { if (S.expanded.has(id)) S.expanded.delete(id); else S.expanded.add(id); S.confirmDel = null; renderTable(); };
+      const card = el('article', 'card' + (closed ? ' closed' : '') + (compact ? ' compact' : '') + (S.editing === id ? ' open' : '')); card.id = 'bid-' + id;
       // date block
       const db = el('div', 'dblk');
       if (b.bid_date) { const d = parse(b.bid_date); db.appendChild(el('span', 'mo', d.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }))); db.appendChild(el('span', 'dd', String(d.getUTCDate()))); db.appendChild(el('span', 'wd', d.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }))); }
@@ -301,7 +304,7 @@
       // head line
       const head = el('div', 'chead');
       const ttl = el('div', 'ttl');
-      const pbtn = el('button', 'proj-btn', b.project); pbtn.type = 'button'; pbtn.title = 'Edit details'; pbtn.addEventListener('click', () => { S.editing = S.editing === id ? null : id; S.confirmDel = null; renderTable(); });
+      const pbtn = el('button', 'proj-btn', b.project); pbtn.type = 'button'; pbtn.title = compact ? 'Show details' : 'Edit details'; pbtn.addEventListener('click', () => { if (compact) return toggleOpen(); S.editing = S.editing === id ? null : id; S.confirmDel = null; renderTable(); });
       ttl.appendChild(pbtn);
       ttl.appendChild(el('span', 'o', [b.id || id, b.location, b.sector, b.delivery].filter(Boolean).join(' · ')));
       const dupOf = dups.get(id); if (dupOf) ttl.appendChild(el('span', 'dup', 'Possible duplicate of ' + dupOf));
@@ -318,7 +321,11 @@
         const yes = el('button', 'ib del solid', 'Delete'); yes.type = 'button'; yes.addEventListener('click', () => deleteBid(id));
         const no = el('button', 'ib', 'Cancel'); no.type = 'button'; no.addEventListener('click', () => { S.confirmDel = null; renderTable(); });
         ac.appendChild(yes); ac.appendChild(no);
+      } else if (compact) {
+        const op = el('button', 'ib', 'Details ▾'); op.type = 'button'; op.setAttribute('aria-label', 'Show details for ' + b.project); op.addEventListener('click', toggleOpen);
+        ac.appendChild(op);
       } else {
+        if (closed && S.editing !== id) { const cl = el('button', 'ib', 'Collapse ▴'); cl.type = 'button'; cl.setAttribute('aria-label', 'Collapse ' + b.project); cl.addEventListener('click', toggleOpen); ac.appendChild(cl); }
         const ed = el('button', 'ib', S.editing === id ? 'Close' : 'Edit'); ed.type = 'button'; ed.addEventListener('click', () => { S.editing = S.editing === id ? null : id; S.confirmDel = null; renderTable(); });
         const del = el('button', 'ib del', 'Delete'); del.type = 'button'; const keepHist = KEEP_ST.has(statusOf(b)); del.disabled = !S.canWrite || keepHist; if (keepHist) del.title = 'Kept for bid history. Change the status instead of deleting.'; del.setAttribute('aria-label', 'Delete ' + b.project); del.addEventListener('click', () => { S.confirmDel = id; renderTable(); });
         ac.appendChild(ed); ac.appendChild(del);
@@ -326,6 +333,10 @@
       right.appendChild(ac);
       head.appendChild(right);
       main.appendChild(head);
+      if (compact) { main.appendChild(compactSummary(b)); card.appendChild(main); tb.appendChild(card); return; }
+      // Body: details on the left, results + notes in a side panel on the right.
+      const body = el('div', 'cbody'); const left = el('div', 'cleft'); const side = el('div', 'cside');
+      body.appendChild(left); body.appendChild(side); main.appendChild(body);
       // facts line
       const facts = el('div', 'facts');
       const fact = (label, node) => { const f = el('div', 'fact'); f.appendChild(el('span', 'fl', label)); f.appendChild(node); facts.appendChild(f); return f; };
@@ -384,14 +395,14 @@
             box.appendChild(add);
           }
         }
-        fact('Pre-bid · who is going', box);
+        fact('Pre-bid · who is going', box).classList.add('wide');
       }
-      main.appendChild(facts);
+      left.appendChild(facts);
       if (!closed && S.timeoff) {
         const warns = [];
         if (b.bid_date && b.bid_date >= todayIso) { const cl = clashes(teamOf(b), b.bid_date); if (cl.length) warns.push('Bid day: ' + clashText(cl, b.bid_date) + '.'); }
         pbs.filter(d => d.date && d.date >= todayIso).forEach(d => { const cl = clashes(goingTo(d), d.date); if (cl.length) warns.push((d.mandatory ? 'Mandatory pre-bid' : 'Pre-bid') + ': ' + clashText(cl, d.date) + '.'); });
-        if (warns.length) { const w = el('div', 'dflag'); w.appendChild(el('strong', null, 'Time off conflict')); warns.forEach(t => w.appendChild(el('span', 'q', t))); main.appendChild(w); }
+        if (warns.length) { const w = el('div', 'dflag'); w.appendChild(el('strong', null, 'Time off conflict')); warns.forEach(t => w.appendChild(el('span', 'q', t))); left.appendChild(w); }
       }
       if (b.date_flag && b.date_flag.date && b.date_flag.date !== b.bid_date) {
         const fl = el('div', 'dflag');
@@ -402,7 +413,7 @@
         ap.addEventListener('click', () => { const patch = { bid_date: b.date_flag.date, date_flag: null }; if (b.date_flag.time) patch.bid_time = b.date_flag.time; saveBid(id, patch); });
         const ig = el('button', 'ib', 'Ignore'); ig.type = 'button'; ig.disabled = !S.canWrite;
         ig.addEventListener('click', () => saveBid(id, { date_flag: null, date_flag_ignored: b.date_flag.source === 'Bid documents' ? 'documents:' + b.date_flag.date : (b.date_flag.source || '') }));
-        fl.appendChild(ap); fl.appendChild(ig); main.appendChild(fl);
+        fl.appendChild(ap); fl.appendChild(ig); left.appendChild(fl);
       }
       if (Array.isArray(b.suggest) && b.suggest.length) {
         const sg = el('div', 'sugg');
@@ -415,7 +426,7 @@
         const ig = el('button', 'ib', 'Keep board values'); ig.type = 'button'; ig.disabled = !S.canWrite;
         ig.addEventListener('click', () => { const keep = Object.assign({}, b.sp_keep || {}); b.suggest.forEach(x => { keep[x.field] = x.value; }); saveBid(id, { suggest: [], sp_keep: keep }); });
         const acts = el('div', 'row'); acts.appendChild(ap); acts.appendChild(ig); sg.appendChild(acts);
-        main.appendChild(sg);
+        left.appendChild(sg);
       }
       {
         const ad = el('div', 'adds'); ad.appendChild(el('span', 'fl', 'Addenda in folder'));
@@ -433,18 +444,17 @@
           });
           ad.appendChild(ul);
         }
-        main.appendChild(ad);
+        left.appendChild(ad);
       }
-      if (needsResult(b) || statusOf(b) === 'Passed') main.appendChild(resultsCard(b));
+      if (needsResult(b) || statusOf(b) === 'Passed') side.appendChild(resultsCard(b));
+      { const rv = romVsLow(b); if (rv) side.appendChild(rv); }
       // description + notes
-      const dn = el('div', 'descnotes');
       const dsc = el('div', 'desc'); dsc.appendChild(el('span', 'fl', 'Job description')); dsc.appendChild(el('p', null, b.description || 'No description yet. Click Edit to add one.')); if (!b.description) dsc.classList.add('blank');
-      dn.appendChild(dsc);
+      left.appendChild(dsc);
       const nwrap = el('div', 'notes'); nwrap.appendChild(el('span', 'fl', 'Notes'));
-      const nt = el('textarea', 'note'); nt.id = 'note-' + id; nt.placeholder = 'Add a note for the team'; nt.maxLength = 1000; nt.rows = 2; nt.setAttribute('aria-label', 'Notes for ' + b.project); nt.value = b.notes || ''; nt.disabled = !S.canWrite;
+      const nt = el('textarea', 'note'); nt.id = 'note-' + id; nt.placeholder = 'Add a note for the team'; nt.maxLength = 1000; nt.rows = 4; nt.setAttribute('aria-label', 'Notes for ' + b.project); nt.value = b.notes || ''; nt.disabled = !S.canWrite;
       nt.addEventListener('change', () => saveBid(id, { notes: nt.value }, nwrap)); nwrap.appendChild(nt);
-      dn.appendChild(nwrap);
-      main.appendChild(dn);
+      side.appendChild(nwrap);
       if (S.editing === id) main.appendChild(editorFor(b));
       card.appendChild(main);
       tb.appendChild(card);
@@ -522,6 +532,37 @@
     });
     box.appendChild(resField('Full bid tab (optional): one bidder per line, firm then amount. Blank fields above fill in from it.', ta, true));
     if (!FINAL_ST.has(st)) box.appendChild(el('span', 'msg', 'When the award is known, set the status above to Won, Lost, No award, Cancelled or Rebid.'));
+    return box;
+  }
+
+  // One-line summary for a finished bid: estimators, ROM, our result and what is still missing.
+  function compactSummary(b) {
+    const row = el('div', 'csum');
+    const team = teamOf(b);
+    if (team.length) row.appendChild(el('span', 'cs', 'Est. ' + team.map(initials).join(' · ')));
+    if (b.rom != null) row.appendChild(el('span', 'cs', 'ROM ' + money(b.rom)));
+    const s = resultStats(b);
+    if (s.our) {
+      const place = s.rank === 1 ? 'FM low' : s.rank ? 'FM ' + ordinal(s.rank) : 'FM bid';
+      row.appendChild(el('span', 'cs strong', place + (s.n > 1 ? ' of ' + s.n : '') + ' · ' + money(s.our) + (s.rank !== 1 && s.overPct != null ? ' (+' + pct(s.overPct) + ' over low)' : '') + (s.rank === 1 && s.gap2Pct != null ? ' (next +' + pct(s.gap2Pct) + ')' : '')));
+    }
+    const rv = romVsLowText(b); if (rv) row.appendChild(el('span', 'cs', rv));
+    if ((needsResult(b) || statusOf(b) === 'Passed') && !resultsDone(b) && statusOf(b) !== 'Passed') row.appendChild(el('span', 'tag', !s.our ? 'Needs results' : 'Needs outcome'));
+    if (b.notes) { const n = el('span', 'cs muted', '📝 ' + (b.notes.length > 60 ? b.notes.slice(0, 60) + '…' : b.notes)); n.title = b.notes; row.appendChild(n); }
+    return row;
+  }
+  const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 - 20) % 10] || ['th', 'st', 'nd', 'rd'][n % 100] || 'th');
+  // How our pre-bid ROM compared with the low bid (estimating accuracy).
+  function romVsLowText(b) {
+    const s = resultStats(b);
+    if (b.rom == null || !(b.rom > 0) || !(s.low > 0)) return '';
+    const d = (b.rom - s.low) / s.low * 100;
+    return 'ROM vs low ' + (d >= 0 ? '+' : '−') + pct(Math.abs(d));
+  }
+  function romVsLow(b) {
+    const t = romVsLowText(b); if (!t) return null;
+    const box = el('div', 'romlow'); box.appendChild(el('span', 'fl', 'ROM vs low bid'));
+    box.appendChild(el('span', 'fv', t.replace('ROM vs low ', '') + ' (ROM ' + money(b.rom) + ' · low ' + money(resultStats(b).low) + ')'));
     return box;
   }
 
