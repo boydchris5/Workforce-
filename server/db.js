@@ -346,7 +346,7 @@ const DEFAULT_SETTINGS = {
   super_pto_default_hours: '0',
 };
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 // Upgrades databases created by earlier versions without losing data.
 function migrate(db) {
@@ -434,6 +434,7 @@ function migrate(db) {
     db.exec('PRAGMA foreign_keys = ON;');
   }
   // v9: email notifications + office logins that can view the field schedule.
+  // v14: can_estimate (Estimating access) joins this list.
   const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   const addUser = { email: 'TEXT', notify_requests: 'INTEGER NOT NULL DEFAULT 1', can_view_schedule: 'INTEGER NOT NULL DEFAULT 0', can_estimate: 'INTEGER NOT NULL DEFAULT 0' };
   for (const [c, type] of Object.entries(addUser)) if (!userCols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} ${type};`);
