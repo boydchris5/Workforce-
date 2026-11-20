@@ -314,3 +314,26 @@ button.monthband:hover .mc{color:var(--fm-white)}
 body[data-view=gng] #tiles,body[data-view=gng] #filters,body[data-view=gng] #cal-sec,body[data-view=gng] #sched-sec,body[data-view=gng] #hist-sec{display:none}
 body[data-view=history] #tiles,body[data-view=history] #filters,body[data-view=history] #cal-sec,body[data-view=history] #gng-sec,body[data-view=history] #sched-sec{display:none}
 body[data-view=schedule] #gng-sec,body[data-view=schedule] #hist-sec{display:none}
+
+/* Go / No-Go page */
+.gcap{font-size:13px;color:var(--fm-mid);background:var(--fm-tint);border-left:4px solid var(--fm-line);padding:6px 10px}
+.gqn{font:inherit;font-size:12.5px;border:1px solid var(--fm-line);border-radius:3px;padding:4px 6px;width:100%;margin-top:4px}
+.greasons{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}
+.greasons .fl{width:100%}
+.greasons .chk{font-size:13px;display:inline-flex;gap:4px;align-items:center}
+.pltab tr.plrow{cursor:pointer}
+.pltab tr.plrow:hover td,.pltab tr.plrow.open td{background:var(--fm-tint)}
+.pltab tr.pldet td{background:var(--fm-white);border-bottom:2px solid var(--fm-orange)}
+.plwrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,320px);gap:16px;padding:6px 2px}
+.plsc{list-style:none;margin:4px 0 8px;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
+.plsc .tog{display:inline-block;min-width:44px;text-align:center;font-size:11px;padding:1px 6px;border-radius:999px;border:1px solid var(--fm-line)}
+.plsc .tog.r-good{background:#1E7A3C;color:#fff;border-color:#1E7A3C}.plsc .tog.r-ok{background:var(--fm-tint)}.plsc .tog.r-poor{background:var(--fm-orange);color:#fff;border-color:var(--fm-orange)}
+.plsc .why{color:var(--fm-mid);font-style:italic}
+.plgot{display:flex;flex-direction:column;gap:6px}
+.plgot input{font:inherit;font-size:13px;border:1px solid var(--fm-line);border-radius:3px;padding:5px 7px}
+.plgot .btn,.plgot .ib{align-self:flex-start}
+.angrid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.showfin{font-size:13px;color:var(--fm-mid);display:inline-flex;gap:6px;align-items:center;margin:4px 0}
+@media (max-width:700px){.plwrap{grid-template-columns:1fr}}
+.gdec .greasons label.chk,.greasons label.chk{display:inline-flex;flex-direction:row;align-items:center;gap:5px;font-weight:400}
+.greasons label.chk input{width:auto;margin:0}

@@ -29,6 +29,7 @@
     <div class="band"><span class="no">01 —</span><span>Bid calendar</span></div>
     <div class="filters inline" role="group" aria-label="Filter calendar by person" id="filters3"><span class="lbl">Person</span></div>
     <div class="filters inline" role="group" aria-label="Filter calendar by event type" id="typefilters"><span class="lbl">Show</span></div>
+    <label class="chk showfin"><input type="checkbox" class="show-fin"> Show finished bids (won, lost and no-award with results logged)</label>
     <p class="msg" id="cal-count"></p>
     <p class="sub"><span class="holkey"></span> Gray striped days are company holidays from the Company Policy Manual (§7.3) plus the day after Thanksgiving, when most office staff are off. Veterans Day is lightly shaded: it's an optional holiday and the office is open.<span class="offkey"></span><span id="off-note">Estimating and Pre-Con time off comes from the FM Workforce app (dashed = still pending approval).</span></p>
     <div class="legend" aria-hidden="true" hidden>
@@ -46,6 +47,7 @@
 
   <section id="gng-sec">
     <div class="band"><span class="no">02 —</span><span>Possible bids · Go / No-Go</span><span class="r" id="gng-count"></span></div>
+    <div class="tiles" id="gng-tiles"></div>
     <p class="sub" id="gng-sub">Every possible bid lands here first. Rate the six questions Good, OK or Poor and the score suggests Go or No-Go. Territory and Size &amp; bonding are gates: Poor on either suggests No-Go. Your call always wins. Go puts the job on the bid schedule; No-Go logs it as Passed with the reason.</p>
     <div class="row"><button type="button" class="btn sec" id="gng-add-open">Add a possible bid</button><span class="msg">Undecided bids show dashed on the Bid Board Schedule calendar, where the Undecided filter turns them off.</span></div>
     <form class="addform" id="gng-form" hidden>
@@ -58,12 +60,25 @@
       <div class="acts"><button type="submit" class="btn">Add possible bid</button><button type="button" class="btn sec" id="gng-cancel">Cancel</button><span class="msg" id="gng-msg"></span></div>
     </form>
     <div class="cards" id="gng-list" aria-live="polite"></div>
-    <div class="sbox" id="gng-recent" hidden><h3><span>Decided in the last 30 days</span><span id="gng-rc"></span></h3><ul id="gng-rl"></ul></div>
+    <div class="sbox" id="gng-recent" hidden><h3><span>Go decisions in the last 30 days</span><span id="gng-rc"></span></h3><ul id="gng-rl"></ul></div>
+    <div class="band"><span>Passed jobs</span><span class="r" id="pl-count"></span></div>
+    <p class="sub">Every job we passed on, with the scorecard, the reasons and who decided. Click a row for the full scorecard and the "why" notes, to log who got the job, or to put it back to undecided.</p>
+    <div class="filters inline" id="pl-filters"></div>
+    <div class="tw"><table class="htab pltab" id="pl-table"></table></div>
+    <div class="band"><span>Decision analysis</span></div>
+    <p class="sub" id="an-note"></p>
+    <div class="syncgrid angrid">
+      <div class="sbox"><h3><span>Passed by reason</span></h3><div class="tw"><table class="htab" id="an-reason"></table></div></div>
+      <div class="sbox"><h3><span>Passed by sector</span></h3><div class="tw"><table class="htab" id="an-sector"></table></div></div>
+      <div class="sbox"><h3><span>Passed by month</span></h3><div class="tw"><table class="htab" id="an-month"></table></div></div>
+      <div class="sbox"><h3 class="hl"><span>Win rate by Go score</span></h3><div class="tw"><table class="htab" id="an-score"></table></div></div>
+    </div>
   </section>
 
   <section id="sched-sec">
     <div class="band"><span class="no">03 —</span><span>Bid schedule</span><span class="r">Changes save for everyone as you make them</span></div>
     <div class="filters inline" role="group" aria-label="Filter bid schedule by estimator" id="filters2"><span class="lbl">Show bids for</span></div>
+    <label class="chk showfin"><input type="checkbox" class="show-fin"> Show finished bids</label>
     <div class="row"><button type="button" class="btn sec" id="add-open">Add a bid</button><span class="msg">Tap initials to put estimators on a bid, or on a pre-bid to say who is going. Click a project name or Edit to change any detail.</span></div>
     <form class="addform" id="addform" hidden>
       <label>Project name<input id="f-project" required maxlength="120" placeholder="Carruthers Cafeteria &amp; Kitchen Addition"></label>

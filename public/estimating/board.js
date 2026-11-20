@@ -9,7 +9,7 @@
     const h = document.querySelector('header.brand h1'); if (h) h.textContent = T[0];
     const m = document.querySelector('header.brand .meta'); if (m) m.textContent = 'Estimating · ' + T[1] + ' · Shared with the estimating team';
     document.title = T[0] + ' – FM Bid Board'; }
-  const S = { expanded: new Set(), ignored: new Set(), bids: [], deadlines: [], team: { estimators: [] }, sp: { folders: [] }, sync: null, filter: 'all', types: new Set(['bid', 'lead', 'pre', 'must', 'q', 'int', 'sent', 'off']), timeoff: null, editing: null, confirmDel: null, undo: null, canWrite: true, db: null, loaded: false, spFolders: null };
+  const S = { showFinished: false, plOpen: null, pf: { year: String(new Date().getFullYear()), reason: 'all', sector: 'all', who: 'all' }, expanded: new Set(), ignored: new Set(), bids: [], deadlines: [], team: { estimators: [] }, sp: { folders: [] }, sync: null, filter: 'all', types: new Set(['bid', 'lead', 'pre', 'must', 'q', 'int', 'sent', 'off']), timeoff: null, editing: null, confirmDel: null, undo: null, canWrite: true, db: null, loaded: false, spFolders: null };
   const STATUSES = ['Lead', 'Not started', 'In progress', 'Submitted', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid', 'Passed'];
   const LEGACY = { 'Docs received': 'Not started', 'Concept': 'Not started', 'Estimating': 'In progress', 'Updating prior estimate': 'In progress', 'Bid forms executed': 'In progress', 'No bid': 'Passed' };
   const SECTORS = ['Public – CDB', 'Public – K-12', 'Public – Higher Ed (non-CDB)', 'Public – Municipal/County', 'Healthcare – Hospital', 'Healthcare – Medical Office/Clinic', 'Private – Industrial', 'Private – Commercial'];
@@ -185,11 +185,15 @@
   // Jobs we passed on (No-Go) stay off the Bid Board Schedule: no bid-due or pre-bid events, no card,
   // not in the PDF. They live on the Go / No-Go page and in Bid Results & History.
   const isPassed = (b) => !!b && statusOf(b) === 'Passed';
+  // Finished = won / lost / no award / cancelled / rebid with the results logged. These drop off the
+  // schedule and calendar on their own (they live in Bid Results & History); "Show finished bids" brings them back.
+  const isFinished = (b) => !!b && FINAL_ST.has(statusOf(b)) && resultsDone(b);
+  const offSchedule = (b) => isPassed(b) || (!S.showFinished && isFinished(b));
   function calEvents() {
-    const passedIds = new Set(S.bids.filter(isPassed).map(b => b._id));
-    const passedProj = new Set(S.bids.filter(isPassed).map(b => b.project));
-    const evs = S.deadlines.filter(r => r.kind !== 'Bid' && !passedIds.has(r.bid_id) && !(r.bid_id == null && passedProj.has(r.project))).map(r => Object.assign({}, r));
-    S.bids.forEach(b => { if (b.bid_date && !isPassed(b)) evs.push({ date: b.bid_date, time: b.bid_time || 'TBD', project: b.project, event: 'Bid due', kind: 'Bid', _bid: b }); });
+    const hidden = S.bids.filter(offSchedule);
+    const hiddenIds = new Set(hidden.map(b => b._id)); const hiddenProj = new Set(hidden.map(b => b.project));
+    const evs = S.deadlines.filter(r => r.kind !== 'Bid' && !hiddenIds.has(r.bid_id) && !(r.bid_id == null && hiddenProj.has(r.project))).map(r => Object.assign({}, r));
+    S.bids.forEach(b => { if (b.bid_date && !offSchedule(b)) evs.push({ date: b.bid_date, time: b.bid_time || 'TBD', project: b.project, event: 'Bid due', kind: 'Bid', _bid: b }); });
     return evs;
   }
 
@@ -301,7 +305,7 @@
     const tb = $('#bids');
     if (tb.contains(document.activeElement) && (document.activeElement.tagName !== 'BUTTON' || S.resEdit)) { S.tableStale = true; return; }
     S.tableStale = false; tb.textContent = '';
-    const rows = S.bids.filter(b => !isLead(b) && !isPassed(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
+    const rows = S.bids.filter(b => !isLead(b) && !offSchedule(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
     const dups = findDups();
     if (!rows.length) { tb.appendChild(el('div', 'card empty', S.loaded ? 'No bids match this filter.' : 'Loading bids…')); return; }
     rows.forEach(b => {
@@ -1298,7 +1302,7 @@
       });
       // schedule
       doc.addPage(); header('Bid Schedule');
-      const rows = S.bids.filter(b => !isLead(b) && !isPassed(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
+      const rows = S.bids.filter(b => !isLead(b) && !offSchedule(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
       const sbody = rows.map(b => {
         const pre = prebidsFor(b).map(d => fmtDay(d.date) + (d.time ? ' ' + d.time : '') + (d.mandatory ? ' (MANDATORY)' : '') + (goingTo(d).length ? ' — ' + goingTo(d).map(initials).join(', ') : '')).join('\n') || (b.prebid || '');
         return [fmtDay(b.bid_date) + '\n' + (b.bid_time || '') + (b.bid_opening ? '\n' + b.bid_opening : ''), b.project + '\n' + [b.id || b._id, b.location].filter(Boolean).join(' · '), (b.owner || '—') + '\n' + (b.architect || '—'), teamOf(b).map(initials).join(', ') || '—', pre, b.value_label || '', b.rom == null ? '' : money(b.rom), statusOf(b), b.bid_security || '', b.description || '', b.notes || ''];
@@ -1340,20 +1344,143 @@
     cfg.questions.forEach(q => { const w = Number(q.weight) || 0; total += w; if (!(r[q.key] in RATING)) return; rated++; const v = RATING[r[q.key]]; earned += w * v; if (q.gate && r[q.key] === 'poor' && !gate) gate = q; const lost = w * (1 - v); if (lost > 0 && (!worst || lost > worst.lost)) worst = { q, lost }; });
     const score = total ? Math.round(earned / total * 100) : 0, complete = rated === cfg.questions.length;
     const suggestion = gate ? 'no_go' : complete ? (score >= cfg.go_at ? 'go' : score >= cfg.review_at ? 'review' : 'no_go') : null;
-    const why = gate || (worst && worst.q); return { score, rated, of: cfg.questions.length, suggestion, reason: why ? why.reason : null };
+    const why = gate || (worst && worst.q); return { score, rated, of: cfg.questions.length, suggestion, reason: why ? why.reason : null, gate: gate ? gate.label : null };
   }
   const SUG = { go: ['Suggested Go', 'go'], review: ['Your call', 'review'], no_go: ['Suggested No-Go', 'nogo'] };
   const meName = () => (FM.me && FM.me.name) || 'Someone';
   async function decide(b, decision) {
     const sc = scoreOf(b) || {}; const card = document.getElementById('gng-' + b._id);
     const note = card ? (card.querySelector('.gnote') || {}).value || '' : '';
-    const reason = card ? (card.querySelector('.greason') || {}).value || sc.reason || '' : '';
-    const prev = { status: b.status || 'Lead', decision: b.decision || null, decision_score: b.decision_score ?? null, decision_note: b.decision_note || '', decided_by: b.decided_by || '', decided_at: b.decided_at || '', nobid_reason: b.nobid_reason || '', nobid_by: b.nobid_by || '' };
+    const picked = card ? Array.from(card.querySelectorAll('.greasons input:checked')).map(x => x.value) : [];
+    const reasons = picked.length ? picked : (sc.reason ? [sc.reason] : []);
+    if (decision === 'no_go' && !reasons.length) { showBanner('Tick at least one reason for the No-Go.'); return; }
+    const reason = reasons.join(', ');
+    const prev = { status: b.status || 'Lead', decision: b.decision || null, decision_score: b.decision_score ?? null, decision_note: b.decision_note || '', decided_by: b.decided_by || '', decided_at: b.decided_at || '', nobid_reason: b.nobid_reason || '', nobid_reasons: b.nobid_reasons || [], nobid_by: b.nobid_by || '' };
     const patch = decision === 'go'
       ? { status: 'Not started', decision: 'go', decision_score: sc.rated ? sc.score : null, decision_note: note.trim(), decided_by: meName(), decided_at: new Date().toISOString() }
-      : { status: 'Passed', decision: 'no_go', decision_score: sc.rated ? sc.score : null, decision_note: note.trim(), decided_by: meName(), decided_at: new Date().toISOString(), nobid_reason: reason, nobid_by: meName() };
+      : { status: 'Passed', decision: 'no_go', decision_score: sc.rated ? sc.score : null, decision_note: note.trim(), decided_by: meName(), decided_at: new Date().toISOString(), nobid_reason: reasons[0] || '', nobid_reasons: reasons, nobid_by: meName() };
     try { await S.db.doc('bids/' + b._id).update(patch); offerUndo((decision === 'go' ? 'Go: ' + b.project + ' is on the bid schedule.' : 'No-Go logged: ' + b.project + ' (' + reason + ').'), async () => { await S.db.doc('bids/' + b._id).update(prev); }); }
     catch (e) { writeFailed(e); }
+  }
+  const UNDECIDE = { status: 'Lead', decision: null, decision_score: null, decision_note: '', decided_by: '', decided_at: '', nobid_reason: '', nobid_reasons: [], nobid_by: '' };
+  const reasonsOf = (b) => Array.isArray(b.nobid_reasons) && b.nobid_reasons.length ? b.nobid_reasons : (b.nobid_reason ? String(b.nobid_reason).split(/,\s*/).filter(Boolean) : []);
+  const decidedYear = (b) => (b.decided_at || b.bid_date || '').slice(0, 4);
+  const ceilingOf = (b) => Number(b.published_ceiling) || 0;
+  function renderGngTiles() {
+    const t = $('#gng-tiles'); if (!t) return; t.textContent = '';
+    const yr = todayIso.slice(0, 4);
+    const decided = S.bids.filter(b => b.decision && decidedYear(b) === yr);
+    const go = decided.filter(b => b.decision === 'go').length;
+    const passed = S.bids.filter(b => isPassed(b) && decidedYear(b) === yr);
+    const tally = {}; passed.forEach(b => reasonsOf(b).forEach(r => { tally[r] = (tally[r] || 0) + 1; }));
+    const top = Object.entries(tally).sort((a, z) => z[1] - a[1])[0];
+    [['Waiting on a decision', S.bids.filter(isLead).length, 'Possible bids not yet Go or No-Go'],
+     ['Go rate ' + yr, decided.length ? Math.round(go / decided.length * 100) + '%' : '—', go + ' Go of ' + decided.length + ' decided'],
+     ['Passed ' + yr, passed.length, moneyM(passed.reduce((x, b) => x + ceilingOf(b), 0)) + ' in published value'],
+     ['Top no-bid reason', top ? top[0] : '—', top ? top[1] + ' job' + (top[1] > 1 ? 's' : '') + ' this year' : 'No passed jobs this year']].forEach(([l, v, sb], i) => {
+      const d = el('div', 'tile'); d.appendChild(el('span', 'lbl', l)); d.appendChild(el('span', 'num' + (i === 3 ? ' small' : ''), String(v))); d.appendChild(el('span', 'sub', sb)); t.appendChild(d);
+    });
+  }
+  function plRows() {
+    const f = S.pf;
+    return S.bids.filter(isPassed).filter(b => (f.year === 'all' || decidedYear(b) === f.year) && (f.reason === 'all' || reasonsOf(b).includes(f.reason)) && (f.sector === 'all' || (b.sector || '(not set)') === f.sector) && (f.who === 'all' || (b.decided_by || b.nobid_by || '') === f.who))
+      .sort((a, z) => (z.decided_at || z.bid_date || '').localeCompare(a.decided_at || a.bid_date || ''));
+  }
+  function plSelect(key, label, opts) {
+    const w = el('label', 'hsel'); w.appendChild(document.createTextNode(label));
+    const sl = el('select'); sl.id = 'pf-' + key;
+    [['all', 'All']].concat(opts.map(o => [o, o])).forEach(([v, l]) => { const o = el('option', null, l); o.value = v; if (S.pf[key] === v) o.selected = true; sl.appendChild(o); });
+    sl.addEventListener('change', () => { S.pf[key] = sl.value; S.plOpen = null; renderPassed(); });
+    w.appendChild(sl); return w;
+  }
+  function renderPassed() {
+    const fbox = $('#pl-filters'), tbl = $('#pl-table'); if (!fbox || !tbl) return;
+    if (tbl.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+    const all = S.bids.filter(isPassed);
+    const uniq = (fn) => Array.from(new Set(all.flatMap(fn))).filter(Boolean).sort();
+    fbox.textContent = '';
+    const years = uniq(b => [decidedYear(b)]).reverse(); if (!years.includes(S.pf.year) && S.pf.year !== 'all') years.unshift(S.pf.year);
+    fbox.appendChild(plSelect('year', 'Year', years));
+    fbox.appendChild(plSelect('reason', 'Reason', Array.from(new Set((FM.nobid || NOBID_REASONS).concat(uniq(reasonsOf))))));
+    fbox.appendChild(plSelect('sector', 'Sector', uniq(b => [b.sector || '(not set)'])));
+    fbox.appendChild(plSelect('who', 'Decided by', uniq(b => [b.decided_by || b.nobid_by || ''])));
+    const csv = el('button', 'btn sec', 'Download CSV'); csv.type = 'button'; csv.addEventListener('click', downloadPassedCsv); fbox.appendChild(csv);
+    const rows = plRows();
+    $('#pl-count').textContent = rows.length + ' passed job' + (rows.length === 1 ? '' : 's') + ' shown';
+    tbl.textContent = '';
+    const head = ['Decided', 'Project', 'Owner', 'Sector', 'Value', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it'];
+    const th = el('thead'); const hr = el('tr'); head.forEach(h => hr.appendChild(el('th', h === 'Value' || h === 'Score' ? 'num' : null, h))); th.appendChild(hr); tbl.appendChild(th);
+    const tb = el('tbody');
+    if (!rows.length) { const tr = el('tr'); const td = el('td', null, 'No passed jobs match these filters.'); td.colSpan = head.length; tr.appendChild(td); tb.appendChild(tr); }
+    rows.forEach(b => {
+      const sc = scoreOf(b) || {}; const open = S.plOpen === b._id;
+      const tr = el('tr', 'plrow' + (open ? ' open' : '')); tr.tabIndex = 0; tr.title = open ? 'Hide details' : 'Show the scorecard and notes';
+      const toggle = () => { S.plOpen = open ? null : b._id; renderPassed(); };
+      tr.addEventListener('click', toggle); tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') toggle(); });
+      const score = b.decision_score != null ? b.decision_score : (sc.rated ? sc.score : null);
+      [b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : (b.bid_date ? fmtDay(b.bid_date) : '—'), (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.sector || '—',
+        ceilingOf(b) ? moneyM(ceilingOf(b)) : (b.value_label || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
+        b.passed_winner ? b.passed_winner + (b.passed_amount ? ' · ' + moneyM(b.passed_amount) : '') : '—'].forEach((c, i) => tr.appendChild(el('td', i === 4 || i === 5 ? 'num' : null, c)));
+      tb.appendChild(tr);
+      if (open) tb.appendChild(passedDetail(b, head.length));
+    });
+    tbl.appendChild(tb);
+    renderAnalysis();
+  }
+  function passedDetail(b, cols) {
+    const tr = el('tr', 'pldet'); const td = el('td'); td.colSpan = cols; tr.appendChild(td);
+    const wrap = el('div', 'plwrap');
+    const left = el('div');
+    left.appendChild(el('span', 'fl', 'Scorecard'));
+    const ratings = (b.scorecard && b.scorecard.ratings) || {}; const notes = b.score_notes || {};
+    const ul = el('ul', 'plsc');
+    ((FM.scorecard && FM.scorecard.questions) || []).forEach(q => {
+      const li = el('li'); const r = ratings[q.key];
+      li.appendChild(el('span', 'tog r-' + (r || 'none'), r ? RATE_LBL.find(x => x[0] === r)[1] : '—'));
+      li.appendChild(el('strong', null, ' ' + q.label + (q.gate ? ' (gate)' : '')));
+      if (notes[q.key]) li.appendChild(el('span', 'why', ' – ' + notes[q.key]));
+      ul.appendChild(li);
+    });
+    left.appendChild(ul);
+    if (b.decision_note) { left.appendChild(el('span', 'fl', 'Note')); left.appendChild(el('p', 'fv', b.decision_note)); }
+    [['Location', b.location], ['Bid date', b.bid_date ? fmtDay(b.bid_date) : ''], ['How we heard', b.source], ['Delivery', b.delivery]].forEach(([l, v]) => { if (v) { const p = el('div', 'fv'); p.appendChild(el('span', 'fl', l + ' ')); p.appendChild(document.createTextNode(v)); left.appendChild(p); } });
+    wrap.appendChild(left);
+    const right = el('div', 'plgot');
+    right.appendChild(el('span', 'fl', 'Who got it (after the bid opens)'));
+    const w = el('input'); w.type = 'text'; w.maxLength = 80; w.placeholder = 'Winning contractor'; w.value = b.passed_winner || ''; w.setAttribute('list', 'dl-comp'); w.disabled = !S.canWrite; w.setAttribute('aria-label', 'Who got ' + b.project);
+    const a = el('input'); a.type = 'text'; a.inputMode = 'decimal'; a.placeholder = 'Winning price'; a.value = b.passed_amount ? money(b.passed_amount) : ''; a.disabled = !S.canWrite; a.setAttribute('aria-label', 'Winning price for ' + b.project);
+    const sv = el('button', 'ib', 'Save'); sv.type = 'button'; sv.disabled = !S.canWrite;
+    sv.addEventListener('click', async (ev) => { ev.stopPropagation(); const v = a.value.trim() ? parseMoney(a.value) : null; if (Number.isNaN(v)) { showBanner('Enter the price as a dollar amount, like $1,250,000 or 1.25M.'); return; } try { await S.db.doc('bids/' + b._id).update({ passed_winner: w.value.trim(), passed_amount: v }); if (w.value.trim()) learnComps([w.value.trim()]); } catch (e) { writeFailed(e); } });
+    [w, a, sv].forEach(x => { x.addEventListener('click', ev => ev.stopPropagation()); right.appendChild(x); });
+    if (b.passed_amount && ceilingOf(b)) right.appendChild(el('div', 'fv muted', 'Winning price was ' + pct((b.passed_amount - ceilingOf(b)) / ceilingOf(b) * 100).replace(/^(\d)/, '+$1') + ' vs the published value.'));
+    const back = el('button', 'btn sec', 'Back to undecided'); back.type = 'button'; back.disabled = !S.canWrite;
+    back.addEventListener('click', async (ev) => { ev.stopPropagation(); try { await S.db.doc('bids/' + b._id).update(UNDECIDE); S.plOpen = null; } catch (e) { writeFailed(e); } });
+    right.appendChild(back);
+    wrap.appendChild(right); td.appendChild(wrap);
+    return tr;
+  }
+  function renderAnalysis() {
+    const rows = S.bids.filter(isPassed).filter(b => S.pf.year === 'all' || decidedYear(b) === S.pf.year);
+    const group = (keyFn) => { const m = new Map(); rows.forEach(b => [].concat(keyFn(b)).forEach(k => { const g = m.get(k) || { n: 0, v: 0 }; g.n++; g.v += ceilingOf(b); m.set(k, g); })); return Array.from(m.entries()).sort((a, z) => z[1].n - a[1].n); };
+    fillTable('#an-reason', ['Reason', 'Jobs', 'Published value'], group(b => reasonsOf(b).length ? reasonsOf(b) : ['(none given)']).map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-sector', ['Sector', 'Jobs', 'Published value'], group(b => b.sector || '(not set)').map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-month', ['Month', 'Jobs', 'Published value'], group(b => (b.decided_at || b.bid_date || '').slice(0, 7) || '(no date)').sort((a, z) => z[0].localeCompare(a[0])).map(([k, g]) => [k === '(no date)' ? k : new Date(k + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }), g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
+    // Does the Go score predict wins? Go decisions with a score and a final won / lost outcome.
+    const bands = [['80 and up', 80, 101], ['60 – 79', 60, 80], ['Under 60', 0, 60]];
+    const goes = S.bids.filter(b => b.decision === 'go' && b.decision_score != null && ['Won', 'Lost'].includes(statusOf(b)));
+    fillTable('#an-score', ['Go score', 'Bids', 'Won', 'Lost', 'Win rate'], bands.map(([l, lo, hi]) => { const g = goes.filter(b => b.decision_score >= lo && b.decision_score < hi); const w = g.filter(b => statusOf(b) === 'Won').length; return [l, g.length, w, g.length - w, g.length ? Math.round(w / g.length * 100) + '%' : '—']; }), 'No scored Go bids with a result yet.');
+    const note = $('#an-note'); if (note) note.textContent = goes.length < 10 ? 'Win rate by score gets meaningful after about 10 scored Go bids with a result (' + goes.length + ' so far).' : goes.length + ' scored Go bids with a result.';
+  }
+  async function downloadPassedCsv() {
+    const rows = plRows();
+    const q = (v) => { const x = v == null ? '' : String(v); return /[",\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
+    const qsList = (FM.scorecard && FM.scorecard.questions) || [];
+    const head = ['Decided', 'Bid date', 'Folder', 'Project', 'Owner', 'Location', 'Sector', 'Delivery', 'Published value', 'Score', 'Gate failed', 'Reasons', 'Note', 'Decided by', 'Winner', 'Winning price'].concat(qsList.flatMap(qq => [qq.label, qq.label + ' – why']));
+    const lines = [head.join(',')].concat(rows.map(b => { const sc = scoreOf(b) || {}; const r = (b.scorecard && b.scorecard.ratings) || {}; const n = b.score_notes || {};
+      return [b.decided_at ? b.decided_at.slice(0, 10) : '', b.bid_date, b.id || b._id, b.project, b.owner, b.location, b.sector, b.delivery, ceilingOf(b) || '', b.decision_score ?? (sc.rated ? sc.score : ''), sc.gate || '', reasonsOf(b).join('; '), b.decision_note, b.decided_by || b.nobid_by, b.passed_winner, b.passed_amount || ''].concat(qsList.flatMap(qq => [r[qq.key] || '', n[qq.key] || ''])).map(q).join(','); }));
+    const dl = await claude.use('downloads');
+    if (!dl) { showBanner('Downloads are not available in this view.'); return; }
+    try { await dl.save({ filename: 'FM Passed Jobs ' + todayIso + '.csv', data: new Blob([lines.join('\n')], { type: 'text/csv' }) }); } catch (e) {}
   }
   function renderGoNoGo() {
     const list = $('#gng-list'); if (!list) return;
@@ -1384,6 +1511,16 @@
       const del = el('button', 'ib del', 'Delete'); del.type = 'button'; del.disabled = !S.canWrite;
       del.addEventListener('click', () => deleteBid(b._id)); ac.appendChild(del); right.appendChild(ac);
       head.appendChild(right); main.appendChild(head);
+      { // Capacity: what else is due the same week, and who is on it.
+        const cap = el('div', 'gcap');
+        if (b.bid_date) {
+          const wk = monday(b.bid_date); const same = openBids().filter(x => x.bid_date && monday(x.bid_date) === wk);
+          const who = Array.from(new Set(same.flatMap(teamOf)));
+          cap.appendChild(el('strong', null, 'Week of ' + fmtDay(wk) + ': '));
+          cap.appendChild(document.createTextNode(same.length ? same.length + ' other bid' + (same.length > 1 ? 's' : '') + ' due (' + same.map(x => x.project + (teamOf(x).length ? ' – ' + teamOf(x).map(initials).join('/') : '')).join('; ') + ')' + (who.length ? '. Estimators busy: ' + who.join(', ') + '.' : '.') : 'no other bids due that week.'));
+        } else cap.appendChild(document.createTextNode('No bid date yet, so capacity that week can\'t be checked.'));
+        main.appendChild(cap);
+      }
       if (S.editing === b._id) main.appendChild(editorFor(b));
       if (FM.scorecard) {
         const qs = el('div', 'gqs');
@@ -1400,14 +1537,19 @@
             btn.addEventListener('click', async () => { const next = Object.assign({}, ratings); if (next[q.key] === k) delete next[q.key]; else next[q.key] = k; try { await S.db.doc('bids/' + b._id).update({ scorecard: { ratings: next } }); } catch (e) { writeFailed(e); } });
             seg.appendChild(btn);
           });
-          row.appendChild(seg); qs.appendChild(row);
+          row.appendChild(seg);
+          const notes = b.score_notes || {};
+          const qn = el('input', 'gqn'); qn.type = 'text'; qn.maxLength = 200; qn.placeholder = 'Why? (optional)'; qn.value = notes[q.key] || ''; qn.disabled = !S.canWrite; qn.setAttribute('aria-label', 'Why ' + q.label + ' for ' + b.project);
+          qn.addEventListener('change', async () => { const next = Object.assign({}, b.score_notes || {}); if (qn.value.trim()) next[q.key] = qn.value.trim(); else delete next[q.key]; try { await S.db.doc('bids/' + b._id).update({ score_notes: next }); } catch (e) { writeFailed(e); } });
+          row.appendChild(qn); qs.appendChild(row);
         });
         main.appendChild(qs);
       }
       const dec = el('div', 'gdec');
       const nl = el('label'); nl.appendChild(document.createTextNode('Note (why)')); const ni = el('input', 'gnote'); ni.type = 'text'; ni.maxLength = 300; ni.placeholder = 'One line, e.g. good owner, open week'; ni.id = 'gnote-' + b._id; nl.appendChild(ni); dec.appendChild(nl);
-      const rl = el('label'); rl.appendChild(document.createTextNode('If No-Go, because')); const rs = el('select', 'greason'); rs.id = 'greason-' + b._id;
-      (FM.nobid || NOBID_REASONS).forEach(r => { const o = el('option', null, r); o.value = r; if (sc && sc.reason === r) o.selected = true; rs.appendChild(o); }); rl.appendChild(rs); dec.appendChild(rl);
+      const rl = el('div', 'greasons'); rl.appendChild(el('span', 'fl', 'If No-Go, because (tick all that apply)'));
+      (FM.nobid || NOBID_REASONS).forEach(r => { const lab = el('label', 'chk'); const cb = el('input'); cb.type = 'checkbox'; cb.value = r; if (sc && sc.reason === r) cb.checked = true; lab.appendChild(cb); lab.appendChild(document.createTextNode(' ' + r)); rl.appendChild(lab); });
+      dec.appendChild(rl);
       const go = el('button', 'btn', 'Go'); go.type = 'button'; go.disabled = !S.canWrite; go.addEventListener('click', () => decide(b, 'go'));
       const ng = el('button', 'btn sec nogo', 'No-Go'); ng.type = 'button'; ng.disabled = !S.canWrite; ng.addEventListener('click', () => decide(b, 'no_go'));
       const bt = el('div', 'gbtns'); bt.appendChild(go); bt.appendChild(ng); dec.appendChild(bt);
@@ -1416,14 +1558,14 @@
     });
     // Recently decided, with who made the call.
     const since = new Date(Date.now() - 30 * 864e5).toISOString();
-    const recent = S.bids.filter(b => b.decision && (b.decided_at || '') >= since).sort((a, z) => (z.decided_at || '').localeCompare(a.decided_at || ''));
+    const recent = S.bids.filter(b => b.decision === 'go' && (b.decided_at || '') >= since).sort((a, z) => (z.decided_at || '').localeCompare(a.decided_at || ''));
     const rbox = $('#gng-recent'); rbox.hidden = !recent.length; $('#gng-rc').textContent = recent.length; const ul = $('#gng-rl'); ul.textContent = '';
     recent.forEach(b => {
       const li = el('li'); const nm = el('div', 'nm', b.project);
       nm.appendChild(el('small', null, (b.decision === 'go' ? 'Go' : 'No-Go' + (b.nobid_reason ? ' · ' + b.nobid_reason : '')) + ' · ' + (b.decided_by || '') + ' · ' + new Date(b.decided_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (b.decision_score != null ? ' · scored ' + b.decision_score : '') + (b.decision_note ? ' · ' + b.decision_note : '')));
       li.appendChild(nm);
       const st = statusOf(b);
-      if (st === 'Not started' || st === 'Passed') { const u = el('button', 'btn sec', 'Back to undecided'); u.type = 'button'; u.disabled = !S.canWrite; u.addEventListener('click', async () => { try { await S.db.doc('bids/' + b._id).update({ status: 'Lead', decision: null, decision_score: null, decision_note: '', decided_by: '', decided_at: '', nobid_reason: '', nobid_by: '' }); } catch (e) { writeFailed(e); } }); li.appendChild(u); }
+      if (st === 'Not started' || st === 'Passed') { const u = el('button', 'btn sec', 'Back to undecided'); u.type = 'button'; u.disabled = !S.canWrite; u.addEventListener('click', async () => { try { await S.db.doc('bids/' + b._id).update(UNDECIDE); } catch (e) { writeFailed(e); } }); li.appendChild(u); }
       ul.appendChild(li);
     });
   }
@@ -1444,9 +1586,10 @@
     } catch (e) { m.className = 'msg err'; m.textContent = 'That possible bid did not save.'; if (e.code) writeFailed(e); }
   });
 
-  function renderAll() { renderTypeFilters(); renderLede(); renderTiles(); renderFilters(); renderCal(); renderGoNoGo(); renderTable(); renderResults(); renderSync(); renderOffNote();
+  function renderAll() { renderTypeFilters(); renderLede(); renderTiles(); renderFilters(); renderCal(); renderGoNoGo(); renderGngTiles(); renderPassed(); renderTable(); renderResults(); renderSync(); renderOffNote();
     if (pendingJump && S.bids.some(x => x._id === pendingJump)) { const id = pendingJump; pendingJump = null; S.expanded.add(id); renderTable(); jumpToBid(id); } }
 
+  document.querySelectorAll('.show-fin').forEach(cb => cb.addEventListener('change', () => { S.showFinished = cb.checked; document.querySelectorAll('.show-fin').forEach(x => { x.checked = cb.checked; }); renderAll(); }));
   $('#bids').addEventListener('focusout', () => setTimeout(() => { if (S.tableStale && !$('#bids').contains(document.activeElement)) renderTable(); }, 0));
   $('#add-open').addEventListener('click', () => { $('#addform').hidden = false; $('#f-project').focus(); });
   $('#add-cancel').addEventListener('click', () => { $('#addform').hidden = true; $('#add-msg').textContent = ''; });
