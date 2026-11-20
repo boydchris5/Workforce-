@@ -385,3 +385,9 @@ table.verify-emp tr.total td { border-top: 2px solid var(--line); }
 .days-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
 .days-head [data-wk] { min-width: 34px; padding: 2px 8px; }
 .days-week { color: var(--text); }
+
+/* Job site address (map link) on projects and the schedule */
+.site-addr a { color: inherit; text-decoration: none; }
+.site-addr a:hover { text-decoration: underline; color: var(--orange, #F15A22); }
+.site-addr { margin: 2px 0; }
+@media print { .site-addr a { text-decoration: none; } }

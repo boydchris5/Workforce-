@@ -756,7 +756,7 @@ function createApp(db, opts = {}) {
 
   // ---- weekly schedule ---------------------------------------------------------
   const assignmentSelect = `SELECT a.*, e.first_name, e.last_name, e.trade, e.classification,
-      p.job_number, p.name AS project_name, p.color, p.superintendent_employee_id,
+      p.job_number, p.name AS project_name, p.color, p.superintendent_employee_id, p.address AS project_address,
       cu.name AS requested_by_name, au.name AS approved_by_name
     FROM assignments a JOIN employees e ON e.id = a.employee_id JOIN projects p ON p.id = a.project_id
     LEFT JOIN users cu ON cu.id = a.created_by LEFT JOIN users au ON au.id = a.approved_by`;
