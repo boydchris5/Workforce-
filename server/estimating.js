@@ -101,42 +101,80 @@ function getConfig(db) {
   } catch { return DEFAULT_SCORECARD; }
 }
 
+// Bid board data store. The board page (public/estimating/board.html) was first built as a Claude
+// artifact and keeps its document model: collections of JSON documents (bids, deadlines, ignored) and a
+// few single documents (config/*). Two documents are built live from the app instead of stored:
+// config/team (everyone in the Estimating and Pre-Con departments) and timeoff/current (their time off).
+const STORE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS est_docs (
+  coll TEXT NOT NULL,
+  id TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (coll, id)
+);`;
+const COLLECTIONS = new Set(['bids', 'deadlines', 'ignored']);
+const CONFIG_DOCS = new Set(['sharepoint', 'holidays', 'competitors', 'sync', 'team']);
+const EST_DEPTS = ['estimating', 'pre-con', 'precon', 'preconstruction', 'pre-construction'];
+const ID_RE = /^[A-Za-z0-9_.~:@+-]{1,200}$/;
+const MAX_DOC = 256 * 1024;
+
+// Estimating is for office logins only: the Workforce Manager, Office Staff and the Office Manager.
+const canEstimateUser = (u) => !!u && ['admin', 'office', 'office_admin'].includes(u.role);
+
 function mountEstimating(api, db, h) {
-  const { audit, bad, str, num, int, date, HttpError, adminOnly } = h;
+  const { audit, bad, num, int, HttpError, adminOnly } = h;
   db.exec(SCHEMA);
-  const canEstimate = (req, res, next) => (req.user && (req.user.role === 'admin' || req.user.can_estimate)
-    ? next() : res.status(403).json({ error: 'You do not have access to Estimating.' }));
+  db.exec(STORE_SCHEMA);
+  migrateLeads(db);
+  const canEstimate = (req, res, next) => (canEstimateUser(req.user) ? next() : res.status(403).json({ error: 'Estimating is for office staff.' }));
 
-  const pick = (v, list, field) => {
-    const s = str(v, 120);
-    if (s && !list.includes(s)) throw bad(`${field} is not one of the choices.`);
-    return s;
+  const getDoc = db.prepare('SELECT data FROM est_docs WHERE coll = ? AND id = ?');
+  const putDoc = db.prepare(`INSERT INTO est_docs (coll, id, data, updated_by, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT (coll, id) DO UPDATE SET data = excluded.data, updated_by = excluded.updated_by, updated_at = excluded.updated_at`);
+  const read = (coll, id) => { const r = getDoc.get(coll, id); return r ? JSON.parse(r.data) : null; };
+  const write = (req, coll, id, data) => {
+    const text = JSON.stringify(data);
+    if (text.length > MAX_DOC) throw new HttpError(413, 'That document is too large.');
+    putDoc.run(coll, id, text, req.user ? req.user.id : null);
   };
-  function readBid(b) {
-    const out = {
-      project: str(b.project, 200), owner: str(b.owner, 200), architect: str(b.architect, 200), location: str(b.location, 200),
-      sector: pick(b.sector, SECTORS, 'Sector'), delivery: pick(b.delivery, DELIVERY, 'Delivery'),
-      est_value: num(b.est_value), value_label: str(b.value_label, 120),
-      bid_date: date(b.bid_date, 'Bid date'), bid_time: str(b.bid_time, 30), source: str(b.source, 120), notes: str(b.notes, 2000),
-    };
-    if (!out.project) throw bad('Project name is required.');
-    if (Number.isNaN(out.est_value) || (out.est_value !== null && out.est_value < 0)) throw bad('Estimated value must be a dollar amount.');
-    return out;
+  const body = (req) => {
+    const b = req.body;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) throw bad('Send a JSON object.');
+    return b;
+  };
+  const checkId = (id) => { if (!ID_RE.test(String(id || ''))) throw bad('Invalid document id.'); return String(id); };
+  // Which stored document a path names: collections/<id> or config/<name> or timeoff/current.
+  function target(coll, id) {
+    checkId(id);
+    if (COLLECTIONS.has(coll)) return [coll, id];
+    if (coll === 'config' && CONFIG_DOCS.has(id)) return ['config', id];
+    if (coll === 'timeoff' && id === 'current') return ['timeoff', id];
+    throw new HttpError(404, 'Unknown board document.');
   }
-  const FIELDS = ['project', 'owner', 'architect', 'location', 'sector', 'delivery', 'est_value', 'value_label', 'bid_date', 'bid_time', 'source', 'notes'];
 
-  const listSql = `SELECT b.*, du.name AS decided_by_name, cu.name AS created_by_name
-    FROM est_bids b LEFT JOIN users du ON du.id = b.decided_by LEFT JOIN users cu ON cu.id = b.created_by`;
-  function shape(row, cfg) {
-    let ratings = {};
-    try { ratings = row.scorecard ? JSON.parse(row.scorecard).ratings || {} : {}; } catch { ratings = {}; }
-    return { ...row, scorecard: undefined, ratings, score: scoreCard(cfg, ratings) };
+  // Estimators: the board's saved list first (keeps each person's badge colour), then anyone else in
+  // the Estimating / Pre-Con departments, so a new estimator shows up without any setup.
+  function liveTeam() {
+    const people = db.prepare("SELECT first_name, last_name, department FROM employees WHERE active = 1 AND employee_type IN ('staff','project_manager') ORDER BY last_name, first_name").all()
+      .filter((e) => EST_DEPTS.includes(String(e.department || '').trim().toLowerCase())).map((e) => `${e.first_name} ${e.last_name}`);
+    const saved = (read('config', 'team')?.estimators || []).map((e) => e.name).filter(Boolean);
+    const names = saved.slice();
+    for (const n of people) if (!names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n);
+    return { estimators: names.map((name) => ({ name })) };
   }
-  const getBid = (id) => {
-    const row = db.prepare(`${listSql} WHERE b.id = ?`).get(id);
-    if (!row) throw new HttpError(404, 'That bid was not found.');
-    return row;
-  };
+  function liveTimeOff() {
+    const t = new Date();
+    const start = new Date(t.getTime() - 45 * 864e5).toISOString().slice(0, 10);
+    const end = new Date(t.getTime() + 350 * 864e5).toISOString().slice(0, 10);
+    const days = db.prepare(`SELECT t.off_date AS date, e.first_name, e.last_name, e.department, t.reason AS type, t.hours, t.status
+      FROM time_off t JOIN employees e ON e.id = t.employee_id
+      WHERE t.status IN ('approved','pending') AND t.off_date BETWEEN ? AND ? AND e.active = 1 ORDER BY t.off_date`).all(start, end)
+      .filter((r) => EST_DEPTS.includes(String(r.department || '').trim().toLowerCase()))
+      .map((r) => ({ date: r.date, name: `${r.first_name} ${r.last_name}`, type: r.type || '', hours: Number(r.hours) || 8, status: r.status }));
+    return { days, start, end, departments: 'Estimating,Pre-Con', fetchedAt: new Date().toISOString(), source: 'FM Workforce' };
+  }
 
   api.get('/estimating/config', canEstimate, (_req, res) => {
     res.json({ scorecard: getConfig(db), statuses: STATUSES, sectors: SECTORS, delivery: DELIVERY, nobid_reasons: NOBID_REASONS, sources: SOURCES });
@@ -158,77 +196,94 @@ function mountEstimating(api, db, h) {
     res.json(getConfig(db));
   });
 
-  // view: leads (undecided), go, no_go, all
-  api.get('/estimating/bids', canEstimate, (req, res) => {
-    const cfg = getConfig(db);
-    const view = String(req.query.view || 'all');
-    const where = { leads: "WHERE b.status = 'Lead'", go: "WHERE b.decision = 'go'", no_go: "WHERE b.decision = 'no_go'" }[view] || '';
-    const rows = db.prepare(`${listSql} ${where} ORDER BY COALESCE(b.bid_date, '9999-12-31'), b.project`).all();
-    res.json(rows.map((r) => shape(r, cfg)));
+  // ---- the board's document store ----
+  api.get('/estimating/store/:coll', canEstimate, (req, res) => {
+    const { coll } = req.params;
+    if (!COLLECTIONS.has(coll)) throw new HttpError(404, 'Unknown board collection.');
+    res.json(db.prepare('SELECT id, data FROM est_docs WHERE coll = ? ORDER BY id').all(coll).map((r) => ({ id: r.id, data: JSON.parse(r.data) })));
+  });
+  api.get('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+    const [coll, id] = target(req.params.coll, req.params.id);
+    if (coll === 'config' && id === 'team') return res.json({ id, data: liveTeam() });
+    if (coll === 'timeoff') return res.json({ id, data: liveTimeOff() });
+    res.json({ id, data: read(coll, id) });
+  });
+  api.put('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+    const [coll, id] = target(req.params.coll, req.params.id);
+    if (coll === 'timeoff') return res.json({ id }); // built from the app's time off; nothing to store
+    write(req, coll, id, body(req));
+    if (coll === 'bids') audit(req, read(coll, id) ? 'save' : 'create', 'est_bid', null, { id, project: req.body.project });
+    res.json({ id });
+  });
+  api.patch('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+    const [coll, id] = target(req.params.coll, req.params.id);
+    if (coll === 'timeoff') return res.json({ id });
+    const cur = read(coll, id);
+    if (!cur) throw new HttpError(404, 'That item is no longer on the board.');
+    const patch = body(req);
+    write(req, coll, id, { ...cur, ...patch });
+    if (coll === 'bids' && ('status' in patch || 'decision' in patch)) audit(req, 'update', 'est_bid', null, { id, status: patch.status, decision: patch.decision });
+    res.json({ id });
+  });
+  api.post('/estimating/store/:coll', canEstimate, (req, res) => {
+    const { coll } = req.params;
+    if (!COLLECTIONS.has(coll)) throw new HttpError(404, 'Unknown board collection.');
+    const id = require('node:crypto').randomBytes(10).toString('base64url');
+    write(req, coll, id, body(req));
+    res.json({ id });
+  });
+  api.delete('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+    const [coll, id] = target(req.params.coll, req.params.id);
+    const cur = read(coll, id);
+    db.prepare('DELETE FROM est_docs WHERE coll = ? AND id = ?').run(coll, id);
+    if (coll === 'bids' && cur) audit(req, 'delete', 'est_bid', null, { id, project: cur.project });
+    res.json({ id });
   });
 
-  api.post('/estimating/bids', canEstimate, (req, res) => {
-    const b = readBid(req.body || {});
-    const r = db.prepare(`INSERT INTO est_bids (${FIELDS.join(', ')}, status, created_by) VALUES (${FIELDS.map(() => '?').join(', ')}, 'Lead', ?)`)
-      .run(...FIELDS.map((f) => b[f]), req.user.id);
-    const id = Number(r.lastInsertRowid);
-    audit(req, 'create', 'est_bid', id, { project: b.project });
-    res.json(shape(getBid(id), getConfig(db)));
-  });
-
-  api.put('/estimating/bids/:id', canEstimate, (req, res) => {
-    const id = int(req.params.id); getBid(id);
-    const b = readBid(req.body || {});
-    db.prepare(`UPDATE est_bids SET ${FIELDS.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...FIELDS.map((f) => b[f]), id);
-    audit(req, 'update', 'est_bid', id, { project: b.project });
-    res.json(shape(getBid(id), getConfig(db)));
-  });
-
-  api.put('/estimating/bids/:id/scorecard', canEstimate, (req, res) => {
-    const id = int(req.params.id); getBid(id);
-    const cfg = getConfig(db);
-    const ratings = {};
-    for (const q of cfg.questions) {
-      const v = req.body?.ratings?.[q.key];
-      if (v === undefined || v === null || v === '') continue;
-      if (!(v in RATING)) throw bad(`${q.label}: rate it good, ok or poor.`);
-      ratings[q.key] = v;
-    }
-    db.prepare("UPDATE est_bids SET scorecard = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify({ ratings }), id);
-    res.json(shape(getBid(id), cfg));
-  });
-
-  // decision: go -> Not started (on the bid board) · no_go -> Passed with a reason · undecided -> back to Lead
-  api.post('/estimating/bids/:id/decision', canEstimate, (req, res) => {
-    const id = int(req.params.id); const row = getBid(id);
-    const cfg = getConfig(db);
-    const decision = String(req.body?.decision || '');
-    const note = str(req.body?.note, 500);
-    const sc = shape(row, cfg).score;
-    if (decision === 'undecided') {
-      if (row.status !== 'Lead' && row.status !== 'Not started' && row.status !== 'Passed') throw bad('This bid is already being worked or has a result. Change its status instead.');
-      db.prepare(`UPDATE est_bids SET status = 'Lead', decision = NULL, decision_score = NULL, decision_reason = NULL, decision_note = NULL,
-        decided_by = NULL, decided_at = NULL, updated_at = datetime('now') WHERE id = ?`).run(id);
-    } else if (decision === 'go' || decision === 'no_go') {
-      let reason = null;
-      if (decision === 'no_go') {
-        reason = str(req.body?.reason, 120) || sc.reason;
-        if (!reason || !NOBID_REASONS.includes(reason)) throw bad('Pick why we are passing.');
+  // One-time load of the Claude bid board's data: { docs: [{ coll, id, data }] }. Existing documents
+  // with the same id are replaced, so running it again is safe.
+  api.post('/estimating/import', adminOnly, (req, res) => {
+    const docs = Array.isArray(req.body?.docs) ? req.body.docs : null;
+    if (!docs || !docs.length) throw bad('Nothing to import.');
+    const counts = {};
+    db.exec('BEGIN');
+    try {
+      for (const d of docs) {
+        const [coll, id] = target(String(d.coll || ''), d.id);
+        if (coll === 'timeoff') continue;
+        if (!d.data || typeof d.data !== 'object' || Array.isArray(d.data)) throw bad(`Document ${coll}/${id} has no data.`);
+        write(req, coll, id, d.data);
+        counts[coll] = (counts[coll] || 0) + 1;
       }
-      db.prepare(`UPDATE est_bids SET status = ?, decision = ?, decision_score = ?, decision_reason = ?, decision_note = ?,
-        decided_by = ?, decided_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-        .run(decision === 'go' ? 'Not started' : 'Passed', decision, sc.rated ? sc.score : null, reason, note, req.user.id, id);
-    } else throw bad('Decision must be go, no_go or undecided.');
-    audit(req, 'decide', 'est_bid', id, { decision, score: sc.score, suggestion: sc.suggestion });
-    res.json(shape(getBid(id), cfg));
-  });
-
-  api.delete('/estimating/bids/:id', adminOnly, (req, res) => {
-    const id = int(req.params.id); const row = getBid(id);
-    db.prepare('DELETE FROM est_bids WHERE id = ?').run(id);
-    audit(req, 'delete', 'est_bid', id, { project: row.project });
-    res.json({ ok: true });
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    audit(req, 'import', 'est_board', null, counts);
+    res.json({ imported: counts });
   });
 }
 
-module.exports = { mountEstimating, scoreCard, DEFAULT_SCORECARD, STATUSES, NOBID_REASONS };
+// Possible bids saved by the first Estimating screen (#43) move onto the board as Lead / Not started /
+// Passed bids, keeping their scorecard and decision.
+function migrateLeads(db) {
+  const rows = db.prepare('SELECT b.*, u.name AS decided_by_name FROM est_bids b LEFT JOIN users u ON u.id = b.decided_by').all();
+  if (!rows.length) return;
+  const ins = db.prepare('INSERT OR IGNORE INTO est_docs (coll, id, data) VALUES (?, ?, ?)');
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      let ratings = {}; try { ratings = JSON.parse(r.scorecard || '{}').ratings || {}; } catch { ratings = {}; }
+      const data = {
+        id: '', project: r.project, owner: r.owner || '', architect: r.architect || '', location: r.location || '', sector: r.sector || '', delivery: r.delivery || '',
+        bid_date: r.bid_date || '', bid_time: r.bid_time || '', published_ceiling: r.est_value, value_label: r.value_label || (r.est_value ? `$${Math.round(r.est_value).toLocaleString('en-US')}` : 'Not published'),
+        source: r.source || '', notes: r.notes || '', status: r.status, team: [], estimator: '', scorecard: { ratings },
+        decision: r.decision, decision_score: r.decision_score, decision_note: r.decision_note || '', decided_by: r.decided_by_name || '', decided_at: r.decided_at ? `${r.decided_at.replace(' ', 'T')}Z` : '',
+        nobid_reason: r.decision === 'no_go' ? r.decision_reason || '' : '', nobid_by: r.decision === 'no_go' ? r.decided_by_name || '' : '',
+      };
+      ins.run('bids', `APP-${r.id}`, JSON.stringify(data));
+    }
+    db.exec('DELETE FROM est_bids');
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+module.exports = { mountEstimating, scoreCard, canEstimateUser, DEFAULT_SCORECARD, STATUSES, NOBID_REASONS };

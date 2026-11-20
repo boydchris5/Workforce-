@@ -54,7 +54,7 @@ function sessionMiddleware(db) {
         // A login linked to a Project Manager employee requests crew on their own jobs, like a superintendent.
         const isPm = u.role !== 'admin' && u.employee_type === 'project_manager';
         req.user = { ...u, can_view_payroll: u.role === 'admin' || !!u.can_view_payroll, is_pm: isPm,
-          can_schedule: ['admin', 'super'].includes(u.role) || isPm, can_view_schedule: u.can_view_schedule || (isPm ? 1 : 0), can_estimate: u.role === 'admin' || !!u.can_estimate };
+          can_schedule: ['admin', 'super'].includes(u.role) || isPm, can_view_schedule: u.can_view_schedule || (isPm ? 1 : 0), can_estimate: ['admin', 'office', 'office_admin'].includes(u.role) };
         req.sessionToken = token;
       }
     }
