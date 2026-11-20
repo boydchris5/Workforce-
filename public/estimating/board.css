@@ -341,3 +341,4 @@ body[data-view=schedule] #gng-sec,body[data-view=schedule] #hist-sec{display:non
 .garch{display:flex;align-items:center;gap:8px;margin-top:4px;max-width:520px}
 .garch .fl{flex:0 0 auto}
 .garch input{flex:1;font:inherit;font-size:13px;border:1px solid var(--fm-line);border-radius:3px;padding:3px 6px}
+.garch{max-width:820px;flex-wrap:wrap}.garch select{font:inherit;font-size:13px;border:1px solid var(--fm-line);border-radius:3px;padding:3px 6px}

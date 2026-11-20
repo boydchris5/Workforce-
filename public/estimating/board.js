@@ -1336,7 +1336,8 @@
   const RATING = { good: 1, ok: 0.5, poor: 0 };
   const RATE_LBL = [['good', 'Good'], ['ok', 'OK'], ['poor', 'Poor']];
   const FM = { me: null, scorecard: null, nobid: NOBID_REASONS, sources: [] };
-  (window.FM_READY || Promise.resolve(null)).then(x => { if (x) Object.assign(FM, x); const sel = $('#g-source'); if (sel) { sel.textContent = ''; [''].concat(FM.sources || []).forEach(v => { const o = el('option', null, v || '—'); o.value = v; sel.appendChild(o); }); } renderGoNoGo(); });
+  (window.FM_READY || Promise.resolve(null)).then(x => { if (x) Object.assign(FM, x); { const ss = $('#g-sector'); if (ss && !ss.options.length) ['', ...SECTORS].forEach(v => { const o = el('option', null, v || '—'); o.value = v; ss.appendChild(o); }); }
+    const sel = $('#g-source'); if (sel) { sel.textContent = ''; [''].concat(FM.sources || []).forEach(v => { const o = el('option', null, v || '—'); o.value = v; sel.appendChild(o); }); } renderGoNoGo(); });
   function scoreOf(b) {
     const cfg = FM.scorecard; if (!cfg) return null;
     const r = (b.scorecard && b.scorecard.ratings) || {};
@@ -1502,7 +1503,11 @@
       pbtn.addEventListener('click', () => { S.editing = b._id; renderGoNoGo(); });
       ttl.appendChild(pbtn);
       ttl.appendChild(el('span', 'o', [b.owner, b.location, b.value_label && b.value_label !== 'Not published' ? b.value_label : '', b.source ? 'via ' + b.source : ''].filter(Boolean).join(' · ')));
-      { const af = el('label', 'garch'); af.appendChild(el('span', 'fl', 'Architect')); const ai = el('input'); ai.type = 'text'; ai.maxLength = 120; ai.placeholder = 'Firm (city) – contact'; ai.value = b.architect || ''; ai.disabled = !S.canWrite; ai.setAttribute('aria-label', 'Architect for ' + b.project); ai.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ architect: ai.value.trim() }); } catch (e) { writeFailed(e); } }); af.appendChild(ai); ttl.appendChild(af); }
+      { const af = el('label', 'garch'); af.appendChild(el('span', 'fl', 'Architect')); const ai = el('input'); ai.type = 'text'; ai.maxLength = 120; ai.placeholder = 'Firm (city) – contact'; ai.value = b.architect || ''; ai.disabled = !S.canWrite; ai.setAttribute('aria-label', 'Architect for ' + b.project); ai.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ architect: ai.value.trim() }); } catch (e) { writeFailed(e); } }); af.appendChild(ai);
+        af.appendChild(el('span', 'fl', 'Sector')); const ss = el('select'); ss.disabled = !S.canWrite; ss.setAttribute('aria-label', 'Sector for ' + b.project);
+        ['', ...SECTORS.concat(b.sector && !SECTORS.includes(b.sector) ? [b.sector] : [])].forEach(v => { const o = el('option', null, v || '—'); o.value = v; if ((b.sector || '') === v) o.selected = true; ss.appendChild(o); });
+        ss.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ sector: ss.value }); } catch (e) { writeFailed(e); } }); af.appendChild(ss);
+        ttl.appendChild(af); }
       head.appendChild(ttl);
       const right = el('div', 'cright');
       const box = el('div', 'gscore ' + (sc && sc.suggestion ? SUG[sc.suggestion][1] : ''));
@@ -1581,7 +1586,7 @@
     const f = { project, date: $('#g-date').value || '', owner: $('#g-owner').value.trim(), architect: $('#g-arch').value.trim(), location: $('#g-loc').value.trim(), value: $('#g-val').value.trim() };
     try {
       let id = safeId(project.toUpperCase()).slice(0, 40); if (S.bids.some(b => b._id === id)) id = id.slice(0, 32) + '-' + Date.now().toString(36).slice(-6);
-      const docData = Object.assign(newBidDoc(f), { status: 'Lead', source: $('#g-source').value || '', bid_time: '' });
+      const docData = Object.assign(newBidDoc(f), { status: 'Lead', source: $('#g-source').value || '', sector: $('#g-sector').value || '', bid_time: '' });
       if (!f.date) docData.bid_date = '';
       await S.db.doc('bids/' + id).set(docData);
       $('#gng-form').reset(); $('#gng-form').hidden = true; m.textContent = '';
