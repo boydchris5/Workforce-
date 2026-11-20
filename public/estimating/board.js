@@ -1,4 +1,14 @@
 (function () {
+  // One board, three pages: ?view=schedule (bid calendar + bid schedule), gng (possible bids / Go-No-Go),
+  // history (bid results & history). ?bid=<id> opens the schedule on that bid's card.
+  const QS = new URLSearchParams(location.search);
+  const VIEW = ['schedule', 'gng', 'history'].includes(QS.get('view')) ? QS.get('view') : 'schedule';
+  let pendingJump = VIEW === 'schedule' ? QS.get('bid') : null;
+  document.body.dataset.view = VIEW;
+  { const T = { schedule: ['Bid Board Schedule', 'Bid calendar and bid schedule'], gng: ['Go / No-Go', 'Possible bids and the Go / No-Go scorecard'], history: ['Bid Results & History', 'Results, win rates, sectors and competitors'] }[VIEW];
+    const h = document.querySelector('header.brand h1'); if (h) h.textContent = T[0];
+    const m = document.querySelector('header.brand .meta'); if (m) m.textContent = 'Estimating · ' + T[1] + ' · Shared with the estimating team';
+    document.title = T[0] + ' – FM Bid Board'; }
   const S = { expanded: new Set(), ignored: new Set(), bids: [], deadlines: [], team: { estimators: [] }, sp: { folders: [] }, sync: null, filter: 'all', types: new Set(['bid', 'lead', 'pre', 'must', 'q', 'int', 'sent', 'off']), timeoff: null, editing: null, confirmDel: null, undo: null, canWrite: true, db: null, loaded: false, spFolders: null };
   const STATUSES = ['Lead', 'Not started', 'In progress', 'Submitted', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid', 'Passed'];
   const LEGACY = { 'Docs received': 'Not started', 'Concept': 'Not started', 'Estimating': 'In progress', 'Updating prior estimate': 'In progress', 'Bid forms executed': 'In progress', 'No bid': 'Passed' };
@@ -697,7 +707,7 @@
     s.addEventListener('change', () => { S.hf[key] = s.value; renderResults(); });
     w.appendChild(s); return w;
   }
-  function jumpToBid(id) { const b = S.bids.find(x => x._id === id); if (!b) return; if (S.filter !== 'all' && !bidMatches(b)) { S.filter = 'all'; renderAll(); } setTimeout(() => { const c = document.getElementById('bid-' + id); if (c) { c.scrollIntoView({ behavior: 'smooth', block: 'center' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 1600); } }, 50); }
+  function jumpToBid(id) { if (VIEW !== 'schedule') { try { window.top.location.hash = '#/estimating?bid=' + encodeURIComponent(id); } catch (e) {} return; } const b = S.bids.find(x => x._id === id); if (!b) return; if (S.filter !== 'all' && !bidMatches(b)) { S.filter = 'all'; renderAll(); } setTimeout(() => { const c = document.getElementById('bid-' + id); if (c) { c.scrollIntoView({ behavior: 'smooth', block: 'center' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 1600); } }, 50); }
   function fillTable(sel, head, body, none) {
     const t = $(sel); if (!t) return; t.textContent = '';
     const th = el('thead'); const hr = el('tr'); head.forEach((h, i) => hr.appendChild(el('th', i ? 'num' : null, h))); th.appendChild(hr); t.appendChild(th);
@@ -1429,7 +1439,8 @@
     } catch (e) { m.className = 'msg err'; m.textContent = 'That possible bid did not save.'; if (e.code) writeFailed(e); }
   });
 
-  function renderAll() { renderTypeFilters(); renderLede(); renderTiles(); renderFilters(); renderCal(); renderGoNoGo(); renderTable(); renderResults(); renderSync(); renderOffNote(); }
+  function renderAll() { renderTypeFilters(); renderLede(); renderTiles(); renderFilters(); renderCal(); renderGoNoGo(); renderTable(); renderResults(); renderSync(); renderOffNote();
+    if (pendingJump && S.bids.some(x => x._id === pendingJump)) { const id = pendingJump; pendingJump = null; S.expanded.add(id); renderTable(); jumpToBid(id); } }
 
   $('#bids').addEventListener('focusout', () => setTimeout(() => { if (S.tableStale && !$('#bids').contains(document.activeElement)) renderTable(); }, 0));
   $('#add-open').addEventListener('click', () => { $('#addform').hidden = false; $('#f-project').focus(); });
