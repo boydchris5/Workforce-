@@ -54,6 +54,8 @@
       <label>Project name<input id="g-project" required maxlength="120"></label>
       <label>Bid date<input id="g-date" type="date"></label>
       <label>Owner<input id="g-owner" maxlength="120"></label>
+      <label>Architect<input id="g-arch" maxlength="120" placeholder="Firm (city) – contact"></label>
+      <label>Sector<select id="g-sector"></select></label>
       <label>Location<input id="g-loc" maxlength="80" placeholder="Marion, IL"></label>
       <label>How we heard about it<select id="g-source"></select></label>
       <label>Published value<input id="g-val" maxlength="80" placeholder="Under $3,000,000 or Not published"></label>
@@ -69,6 +71,7 @@
     <p class="sub" id="an-note"></p>
     <div class="syncgrid angrid">
       <div class="sbox"><h3><span>Passed by reason</span></h3><div class="tw"><table class="htab" id="an-reason"></table></div></div>
+      <div class="sbox"><h3><span>Passed by architect</span></h3><div class="tw"><table class="htab" id="an-arch"></table></div></div>
       <div class="sbox"><h3><span>Passed by sector</span></h3><div class="tw"><table class="htab" id="an-sector"></table></div></div>
       <div class="sbox"><h3><span>Passed by month</span></h3><div class="tw"><table class="htab" id="an-month"></table></div></div>
       <div class="sbox"><h3 class="hl"><span>Win rate by Go score</span></h3><div class="tw"><table class="htab" id="an-score"></table></div></div>

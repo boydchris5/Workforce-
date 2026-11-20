@@ -1336,7 +1336,8 @@
   const RATING = { good: 1, ok: 0.5, poor: 0 };
   const RATE_LBL = [['good', 'Good'], ['ok', 'OK'], ['poor', 'Poor']];
   const FM = { me: null, scorecard: null, nobid: NOBID_REASONS, sources: [] };
-  (window.FM_READY || Promise.resolve(null)).then(x => { if (x) Object.assign(FM, x); const sel = $('#g-source'); if (sel) { sel.textContent = ''; [''].concat(FM.sources || []).forEach(v => { const o = el('option', null, v || '—'); o.value = v; sel.appendChild(o); }); } renderGoNoGo(); });
+  (window.FM_READY || Promise.resolve(null)).then(x => { if (x) Object.assign(FM, x); { const ss = $('#g-sector'); if (ss && !ss.options.length) ['', ...SECTORS].forEach(v => { const o = el('option', null, v || '—'); o.value = v; ss.appendChild(o); }); }
+    const sel = $('#g-source'); if (sel) { sel.textContent = ''; [''].concat(FM.sources || []).forEach(v => { const o = el('option', null, v || '—'); o.value = v; sel.appendChild(o); }); } renderGoNoGo(); });
   function scoreOf(b) {
     const cfg = FM.scorecard; if (!cfg) return null;
     const r = (b.scorecard && b.scorecard.ratings) || {};
@@ -1408,7 +1409,7 @@
     const rows = plRows();
     $('#pl-count').textContent = rows.length + ' passed job' + (rows.length === 1 ? '' : 's') + ' shown';
     tbl.textContent = '';
-    const head = ['Decided', 'Project', 'Owner', 'Sector', 'Value', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it'];
+    const head = ['Decided', 'Project', 'Owner', 'Architect', 'Sector', 'Value', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it'];
     const th = el('thead'); const hr = el('tr'); head.forEach(h => hr.appendChild(el('th', h === 'Value' || h === 'Score' ? 'num' : null, h))); th.appendChild(hr); tbl.appendChild(th);
     const tb = el('tbody');
     if (!rows.length) { const tr = el('tr'); const td = el('td', null, 'No passed jobs match these filters.'); td.colSpan = head.length; tr.appendChild(td); tb.appendChild(tr); }
@@ -1418,9 +1419,9 @@
       const toggle = () => { S.plOpen = open ? null : b._id; renderPassed(); };
       tr.addEventListener('click', toggle); tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') toggle(); });
       const score = b.decision_score != null ? b.decision_score : (sc.rated ? sc.score : null);
-      [b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : (b.bid_date ? fmtDay(b.bid_date) : '—'), (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.sector || '—',
+      [b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : (b.bid_date ? fmtDay(b.bid_date) : '—'), (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.architect || '—', b.sector || '—',
         ceilingOf(b) ? moneyM(ceilingOf(b)) : (b.value_label || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
-        b.passed_winner ? b.passed_winner + (b.passed_amount ? ' · ' + moneyM(b.passed_amount) : '') : '—'].forEach((c, i) => tr.appendChild(el('td', i === 4 || i === 5 ? 'num' : null, c)));
+        b.passed_winner ? b.passed_winner + (b.passed_amount ? ' · ' + moneyM(b.passed_amount) : '') : '—'].forEach((c, i) => tr.appendChild(el('td', i === 5 || i === 6 ? 'num' : null, c)));
       tb.appendChild(tr);
       if (open) tb.appendChild(passedDetail(b, head.length));
     });
@@ -1463,6 +1464,7 @@
     const rows = S.bids.filter(isPassed).filter(b => S.pf.year === 'all' || decidedYear(b) === S.pf.year);
     const group = (keyFn) => { const m = new Map(); rows.forEach(b => [].concat(keyFn(b)).forEach(k => { const g = m.get(k) || { n: 0, v: 0 }; g.n++; g.v += ceilingOf(b); m.set(k, g); })); return Array.from(m.entries()).sort((a, z) => z[1].n - a[1].n); };
     fillTable('#an-reason', ['Reason', 'Jobs', 'Published value'], group(b => reasonsOf(b).length ? reasonsOf(b) : ['(none given)']).map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-arch', ['Architect', 'Jobs', 'Published value'], group(b => b.architect || '(not set)').map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
     fillTable('#an-sector', ['Sector', 'Jobs', 'Published value'], group(b => b.sector || '(not set)').map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
     fillTable('#an-month', ['Month', 'Jobs', 'Published value'], group(b => (b.decided_at || b.bid_date || '').slice(0, 7) || '(no date)').sort((a, z) => z[0].localeCompare(a[0])).map(([k, g]) => [k === '(no date)' ? k : new Date(k + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }), g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
     // Does the Go score predict wins? Go decisions with a score and a final won / lost outcome.
@@ -1475,9 +1477,9 @@
     const rows = plRows();
     const q = (v) => { const x = v == null ? '' : String(v); return /[",\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
     const qsList = (FM.scorecard && FM.scorecard.questions) || [];
-    const head = ['Decided', 'Bid date', 'Folder', 'Project', 'Owner', 'Location', 'Sector', 'Delivery', 'Published value', 'Score', 'Gate failed', 'Reasons', 'Note', 'Decided by', 'Winner', 'Winning price'].concat(qsList.flatMap(qq => [qq.label, qq.label + ' – why']));
+    const head = ['Decided', 'Bid date', 'Folder', 'Project', 'Owner', 'Architect', 'Location', 'Sector', 'Delivery', 'Published value', 'Score', 'Gate failed', 'Reasons', 'Note', 'Decided by', 'Winner', 'Winning price'].concat(qsList.flatMap(qq => [qq.label, qq.label + ' – why']));
     const lines = [head.join(',')].concat(rows.map(b => { const sc = scoreOf(b) || {}; const r = (b.scorecard && b.scorecard.ratings) || {}; const n = b.score_notes || {};
-      return [b.decided_at ? b.decided_at.slice(0, 10) : '', b.bid_date, b.id || b._id, b.project, b.owner, b.location, b.sector, b.delivery, ceilingOf(b) || '', b.decision_score ?? (sc.rated ? sc.score : ''), sc.gate || '', reasonsOf(b).join('; '), b.decision_note, b.decided_by || b.nobid_by, b.passed_winner, b.passed_amount || ''].concat(qsList.flatMap(qq => [r[qq.key] || '', n[qq.key] || ''])).map(q).join(','); }));
+      return [b.decided_at ? b.decided_at.slice(0, 10) : '', b.bid_date, b.id || b._id, b.project, b.owner, b.architect, b.location, b.sector, b.delivery, ceilingOf(b) || '', b.decision_score ?? (sc.rated ? sc.score : ''), sc.gate || '', reasonsOf(b).join('; '), b.decision_note, b.decided_by || b.nobid_by, b.passed_winner, b.passed_amount || ''].concat(qsList.flatMap(qq => [r[qq.key] || '', n[qq.key] || ''])).map(q).join(','); }));
     const dl = await claude.use('downloads');
     if (!dl) { showBanner('Downloads are not available in this view.'); return; }
     try { await dl.save({ filename: 'FM Passed Jobs ' + todayIso + '.csv', data: new Blob([lines.join('\n')], { type: 'text/csv' }) }); } catch (e) {}
@@ -1501,6 +1503,11 @@
       pbtn.addEventListener('click', () => { S.editing = b._id; renderGoNoGo(); });
       ttl.appendChild(pbtn);
       ttl.appendChild(el('span', 'o', [b.owner, b.location, b.value_label && b.value_label !== 'Not published' ? b.value_label : '', b.source ? 'via ' + b.source : ''].filter(Boolean).join(' · ')));
+      { const af = el('label', 'garch'); af.appendChild(el('span', 'fl', 'Architect')); const ai = el('input'); ai.type = 'text'; ai.maxLength = 120; ai.placeholder = 'Firm (city) – contact'; ai.value = b.architect || ''; ai.disabled = !S.canWrite; ai.setAttribute('aria-label', 'Architect for ' + b.project); ai.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ architect: ai.value.trim() }); } catch (e) { writeFailed(e); } }); af.appendChild(ai);
+        af.appendChild(el('span', 'fl', 'Sector')); const ss = el('select'); ss.disabled = !S.canWrite; ss.setAttribute('aria-label', 'Sector for ' + b.project);
+        ['', ...SECTORS.concat(b.sector && !SECTORS.includes(b.sector) ? [b.sector] : [])].forEach(v => { const o = el('option', null, v || '—'); o.value = v; if ((b.sector || '') === v) o.selected = true; ss.appendChild(o); });
+        ss.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ sector: ss.value }); } catch (e) { writeFailed(e); } }); af.appendChild(ss);
+        ttl.appendChild(af); }
       head.appendChild(ttl);
       const right = el('div', 'cright');
       const box = el('div', 'gscore ' + (sc && sc.suggestion ? SUG[sc.suggestion][1] : ''));
@@ -1576,10 +1583,10 @@
     ev.preventDefault(); const m = $('#gng-msg'); m.className = 'msg';
     if (!S.db || !S.canWrite) { m.className = 'msg err'; m.textContent = 'You need edit access to add bids.'; return; }
     const project = $('#g-project').value.trim(); if (!project) { m.className = 'msg err'; m.textContent = 'Project name is required.'; return; }
-    const f = { project, date: $('#g-date').value || '', owner: $('#g-owner').value.trim(), location: $('#g-loc').value.trim(), value: $('#g-val').value.trim() };
+    const f = { project, date: $('#g-date').value || '', owner: $('#g-owner').value.trim(), architect: $('#g-arch').value.trim(), location: $('#g-loc').value.trim(), value: $('#g-val').value.trim() };
     try {
       let id = safeId(project.toUpperCase()).slice(0, 40); if (S.bids.some(b => b._id === id)) id = id.slice(0, 32) + '-' + Date.now().toString(36).slice(-6);
-      const docData = Object.assign(newBidDoc(f), { status: 'Lead', source: $('#g-source').value || '', bid_time: '' });
+      const docData = Object.assign(newBidDoc(f), { status: 'Lead', source: $('#g-source').value || '', sector: $('#g-sector').value || '', bid_time: '' });
       if (!f.date) docData.bid_date = '';
       await S.db.doc('bids/' + id).set(docData);
       $('#gng-form').reset(); $('#gng-form').hidden = true; m.textContent = '';
