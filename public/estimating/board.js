@@ -182,9 +182,14 @@
     note.textContent = 'Estimating and Pre-Con time off comes from the FM Workforce app (dashed = still pending approval).' + (t && t.fetchedAt ? ' Updated ' + new Date(t.fetchedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '.' : ' Not loaded yet: click Check SharePoint now.');
   }
 
+  // Jobs we passed on (No-Go) stay off the Bid Board Schedule: no bid-due or pre-bid events, no card,
+  // not in the PDF. They live on the Go / No-Go page and in Bid Results & History.
+  const isPassed = (b) => !!b && statusOf(b) === 'Passed';
   function calEvents() {
-    const evs = S.deadlines.filter(r => r.kind !== 'Bid').map(r => Object.assign({}, r));
-    S.bids.forEach(b => { if (b.bid_date) evs.push({ date: b.bid_date, time: b.bid_time || 'TBD', project: b.project, event: 'Bid due', kind: 'Bid', _bid: b }); });
+    const passedIds = new Set(S.bids.filter(isPassed).map(b => b._id));
+    const passedProj = new Set(S.bids.filter(isPassed).map(b => b.project));
+    const evs = S.deadlines.filter(r => r.kind !== 'Bid' && !passedIds.has(r.bid_id) && !(r.bid_id == null && passedProj.has(r.project))).map(r => Object.assign({}, r));
+    S.bids.forEach(b => { if (b.bid_date && !isPassed(b)) evs.push({ date: b.bid_date, time: b.bid_time || 'TBD', project: b.project, event: 'Bid due', kind: 'Bid', _bid: b }); });
     return evs;
   }
 
@@ -296,7 +301,7 @@
     const tb = $('#bids');
     if (tb.contains(document.activeElement) && (document.activeElement.tagName !== 'BUTTON' || S.resEdit)) { S.tableStale = true; return; }
     S.tableStale = false; tb.textContent = '';
-    const rows = S.bids.filter(b => !isLead(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
+    const rows = S.bids.filter(b => !isLead(b) && !isPassed(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
     const dups = findDups();
     if (!rows.length) { tb.appendChild(el('div', 'card empty', S.loaded ? 'No bids match this filter.' : 'Loading bids…')); return; }
     rows.forEach(b => {
@@ -1293,7 +1298,7 @@
       });
       // schedule
       doc.addPage(); header('Bid Schedule');
-      const rows = S.bids.filter(b => !isLead(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
+      const rows = S.bids.filter(b => !isLead(b) && !isPassed(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
       const sbody = rows.map(b => {
         const pre = prebidsFor(b).map(d => fmtDay(d.date) + (d.time ? ' ' + d.time : '') + (d.mandatory ? ' (MANDATORY)' : '') + (goingTo(d).length ? ' — ' + goingTo(d).map(initials).join(', ') : '')).join('\n') || (b.prebid || '');
         return [fmtDay(b.bid_date) + '\n' + (b.bid_time || '') + (b.bid_opening ? '\n' + b.bid_opening : ''), b.project + '\n' + [b.id || b._id, b.location].filter(Boolean).join(' · '), (b.owner || '—') + '\n' + (b.architect || '—'), teamOf(b).map(initials).join(', ') || '—', pre, b.value_label || '', b.rom == null ? '' : money(b.rom), statusOf(b), b.bid_security || '', b.description || '', b.notes || ''];
