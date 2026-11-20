@@ -385,3 +385,31 @@ table.verify-emp tr.total td { border-top: 2px solid var(--line); }
 .days-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
 .days-head [data-wk] { min-width: 34px; padding: 2px 8px; }
 .days-week { color: var(--text); }
+
+/* Estimating: possible bids and the Go / No-Go scorecard */
+.est-card.decided { opacity: .92; }
+.est-head { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; align-items: start; }
+.est-date { display: flex; flex-direction: column; gap: 2px; border-left: 3px solid var(--orange); padding-left: 8px; }
+.est-title .linklike { font-size: 16px; font-weight: 700; }
+.linklike { background: none; border: 0; padding: 0; color: var(--charcoal); text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: var(--light); }
+.est-score { min-width: 112px; text-align: center; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.est-score .v { font-size: 24px; font-weight: 700; line-height: 1.1; }
+.est-score .l { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--soft); }
+.est-score.ok { background: var(--charcoal); border-color: var(--charcoal); color: #fff; }
+.est-score.ok .l { color: #ddd; }
+.est-score.warn { background: var(--orange-tint); border-color: #F7B79C; }
+.est-score.bad { background: var(--orange); border-color: var(--orange); color: #fff; }
+.est-score.bad .l { color: #fff; }
+.est-q { margin-top: 10px; border-top: 1px solid var(--line); }
+.est-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--tint); }
+.est-rate button { min-width: 54px; }
+.est-decide { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; margin-top: 10px; }
+.est-btns { display: flex; gap: 8px; }
+.est-decided { margin-top: 10px; padding: 8px 10px; border-left: 4px solid var(--charcoal); background: var(--tint); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.est-decided.no_go { border-left-color: var(--orange); }
+.est-decided .mini-btn { margin-left: auto; }
+@media (max-width: 700px) {
+  .est-head { grid-template-columns: 1fr auto; }
+  .est-date { grid-column: 1 / -1; flex-direction: row; }
+  .est-row, .est-decide { grid-template-columns: 1fr; }
+}

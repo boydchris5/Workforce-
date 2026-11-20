@@ -43,7 +43,8 @@ const usersDdl = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   email TEXT,
   notify_requests INTEGER NOT NULL DEFAULT 1,
-  can_view_schedule INTEGER NOT NULL DEFAULT 0
+  can_view_schedule INTEGER NOT NULL DEFAULT 0,
+  can_estimate INTEGER NOT NULL DEFAULT 0
 );`;
 
 const SCHEMA = `
@@ -434,7 +435,7 @@ function migrate(db) {
   }
   // v9: email notifications + office logins that can view the field schedule.
   const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-  const addUser = { email: 'TEXT', notify_requests: 'INTEGER NOT NULL DEFAULT 1', can_view_schedule: 'INTEGER NOT NULL DEFAULT 0' };
+  const addUser = { email: 'TEXT', notify_requests: 'INTEGER NOT NULL DEFAULT 1', can_view_schedule: 'INTEGER NOT NULL DEFAULT 0', can_estimate: 'INTEGER NOT NULL DEFAULT 0' };
   for (const [c, type] of Object.entries(addUser)) if (!userCols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} ${type};`);
   // v9: field time-off requests (pending/approved/rejected), hours per day.
   const offCols = db.prepare('PRAGMA table_info(time_off)').all().map((c) => c.name);
