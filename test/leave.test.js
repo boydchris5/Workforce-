@@ -301,7 +301,7 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   assert.equal(up.prepare('SELECT COUNT(*) AS n FROM time_off WHERE employee_id = ?').get(emp('Sarah').id).n, 0); // cancelled not carried over
   assert.equal(up.prepare("SELECT hours FROM leave_allowances WHERE employee_id = ? AND kind = 'pto'").get(emp('Pat').id).hours, 160);
   assert.equal(up.prepare("SELECT value FROM settings WHERE key = 'staff_pto_default_hours'").get().value, '96');
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 13);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 14);
   up.close();
   require('node:fs').rmSync(file, { force: true });
 });
