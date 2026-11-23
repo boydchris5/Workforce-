@@ -21,6 +21,8 @@
   const KEEP_ST = new Set(['Submitted', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid', 'Passed']);
   const sizeBand = (v) => !(v > 0) ? '' : v < 250000 ? '<$250K' : v < 1e6 ? '$250K–$1M' : v < 5e6 ? '$1M–$5M' : v < 15e6 ? '$5M–$15M' : '$15M+';
   const statusOf = (b) => LEGACY[b.status] || (STATUSES.includes(b.status) ? b.status : 'Not started');
+  // Show a value as dollars: "3000000" -> "$3,000,000"; text like "Under 2500000" gets its numbers formatted too.
+  const fmtVal = (v) => { if (v == null || v === '') return v; const t = String(v).trim(); const n = parseMoney(t); if (Number.isFinite(n) && n > 0) return money(n); return t.replace(/\$?\b(\d{1,3}(?:,\d{3})+|\d{4,})(\.\d+)?\b/g, (m) => money(Number(m.replace(/[$,]/g, '')))); };
   const parseMoney = (v) => { const t = String(v || '').trim().toLowerCase().replace(/[$,\s]/g, ''); if (!t) return null; const m = /^(\d+(?:\.\d+)?)([km]?)$/.exec(t); if (!m) return NaN; return Math.round(Number(m[1]) * (m[2] === 'm' ? 1e6 : m[2] === 'k' ? 1e3 : 1)); };
   const CLOSED = new Set(['Submitted', 'Passed', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid']);
   const needsResult = (b) => { const st = statusOf(b); return RESULT_ST.has(st) || ((st === 'In progress' || st === 'Not started') && !!b.bid_date && b.bid_date < todayIso); };
@@ -179,7 +181,7 @@
   function renderOffNote() {
     const note = $('#off-note'); if (!note) return;
     const t = S.timeoff;
-    note.textContent = 'Estimating and Pre-Con time off comes from the FM Workforce app (dashed = still pending approval).' + (t && t.fetchedAt ? ' Updated ' + new Date(t.fetchedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '.' : ' Not loaded yet: click Check SharePoint now.');
+    note.textContent = 'Estimating and Pre-Con time off comes from the FM Workforce app (dashed = still pending approval).' + (t && t.fetchedAt ? ' Updated ' + new Date(t.fetchedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '.' : ' Loading…');
   }
 
   // Jobs we passed on (No-Go) stay off the Bid Board Schedule: no bid-due or pre-bid events, no card,
@@ -329,7 +331,7 @@
       const dupOf = dups.get(id); if (dupOf) ttl.appendChild(el('span', 'dup', 'Possible duplicate of ' + dupOf));
       head.appendChild(ttl);
       const right = el('div', 'cright');
-      right.appendChild(el('span', 'val', b.value_label || 'Not published'));
+      right.appendChild(el('span', 'val', fmtVal(b.value_label) || 'Not published'));
       const st = el('select'); st.id = 'st-' + id; st.setAttribute('aria-label', 'Status for ' + b.project); st.disabled = !S.canWrite;
       st.title = 'Where this bid stands. Submitted, Passed and the award results drop it from the open-bid totals.';
       STATUSES.forEach(sv => { const o = el('option', null, sv); o.value = sv; if (statusOf(b) === sv) o.selected = true; st.appendChild(o); });
@@ -434,37 +436,7 @@
         ig.addEventListener('click', () => saveBid(id, { date_flag: null, date_flag_ignored: b.date_flag.source === 'Bid documents' ? 'documents:' + b.date_flag.date : (b.date_flag.source || '') }));
         fl.appendChild(ap); fl.appendChild(ig); left.appendChild(fl);
       }
-      if (Array.isArray(b.suggest) && b.suggest.length) {
-        const sg = el('div', 'sugg');
-        sg.appendChild(el('strong', null, 'SharePoint documents show different information:'));
-        const ul = el('ul');
-        b.suggest.forEach(x => { const li = el('li'); li.appendChild(el('span', 'fl', x.label)); li.appendChild(document.createTextNode(' ' + (x.field === 'published_ceiling' ? money(x.value) : x.value))); const was = el('span', 'was', 'board: ' + (x.field === 'published_ceiling' && x.current != null ? money(x.current) : (norm(x.current) || '—'))); li.appendChild(was); ul.appendChild(li); });
-        sg.appendChild(ul);
-        const ap = el('button', 'ib', 'Use document values'); ap.type = 'button'; ap.disabled = !S.canWrite;
-        ap.addEventListener('click', () => { const patch = { suggest: [] }; b.suggest.forEach(x => { patch[x.field] = x.value; }); saveBid(id, patch); });
-        const ig = el('button', 'ib', 'Keep board values'); ig.type = 'button'; ig.disabled = !S.canWrite;
-        ig.addEventListener('click', () => { const keep = Object.assign({}, b.sp_keep || {}); b.suggest.forEach(x => { keep[x.field] = x.value; }); saveBid(id, { suggest: [], sp_keep: keep }); });
-        const acts = el('div', 'row'); acts.appendChild(ap); acts.appendChild(ig); sg.appendChild(acts);
-        left.appendChild(sg);
-      }
-      {
-        const ad = el('div', 'adds'); ad.appendChild(el('span', 'fl', 'Addenda in folder'));
-        const list = Array.isArray(b.addenda) ? b.addenda : null;
-        if (!list) ad.appendChild(el('span', 'fv muted', 'Not checked yet. Press Check SharePoint now.'));
-        else if (!list.length) ad.appendChild(el('span', 'fv muted', 'None found' + (b.sp_checked_at ? ' as of ' + new Date(b.sp_checked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '') + '.'));
-        else {
-          const ul = el('ul', 'addl');
-          list.forEach(a => {
-            const li = el('li'); li.appendChild(el('span', 'an', a.number ? 'Add. ' + a.number : 'Addendum'));
-            li.appendChild(document.createTextNode(' ' + a.name.replace(/\.pdf$/i, '')));
-            if (a.found && a.found.date) li.appendChild(el('span', 'tag', 'Bid date ' + fmtDay(a.found.date)));
-            else if (a.found && a.found.noChange) li.appendChild(el('span', 'tag muted', 'No date change'));
-            ul.appendChild(li);
-          });
-          ad.appendChild(ul);
-        }
-        left.appendChild(ad);
-      }
+      // (SharePoint document checks and the addenda-in-folder list were removed: bids are entered directly.)
       if (needsResult(b) || statusOf(b) === 'Passed') side.appendChild(resultsCard(b));
       { const rv = romVsLow(b); if (rv) side.appendChild(rv); }
       // description + notes
@@ -857,7 +829,8 @@
   }
 
   function newBidDoc(f) {
-    return { id: f.folder || '', project: f.project, owner: f.owner || '', architect: f.architect || '', bid_opening: f.bid_opening || '', location: f.location || '', sector: '', bid_date: f.date, bid_time: f.time || 'TBD', submit_method: '', published_ceiling: null, value_label: f.value || 'Not published', bid_security: '', labor: '', prebid: '', status: 'Not started', key_risk: '', source_doc: f.source || 'Added on the board', team: [], estimator: '', rom: null, notes: '', folder_name: f.folder_name || '', folder_uri: f.folder_uri || '', added_at: new Date().toISOString() };
+    const vn = parseMoney(f.value); const vnum = Number.isFinite(vn) && vn > 0 ? vn : null;
+    return { id: f.folder || '', project: f.project, owner: f.owner || '', architect: f.architect || '', bid_opening: f.bid_opening || '', location: f.location || '', sector: '', bid_date: f.date, bid_time: f.time || 'TBD', submit_method: '', published_ceiling: vnum, value_label: vnum ? money(vnum) : (f.value || 'Not published'), bid_security: '', labor: '', prebid: '', status: 'Not started', key_risk: '', source_doc: f.source || 'Added on the board', team: [], estimator: '', rom: null, notes: '', folder_name: f.folder_name || '', folder_uri: f.folder_uri || '', added_at: new Date().toISOString() };
   }
   const safeId = (s) => (s || '').replace(/[^A-Za-z0-9_\-.~:@+]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
   async function addBid(f) {
@@ -1205,7 +1178,7 @@
       const ign = b.folder_uri ? fid(b.folder_uri) : '';
       if (ign) { try { await S.db.doc('ignored/' + ign).set({ folder_name: b.folder_name || b.project, deleted_at: new Date().toISOString() }); } catch (e) {} }
       S.confirmDel = null; if (S.editing === id) S.editing = null;
-      offerUndo('Deleted ' + b.project + (ign ? '. The SharePoint check will skip its folder.' : '.'), async () => { await S.db.doc('bids/' + id).set(keep); for (const [did, k] of evs) await S.db.doc('deadlines/' + did).set(k); if (ign) { try { await S.db.doc('ignored/' + ign).delete(); } catch (e) {} } });
+      offerUndo('Deleted ' + b.project + '.', async () => { await S.db.doc('bids/' + id).set(keep); for (const [did, k] of evs) await S.db.doc('deadlines/' + did).set(k); if (ign) { try { await S.db.doc('ignored/' + ign).delete(); } catch (e) {} } });
     } catch (e) { writeFailed(e); }
   }
   let toastTimer = null;
@@ -1305,7 +1278,7 @@
       const rows = S.bids.filter(b => !isLead(b) && !offSchedule(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
       const sbody = rows.map(b => {
         const pre = prebidsFor(b).map(d => fmtDay(d.date) + (d.time ? ' ' + d.time : '') + (d.mandatory ? ' (MANDATORY)' : '') + (goingTo(d).length ? ' — ' + goingTo(d).map(initials).join(', ') : '')).join('\n') || (b.prebid || '');
-        return [fmtDay(b.bid_date) + '\n' + (b.bid_time || '') + (b.bid_opening ? '\n' + b.bid_opening : ''), b.project + '\n' + [b.id || b._id, b.location].filter(Boolean).join(' · '), (b.owner || '—') + '\n' + (b.architect || '—'), teamOf(b).map(initials).join(', ') || '—', pre, b.value_label || '', b.rom == null ? '' : money(b.rom), statusOf(b), b.bid_security || '', b.description || '', b.notes || ''];
+        return [fmtDay(b.bid_date) + '\n' + (b.bid_time || '') + (b.bid_opening ? '\n' + b.bid_opening : ''), b.project + '\n' + [b.id || b._id, b.location].filter(Boolean).join(' · '), (b.owner || '—') + '\n' + (b.architect || '—'), teamOf(b).map(initials).join(', ') || '—', pre, fmtVal(b.value_label) || '', b.rom == null ? '' : money(b.rom), statusOf(b), b.bid_security || '', b.description || '', b.notes || ''];
       });
       doc.autoTable({
         startY: 88, margin: { left: M, right: M, bottom: 30 },
@@ -1421,7 +1394,7 @@
       tr.addEventListener('click', toggle); tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') toggle(); });
       const score = b.decision_score != null ? b.decision_score : (sc.rated ? sc.score : null);
       [b.bid_date ? fmtDay(b.bid_date) : '—', b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : '—', (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.architect || '—', b.sector || '—',
-        ceilingOf(b) ? money(ceilingOf(b)) : (b.value_label || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
+        ceilingOf(b) ? money(ceilingOf(b)) : (fmtVal(b.value_label) || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
         b.passed_winner || '—', b.passed_amount ? money(b.passed_amount) : '—'].forEach((c, i) => tr.appendChild(el('td', NUMC.has(head[i]) ? 'num' : null, c)));
       tb.appendChild(tr);
       if (open) tb.appendChild(passedDetail(b, head.length));
@@ -1503,7 +1476,7 @@
       const pbtn = el('button', 'proj-btn', b.project); pbtn.type = 'button'; pbtn.title = 'Edit details';
       pbtn.addEventListener('click', () => { S.editing = b._id; renderGoNoGo(); });
       ttl.appendChild(pbtn);
-      ttl.appendChild(el('span', 'o', [b.owner, b.location, b.value_label && b.value_label !== 'Not published' ? b.value_label : '', b.source ? 'via ' + b.source : ''].filter(Boolean).join(' · ')));
+      ttl.appendChild(el('span', 'o', [b.owner, b.location, b.value_label && b.value_label !== 'Not published' ? fmtVal(b.value_label) : '', b.source ? 'via ' + b.source : ''].filter(Boolean).join(' · ')));
       { const af = el('label', 'garch'); af.appendChild(el('span', 'fl', 'Architect')); const ai = el('input'); ai.type = 'text'; ai.maxLength = 120; ai.placeholder = 'Firm (city) – contact'; ai.value = b.architect || ''; ai.disabled = !S.canWrite; ai.setAttribute('aria-label', 'Architect for ' + b.project); ai.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ architect: ai.value.trim() }); } catch (e) { writeFailed(e); } }); af.appendChild(ai);
         af.appendChild(el('span', 'fl', 'Sector')); const ss = el('select'); ss.disabled = !S.canWrite; ss.setAttribute('aria-label', 'Sector for ' + b.project);
         ['', ...SECTORS.concat(b.sector && !SECTORS.includes(b.sector) ? [b.sector] : [])].forEach(v => { const o = el('option', null, v || '—'); o.value = v; if ((b.sector || '') === v) o.selected = true; ss.appendChild(o); });
