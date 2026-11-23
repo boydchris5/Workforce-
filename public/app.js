@@ -219,15 +219,23 @@ const helpLink = (path) => `/help.html#${HELP_SECTIONS[path] || 'welcome'}`;
 // Tools menu: pages grouped under headings (like Procore's tool picker). Each person only sees
 // the pages their login allows; empty groups are left out.
 const MENU_GROUPS = [['field', 'Field Operations'], ['resources', 'Resources'], ['precon', 'Preconstruction'], ['company', 'Company']];
+// Favorites: pages starred in the Tools menu show as quick links in the top bar. Saved per login on this device.
+const favKey = () => `wf_favs_${S.user.id}`;
+const getFavs = () => { try { const v = JSON.parse(localStorage.getItem(favKey()) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+const setFavs = (list) => { try { localStorage.setItem(favKey(), JSON.stringify(list)); } catch { /* storage off */ } };
 function shell() {
   const r = currentRoute();
   const roleName = ROLE_NAMES[S.user.role];
   const visible = ROUTES.filter((x) => !x.show || x.show());
   const groupName = Object.fromEntries(MENU_GROUPS);
+  const favs = getFavs().filter((p) => visible.some((x) => x.path === p));
+  const favBarHtml = (list) => (list.length ? `<div class="fav-bar" role="navigation" aria-label="Favorites"><span class="fav-lbl">★ Favorites</span>${list.map((p) => { const x = visible.find((v) => v.path === p); return x ? `<a href="#/${p}" class="${x === r ? 'active' : ''}">${esc(x.label)}</a>` : ''; }).join('')}</div>`
+    : '<div class="fav-bar empty"><span class="fav-lbl">★ Favorites</span><span class="fav-hint">Star pages in the menu to pin them here</span></div>');
+  const favBar = favBarHtml(favs);
   const cols = MENU_GROUPS.map(([key, title]) => {
     const items = visible.filter((x) => (x.group || 'company') === key)
-      .map((x) => `<a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a>`);
-    if (key === 'company') items.push(`<a href="${helpLink(r.path)}" target="_blank" rel="noopener">? Help &amp; user guide</a>`, '<a href="#" data-act="account">My account</a>');
+      .map((x) => `<div class="tools-item"><button type="button" class="fav-star ${favs.includes(x.path) ? 'on' : ''}" data-fav="${x.path}" aria-pressed="${favs.includes(x.path)}" title="${favs.includes(x.path) ? 'Remove from Favorites' : 'Add to Favorites'}" aria-label="Favorite ${esc(x.label)}">${favs.includes(x.path) ? '★' : '☆'}</button><a href="#/${x.path}" class="${x === r ? 'active' : ''} ${x.cls || ''}">${esc(x.label)}</a></div>`);
+    if (key === 'company') items.push(`<div class="tools-item"><span class="fav-gap"></span><a href="${helpLink(r.path)}" target="_blank" rel="noopener">? Help &amp; user guide</a></div>`, '<div class="tools-item"><span class="fav-gap"></span><a href="#" data-act="account">My account</a></div>');
     return items.length ? `<div class="tools-col"><h3>${esc(title)}</h3>${items.join('')}</div>` : '';
   }).join('');
   $('#app').innerHTML = `
@@ -236,10 +244,11 @@ function shell() {
       <button class="tools-btn" aria-haspopup="true" aria-expanded="false" aria-controls="tools-panel">
         <span class="tools-kicker">${esc(groupName[r.group || 'company'] || 'Tools')}</span>
         <span class="tools-cur">${esc(r.label)} <span class="caret">▾</span></span></button>
+      ${favBar}
       <span class="spacer"></span>
       <a class="help-link" href="${helpLink(r.path)}" target="_blank" rel="noopener" title="Open the user guide for this page">? Help</a>
       <div class="who" title="Account">${esc(S.user.name)} · ${roleName} ▾</div>
-      <div id="tools-panel" class="tools-panel" role="navigation" aria-label="Tools" hidden><div class="tools-head">Select a tool</div><div class="tools-cols">${cols}</div></div>
+      <div id="tools-panel" class="tools-panel" role="navigation" aria-label="Tools" hidden><div class="tools-head">Select a tool · click ☆ to add a page to your Favorites bar</div><div class="tools-cols">${cols}</div></div>
     </header>
     <main id="page"></main>
     <footer class="site">${FOOTER}</footer>`;
@@ -250,6 +259,15 @@ function shell() {
   document.onclick = () => setOpen(false);
   document.onkeydown = (e) => { if (e.key === 'Escape' && !panel.hidden) { setOpen(false); btn.focus(); } };
   $$('a', panel).forEach((a) => a.addEventListener('click', () => setOpen(false)));
+  $$('[data-fav]', panel).forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    const cur = getFavs(); const p = b.dataset.fav;
+    const next = cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p];
+    setFavs(next);
+    const on = next.includes(p);
+    b.classList.toggle('on', on); b.textContent = on ? '★' : '☆'; b.setAttribute('aria-pressed', String(on)); b.title = on ? 'Remove from Favorites' : 'Add to Favorites';
+    $('.fav-bar').outerHTML = favBarHtml(next.filter((q) => visible.some((x) => x.path === q)));
+  }));
   $('.who').onclick = accountMenu;
   $('[data-act=account]', panel).onclick = (e) => { e.preventDefault(); accountMenu(); };
   r.render($('#page'));

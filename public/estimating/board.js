@@ -12,7 +12,7 @@
   const S = { showFinished: false, plOpen: null, pf: { year: String(new Date().getFullYear()), reason: 'all', sector: 'all', who: 'all' }, expanded: new Set(), ignored: new Set(), bids: [], deadlines: [], team: { estimators: [] }, sp: { folders: [] }, sync: null, filter: 'all', types: new Set(['bid', 'lead', 'pre', 'must', 'q', 'int', 'sent', 'off']), timeoff: null, editing: null, confirmDel: null, undo: null, canWrite: true, db: null, loaded: false, spFolders: null };
   const STATUSES = ['Lead', 'Not started', 'In progress', 'Submitted', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid', 'Passed'];
   const LEGACY = { 'Docs received': 'Not started', 'Concept': 'Not started', 'Estimating': 'In progress', 'Updating prior estimate': 'In progress', 'Bid forms executed': 'In progress', 'No bid': 'Passed' };
-  const SECTORS = ['Public – CDB', 'Public – K-12', 'Public – Higher Ed (non-CDB)', 'Public – Municipal/County', 'Healthcare – Hospital', 'Healthcare – Medical Office/Clinic', 'Private – Industrial', 'Private – Commercial'];
+  const SECTORS = ['Public – CDB', 'Public – K-12', 'Public – Higher Ed (non-CDB)', 'Public – Municipal/County', 'Healthcare – Hospital', 'Healthcare – Medical Office/Clinic', 'Private – Industrial', 'Private – Commercial', 'Private – Religious'];
   const DELIVERY = ['Public hard bid', 'Private invite bid', 'Negotiated', 'Design-build', 'Budget / precon'];
   const LOSS_REASONS = ['Price – within 3%', 'Price – more than 3%', 'Qualifications / scope', 'Owner chose another firm (not price)', 'Over budget / no award', 'Unknown'];
   const NOBID_REASONS = ['Capacity', 'Territory', 'Size fit', 'Risk / terms (LDs, schedule)', 'Low odds (crowded or another GC\'s owner)', 'Sub coverage'];
@@ -1377,7 +1377,7 @@
     const top = Object.entries(tally).sort((a, z) => z[1] - a[1])[0];
     [['Waiting on a decision', S.bids.filter(isLead).length, 'Possible bids not yet Go or No-Go'],
      ['Go rate ' + yr, decided.length ? Math.round(go / decided.length * 100) + '%' : '—', go + ' Go of ' + decided.length + ' decided'],
-     ['Passed ' + yr, passed.length, moneyM(passed.reduce((x, b) => x + ceilingOf(b), 0)) + ' in published value'],
+     ['Passed ' + yr, passed.length, money(passed.reduce((x, b) => x + ceilingOf(b), 0)) + ' in published value'],
      ['Top no-bid reason', top ? top[0] : '—', top ? top[1] + ' job' + (top[1] > 1 ? 's' : '') + ' this year' : 'No passed jobs this year']].forEach(([l, v, sb], i) => {
       const d = el('div', 'tile'); d.appendChild(el('span', 'lbl', l)); d.appendChild(el('span', 'num' + (i === 3 ? ' small' : ''), String(v))); d.appendChild(el('span', 'sub', sb)); t.appendChild(d);
     });
@@ -1409,8 +1409,9 @@
     const rows = plRows();
     $('#pl-count').textContent = rows.length + ' passed job' + (rows.length === 1 ? '' : 's') + ' shown';
     tbl.textContent = '';
-    const head = ['Decided', 'Project', 'Owner', 'Architect', 'Sector', 'Value', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it'];
-    const th = el('thead'); const hr = el('tr'); head.forEach(h => hr.appendChild(el('th', h === 'Value' || h === 'Score' ? 'num' : null, h))); th.appendChild(hr); tbl.appendChild(th);
+    const head = ['Bid date', 'Decided', 'Project', 'Owner', 'Architect', 'Sector', 'Value', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it', 'Winning price'];
+    const NUMC = new Set(['Value', 'Score', 'Winning price']);
+    const th = el('thead'); const hr = el('tr'); head.forEach(h => hr.appendChild(el('th', NUMC.has(h) ? 'num' : null, h))); th.appendChild(hr); tbl.appendChild(th);
     const tb = el('tbody');
     if (!rows.length) { const tr = el('tr'); const td = el('td', null, 'No passed jobs match these filters.'); td.colSpan = head.length; tr.appendChild(td); tb.appendChild(tr); }
     rows.forEach(b => {
@@ -1419,9 +1420,9 @@
       const toggle = () => { S.plOpen = open ? null : b._id; renderPassed(); };
       tr.addEventListener('click', toggle); tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') toggle(); });
       const score = b.decision_score != null ? b.decision_score : (sc.rated ? sc.score : null);
-      [b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : (b.bid_date ? fmtDay(b.bid_date) : '—'), (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.architect || '—', b.sector || '—',
-        ceilingOf(b) ? moneyM(ceilingOf(b)) : (b.value_label || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
-        b.passed_winner ? b.passed_winner + (b.passed_amount ? ' · ' + moneyM(b.passed_amount) : '') : '—'].forEach((c, i) => tr.appendChild(el('td', i === 5 || i === 6 ? 'num' : null, c)));
+      [b.bid_date ? fmtDay(b.bid_date) : '—', b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : '—', (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.architect || '—', b.sector || '—',
+        ceilingOf(b) ? money(ceilingOf(b)) : (b.value_label || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
+        b.passed_winner || '—', b.passed_amount ? money(b.passed_amount) : '—'].forEach((c, i) => tr.appendChild(el('td', NUMC.has(head[i]) ? 'num' : null, c)));
       tb.appendChild(tr);
       if (open) tb.appendChild(passedDetail(b, head.length));
     });
@@ -1463,10 +1464,10 @@
   function renderAnalysis() {
     const rows = S.bids.filter(isPassed).filter(b => S.pf.year === 'all' || decidedYear(b) === S.pf.year);
     const group = (keyFn) => { const m = new Map(); rows.forEach(b => [].concat(keyFn(b)).forEach(k => { const g = m.get(k) || { n: 0, v: 0 }; g.n++; g.v += ceilingOf(b); m.set(k, g); })); return Array.from(m.entries()).sort((a, z) => z[1].n - a[1].n); };
-    fillTable('#an-reason', ['Reason', 'Jobs', 'Published value'], group(b => reasonsOf(b).length ? reasonsOf(b) : ['(none given)']).map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
-    fillTable('#an-arch', ['Architect', 'Jobs', 'Published value'], group(b => b.architect || '(not set)').map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
-    fillTable('#an-sector', ['Sector', 'Jobs', 'Published value'], group(b => b.sector || '(not set)').map(([k, g]) => [k, g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
-    fillTable('#an-month', ['Month', 'Jobs', 'Published value'], group(b => (b.decided_at || b.bid_date || '').slice(0, 7) || '(no date)').sort((a, z) => z[0].localeCompare(a[0])).map(([k, g]) => [k === '(no date)' ? k : new Date(k + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }), g.n, g.v ? moneyM(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-reason', ['Reason', 'Jobs', 'Published value'], group(b => reasonsOf(b).length ? reasonsOf(b) : ['(none given)']).map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-arch', ['Architect', 'Jobs', 'Published value'], group(b => b.architect || '(not set)').map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-sector', ['Sector', 'Jobs', 'Published value'], group(b => b.sector || '(not set)').map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-month', ['Month', 'Jobs', 'Published value'], group(b => (b.decided_at || b.bid_date || '').slice(0, 7) || '(no date)').sort((a, z) => z[0].localeCompare(a[0])).map(([k, g]) => [k === '(no date)' ? k : new Date(k + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }), g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
     // Does the Go score predict wins? Go decisions with a score and a final won / lost outcome.
     const bands = [['80 and up', 80, 101], ['60 – 79', 60, 80], ['Under 60', 0, 60]];
     const goes = S.bids.filter(b => b.decision === 'go' && b.decision_score != null && ['Won', 'Lost'].includes(statusOf(b)));
