@@ -23,6 +23,7 @@
   const statusOf = (b) => LEGACY[b.status] || (STATUSES.includes(b.status) ? b.status : 'Not started');
   // Show a value as dollars: "3000000" -> "$3,000,000"; text like "Under 2500000" gets its numbers formatted too.
   const fmtVal = (v) => { if (v == null || v === '') return v; const t = String(v).trim(); const n = parseMoney(t); if (Number.isFinite(n) && n > 0) return money(n); return t.replace(/\$?\b(\d{1,3}(?:,\d{3})+|\d{4,})(\.\d+)?\b/g, (m) => money(Number(m.replace(/[$,]/g, '')))); };
+  const romOf = (b) => Number(b && b.rom) || Number(b && b.published_ceiling) || 0;
   const parseMoney = (v) => { const t = String(v || '').trim().toLowerCase().replace(/[$,\s]/g, ''); if (!t) return null; const m = /^(\d+(?:\.\d+)?)([km]?)$/.exec(t); if (!m) return NaN; return Math.round(Number(m[1]) * (m[2] === 'm' ? 1e6 : m[2] === 'k' ? 1e3 : 1)); };
   const CLOSED = new Set(['Submitted', 'Passed', 'Won', 'Lost', 'No award', 'Cancelled', 'Rebid']);
   const needsResult = (b) => { const st = statusOf(b); return RESULT_ST.has(st) || ((st === 'In progress' || st === 'Not started') && !!b.bid_date && b.bid_date < todayIso); };
@@ -62,24 +63,23 @@
   }
 
   function renderLede() {
-    const open = openBids(), pub = open.filter(b => b.published_ceiling != null);
+    const open = openBids(), pub = open.filter(b => romOf(b) > 0);
     const un = open.filter(b => teamOf(b).length === 0).length;
-    const total = pub.reduce((s, b) => s + b.published_ceiling, 0);
+    const total = pub.reduce((s, b) => s + romOf(b), 0);
     const last = open.map(b => b.bid_date).filter(Boolean).sort().slice(-1)[0];
     const need = S.bids.filter(b => needsResult(b) && !resultsDone(b)).length;
-    $('#lede').textContent = S.loaded ? (open.length + ' open bids through ' + fmtDay(last) + '. ' + pub.length + ' have a published ceiling totaling ' + moneyM(total) + '. ' + (un ? un + ' still need someone assigned.' : 'Every open bid has someone on it.') + (need ? ' ' + need + ' bid' + (need > 1 ? 's' : '') + ' past bid day still need results logged.' : '')) : 'Loading bids…';
+    $('#lede').textContent = S.loaded ? (open.length + ' open bids through ' + fmtDay(last) + '. ' + pub.length + ' have a ROM, totaling ' + money(total) + '. ' + (un ? un + ' still need someone assigned.' : 'Every open bid has someone on it.') + (need ? ' ' + need + ' bid' + (need > 1 ? 's' : '') + ' past bid day still need results logged.' : '')) : 'Loading bids…';
   }
 
   function renderTiles() {
     const t = $('#tiles'); t.textContent = '';
     const open = openBids();
-    const pub = open.reduce((s, b) => s + (b.published_ceiling || 0), 0);
-    const rom = open.reduce((s, b) => s + (Number(b.rom) || 0), 0);
-    const romN = open.filter(b => Number(b.rom) > 0).length;
+    const rom = open.reduce((s, b) => s + romOf(b), 0);
+    const romN = open.filter(b => romOf(b) > 0).length;
     const next = open.filter(b => b.bid_date >= todayIso).sort((a, b) => a.bid_date.localeCompare(b.bid_date))[0];
     [['Open bids', open.length, 'Excludes submitted, passed and decided bids'],
-     ['Published ceilings', moneyM(pub), 'Owner-advertised cost ranges'],
-     ['FM ROM entered', moneyM(rom), romN + ' of ' + open.length + ' bids have an FM number'],
+     ['ROM total', money(rom), romN + ' of ' + open.length + ' open bids have a ROM'],
+     ['Missing a ROM', open.length - romN, open.length - romN ? 'Open bids with no ROM yet' : 'Every open bid has a ROM'],
      ['Next bid due', next ? next.project : '—', next ? fmtDay(next.bid_date) + (next.bid_time ? ', ' + next.bid_time : '') : '']].forEach(([l, v, s], i) => {
       const d = el('div', 'tile'); d.appendChild(el('span', 'lbl', l)); d.appendChild(el('span', 'num' + (i === 3 ? ' small' : ''), String(v))); d.appendChild(el('span', 'sub', s)); t.appendChild(d);
     });
@@ -331,7 +331,6 @@
       const dupOf = dups.get(id); if (dupOf) ttl.appendChild(el('span', 'dup', 'Possible duplicate of ' + dupOf));
       head.appendChild(ttl);
       const right = el('div', 'cright');
-      right.appendChild(el('span', 'val', fmtVal(b.value_label) || 'Not published'));
       const st = el('select'); st.id = 'st-' + id; st.setAttribute('aria-label', 'Status for ' + b.project); st.disabled = !S.canWrite;
       st.title = 'Where this bid stands. Submitted, Passed and the award results drop it from the open-bid totals.';
       STATUSES.forEach(sv => { const o = el('option', null, sv); o.value = sv; if (statusOf(b) === sv) o.selected = true; st.appendChild(o); });
@@ -376,9 +375,9 @@
       tm.addEventListener('change', () => saveBid(id, { bid_time: tm.value.trim() }, dwrap));
       dwrap.appendChild(dt); dwrap.appendChild(tm);
       fact('Bid due', dwrap);
-      const r = el('input'); r.type = 'text'; r.inputMode = 'decimal'; r.className = 'rom'; r.id = 'rom-' + id; r.placeholder = '$0'; r.setAttribute('aria-label', 'FM ROM for ' + b.project); r.value = b.rom == null ? '' : money(b.rom); r.disabled = !S.canWrite;
-      const rf = fact('FM ROM', r);
-      r.addEventListener('change', () => { const v = parseMoney(r.value); if (Number.isNaN(v)) { r.value = b.rom == null ? '' : money(b.rom); showBanner('Enter the ROM as a dollar amount, like $1,250,000 or 1.25M.'); return; } r.value = v == null ? '' : money(v); saveBid(id, { rom: v }, rf); });
+      const r = el('input'); r.type = 'text'; r.inputMode = 'decimal'; r.className = 'rom'; r.id = 'rom-' + id; r.placeholder = '$0'; r.setAttribute('aria-label', 'ROM for ' + b.project); r.value = romOf(b) ? money(romOf(b)) : ''; r.disabled = !S.canWrite;
+      const rf = fact('ROM', r);
+      r.addEventListener('change', () => { const v = parseMoney(r.value); if (Number.isNaN(v)) { r.value = romOf(b) ? money(romOf(b)) : ''; showBanner('Enter the ROM as a dollar amount, like $1,250,000 or 1.25M.'); return; } r.value = v == null ? '' : money(v); saveBid(id, { rom: v }, rf); });
       { const bo = el('span', 'fv', b.bid_opening || '—'); fact('Bid opening', bo); }
       fact('Owner', el('span', 'fv', b.owner || '—'));
       fact('Architect', el('span', 'fv', b.architect || '—'));
@@ -531,7 +530,7 @@
     const row = el('div', 'csum');
     const team = teamOf(b);
     if (team.length) row.appendChild(el('span', 'cs', 'Est. ' + team.map(initials).join(' · ')));
-    if (b.rom != null) row.appendChild(el('span', 'cs', 'ROM ' + money(b.rom)));
+    if (romOf(b)) row.appendChild(el('span', 'cs', 'ROM ' + money(romOf(b))));
     const s = resultStats(b);
     if (s.our) {
       const place = s.rank === 1 ? 'FM low' : s.rank ? 'FM ' + ordinal(s.rank) : 'FM bid';
@@ -546,14 +545,14 @@
   // How our pre-bid ROM compared with the low bid (estimating accuracy).
   function romVsLowText(b) {
     const s = resultStats(b);
-    if (b.rom == null || !(b.rom > 0) || !(s.low > 0)) return '';
-    const d = (b.rom - s.low) / s.low * 100;
+    const rv = romOf(b); if (!(rv > 0) || !(s.low > 0)) return '';
+    const d = (rv - s.low) / s.low * 100;
     return 'ROM vs low ' + (d >= 0 ? '+' : '−') + pct(Math.abs(d));
   }
   function romVsLow(b) {
     const t = romVsLowText(b); if (!t) return null;
     const box = el('div', 'romlow'); box.appendChild(el('span', 'fl', 'ROM vs low bid'));
-    box.appendChild(el('span', 'fv', t.replace('ROM vs low ', '') + ' (ROM ' + money(b.rom) + ' · low ' + money(resultStats(b).low) + ')'));
+    box.appendChild(el('span', 'fv', t.replace('ROM vs low ', '') + ' (ROM ' + money(romOf(b)) + ' · low ' + money(resultStats(b).low) + ')'));
     return box;
   }
 
@@ -829,8 +828,8 @@
   }
 
   function newBidDoc(f) {
-    const vn = parseMoney(f.value); const vnum = Number.isFinite(vn) && vn > 0 ? vn : null;
-    return { id: f.folder || '', project: f.project, owner: f.owner || '', architect: f.architect || '', bid_opening: f.bid_opening || '', location: f.location || '', sector: '', bid_date: f.date, bid_time: f.time || 'TBD', submit_method: '', published_ceiling: vnum, value_label: vnum ? money(vnum) : (f.value || 'Not published'), bid_security: '', labor: '', prebid: '', status: 'Not started', key_risk: '', source_doc: f.source || 'Added on the board', team: [], estimator: '', rom: null, notes: '', folder_name: f.folder_name || '', folder_uri: f.folder_uri || '', added_at: new Date().toISOString() };
+    const vn = parseMoney(f.rom != null ? f.rom : f.value); const vnum = Number.isFinite(vn) && vn > 0 ? vn : null;
+    return { id: f.folder || '', project: f.project, owner: f.owner || '', architect: f.architect || '', bid_opening: f.bid_opening || '', location: f.location || '', sector: '', bid_date: f.date, bid_time: f.time || 'TBD', submit_method: '', published_ceiling: null, value_label: '', rom: vnum, bid_security: '', labor: '', prebid: '', status: 'Not started', key_risk: '', source_doc: f.source || 'Added on the board', team: [], estimator: '', notes: '', folder_name: f.folder_name || '', folder_uri: f.folder_uri || '', added_at: new Date().toISOString() };
   }
   const safeId = (s) => (s || '').replace(/[^A-Za-z0-9_\-.~:@+]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
   async function addBid(f) {
@@ -1105,7 +1104,7 @@
     return out;
   }
 
-  const FIELDS = [['project', 'Project name', 'text', true], ['owner', 'Owner', 'text'], ['architect', 'Architect', 'text'], ['location', 'Location', 'text'], ['sector', 'Sector', 'select', false, SECTORS], ['delivery', 'Delivery', 'select', false, DELIVERY], ['submit_method', 'How to submit', 'text'], ['bid_opening', 'Bid opening location', 'text'], ['value_label', 'Published value (as shown)', 'text'], ['published_ceiling', 'Published ceiling (for totals)', 'money'], ['bid_security', 'Bid security', 'text'], ['prebid', 'Pre-bid (text)', 'text'], ['description', 'Job description', 'area'], ['source_doc', 'Source documents', 'area']];
+  const FIELDS = [['project', 'Project name', 'text', true], ['owner', 'Owner', 'text'], ['architect', 'Architect', 'text'], ['location', 'Location', 'text'], ['sector', 'Sector', 'select', false, SECTORS], ['delivery', 'Delivery', 'select', false, DELIVERY], ['submit_method', 'How to submit', 'text'], ['bid_opening', 'Bid opening location', 'text'], ['bid_security', 'Bid security', 'text'], ['prebid', 'Pre-bid (text)', 'text'], ['description', 'Job description', 'area'], ['source_doc', 'Source documents', 'area']];
   function editorFor(b) {
     const id = b._id; const box = el('div', 'ed');
     const inputs = {};
@@ -1278,14 +1277,14 @@
       const rows = S.bids.filter(b => !isLead(b) && !offSchedule(b)).sort((a, b) => (a.bid_date || '9').localeCompare(b.bid_date || '9')).filter(bidMatches);
       const sbody = rows.map(b => {
         const pre = prebidsFor(b).map(d => fmtDay(d.date) + (d.time ? ' ' + d.time : '') + (d.mandatory ? ' (MANDATORY)' : '') + (goingTo(d).length ? ' — ' + goingTo(d).map(initials).join(', ') : '')).join('\n') || (b.prebid || '');
-        return [fmtDay(b.bid_date) + '\n' + (b.bid_time || '') + (b.bid_opening ? '\n' + b.bid_opening : ''), b.project + '\n' + [b.id || b._id, b.location].filter(Boolean).join(' · '), (b.owner || '—') + '\n' + (b.architect || '—'), teamOf(b).map(initials).join(', ') || '—', pre, fmtVal(b.value_label) || '', b.rom == null ? '' : money(b.rom), statusOf(b), b.bid_security || '', b.description || '', b.notes || ''];
+        return [fmtDay(b.bid_date) + '\n' + (b.bid_time || '') + (b.bid_opening ? '\n' + b.bid_opening : ''), b.project + '\n' + [b.id || b._id, b.location].filter(Boolean).join(' · '), (b.owner || '—') + '\n' + (b.architect || '—'), teamOf(b).map(initials).join(', ') || '—', pre, romOf(b) ? money(romOf(b)) : '', statusOf(b), b.bid_security || '', b.description || '', b.notes || ''];
       });
       doc.autoTable({
         startY: 88, margin: { left: M, right: M, bottom: 30 },
-        head: [['Bid due / opening', 'Project', 'Owner / Architect', 'Estimators', 'Pre-bid / who is going', 'Value', 'FM ROM', 'Status', 'Bid security', 'Job description', 'Notes']], body: sbody,
+        head: [['Bid due / opening', 'Project', 'Owner / Architect', 'Estimators', 'Pre-bid / who is going', 'ROM', 'Status', 'Bid security', 'Job description', 'Notes']], body: sbody,
         theme: 'grid', styles: { font: 'helvetica', fontSize: 7, cellPadding: 3.5, valign: 'top', textColor: CHAR, lineColor: LINE, lineWidth: 0.5, overflow: 'linebreak' },
         headStyles: { fillColor: MID, textColor: 255, fontStyle: 'bold' }, alternateRowStyles: { fillColor: TINT },
-        columnStyles: { 0: { cellWidth: 64 }, 1: { cellWidth: 96, fontStyle: 'bold' }, 2: { cellWidth: 80 }, 3: { cellWidth: 40 }, 4: { cellWidth: 78 }, 5: { cellWidth: 58 }, 6: { cellWidth: 50 }, 7: { cellWidth: 44 }, 8: { cellWidth: 52 }, 9: { cellWidth: 'auto' }, 10: { cellWidth: 66 } },
+        columnStyles: { 0: { cellWidth: 64 }, 1: { cellWidth: 96, fontStyle: 'bold' }, 2: { cellWidth: 80 }, 3: { cellWidth: 40 }, 4: { cellWidth: 78 }, 5: { cellWidth: 58 }, 6: { cellWidth: 44 }, 7: { cellWidth: 52 }, 8: { cellWidth: 'auto' }, 9: { cellWidth: 66 } },
         didParseCell: (h) => { if (h.section === 'head' && h.column.index === 5) h.cell.styles.fillColor = ORANGE; }
       });
       footer();
@@ -1339,7 +1338,7 @@
   const UNDECIDE = { status: 'Lead', decision: null, decision_score: null, decision_note: '', decided_by: '', decided_at: '', nobid_reason: '', nobid_reasons: [], nobid_by: '' };
   const reasonsOf = (b) => Array.isArray(b.nobid_reasons) && b.nobid_reasons.length ? b.nobid_reasons : (b.nobid_reason ? String(b.nobid_reason).split(/,\s*/).filter(Boolean) : []);
   const decidedYear = (b) => (b.decided_at || b.bid_date || '').slice(0, 4);
-  const ceilingOf = (b) => Number(b.published_ceiling) || 0;
+  const ceilingOf = romOf;
   function renderGngTiles() {
     const t = $('#gng-tiles'); if (!t) return; t.textContent = '';
     const yr = todayIso.slice(0, 4);
@@ -1350,7 +1349,7 @@
     const top = Object.entries(tally).sort((a, z) => z[1] - a[1])[0];
     [['Waiting on a decision', S.bids.filter(isLead).length, 'Possible bids not yet Go or No-Go'],
      ['Go rate ' + yr, decided.length ? Math.round(go / decided.length * 100) + '%' : '—', go + ' Go of ' + decided.length + ' decided'],
-     ['Passed ' + yr, passed.length, money(passed.reduce((x, b) => x + ceilingOf(b), 0)) + ' in published value'],
+     ['Passed ' + yr, passed.length, money(passed.reduce((x, b) => x + ceilingOf(b), 0)) + ' in ROM'],
      ['Top no-bid reason', top ? top[0] : '—', top ? top[1] + ' job' + (top[1] > 1 ? 's' : '') + ' this year' : 'No passed jobs this year']].forEach(([l, v, sb], i) => {
       const d = el('div', 'tile'); d.appendChild(el('span', 'lbl', l)); d.appendChild(el('span', 'num' + (i === 3 ? ' small' : ''), String(v))); d.appendChild(el('span', 'sub', sb)); t.appendChild(d);
     });
@@ -1382,8 +1381,8 @@
     const rows = plRows();
     $('#pl-count').textContent = rows.length + ' passed job' + (rows.length === 1 ? '' : 's') + ' shown';
     tbl.textContent = '';
-    const head = ['Bid date', 'Decided', 'Project', 'Owner', 'Architect', 'Sector', 'Value', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it', 'Winning price'];
-    const NUMC = new Set(['Value', 'Score', 'Winning price']);
+    const head = ['Bid date', 'Decided', 'Project', 'Owner', 'Architect', 'Sector', 'ROM', 'Score', 'Gate failed', 'Reasons', 'Decided by', 'Who got it', 'Winning price'];
+    const NUMC = new Set(['ROM', 'Score', 'Winning price']);
     const th = el('thead'); const hr = el('tr'); head.forEach(h => hr.appendChild(el('th', NUMC.has(h) ? 'num' : null, h))); th.appendChild(hr); tbl.appendChild(th);
     const tb = el('tbody');
     if (!rows.length) { const tr = el('tr'); const td = el('td', null, 'No passed jobs match these filters.'); td.colSpan = head.length; tr.appendChild(td); tb.appendChild(tr); }
@@ -1394,7 +1393,7 @@
       tr.addEventListener('click', toggle); tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') toggle(); });
       const score = b.decision_score != null ? b.decision_score : (sc.rated ? sc.score : null);
       [b.bid_date ? fmtDay(b.bid_date) : '—', b.decided_at ? fmtDay(b.decided_at.slice(0, 10)) : '—', (open ? '▾ ' : '▸ ') + b.project, b.owner || '—', b.architect || '—', b.sector || '—',
-        ceilingOf(b) ? money(ceilingOf(b)) : (fmtVal(b.value_label) || '—'), score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
+        ceilingOf(b) ? money(ceilingOf(b)) : '—', score != null ? String(score) : '—', sc.gate || '—', reasonsOf(b).join(', ') || '—', b.decided_by || b.nobid_by || '—',
         b.passed_winner || '—', b.passed_amount ? money(b.passed_amount) : '—'].forEach((c, i) => tr.appendChild(el('td', NUMC.has(head[i]) ? 'num' : null, c)));
       tb.appendChild(tr);
       if (open) tb.appendChild(passedDetail(b, head.length));
@@ -1427,7 +1426,7 @@
     const sv = el('button', 'ib', 'Save'); sv.type = 'button'; sv.disabled = !S.canWrite;
     sv.addEventListener('click', async (ev) => { ev.stopPropagation(); const v = a.value.trim() ? parseMoney(a.value) : null; if (Number.isNaN(v)) { showBanner('Enter the price as a dollar amount, like $1,250,000 or 1.25M.'); return; } try { await S.db.doc('bids/' + b._id).update({ passed_winner: w.value.trim(), passed_amount: v }); if (w.value.trim()) learnComps([w.value.trim()]); } catch (e) { writeFailed(e); } });
     [w, a, sv].forEach(x => { x.addEventListener('click', ev => ev.stopPropagation()); right.appendChild(x); });
-    if (b.passed_amount && ceilingOf(b)) right.appendChild(el('div', 'fv muted', 'Winning price was ' + pct((b.passed_amount - ceilingOf(b)) / ceilingOf(b) * 100).replace(/^(\d)/, '+$1') + ' vs the published value.'));
+    if (b.passed_amount && ceilingOf(b)) right.appendChild(el('div', 'fv muted', 'Winning price was ' + pct((b.passed_amount - ceilingOf(b)) / ceilingOf(b) * 100).replace(/^(\d)/, '+$1') + ' vs our ROM.'));
     const back = el('button', 'btn sec', 'Back to undecided'); back.type = 'button'; back.disabled = !S.canWrite;
     back.addEventListener('click', async (ev) => { ev.stopPropagation(); try { await S.db.doc('bids/' + b._id).update(UNDECIDE); S.plOpen = null; } catch (e) { writeFailed(e); } });
     right.appendChild(back);
@@ -1437,10 +1436,10 @@
   function renderAnalysis() {
     const rows = S.bids.filter(isPassed).filter(b => S.pf.year === 'all' || decidedYear(b) === S.pf.year);
     const group = (keyFn) => { const m = new Map(); rows.forEach(b => [].concat(keyFn(b)).forEach(k => { const g = m.get(k) || { n: 0, v: 0 }; g.n++; g.v += ceilingOf(b); m.set(k, g); })); return Array.from(m.entries()).sort((a, z) => z[1].n - a[1].n); };
-    fillTable('#an-reason', ['Reason', 'Jobs', 'Published value'], group(b => reasonsOf(b).length ? reasonsOf(b) : ['(none given)']).map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
-    fillTable('#an-arch', ['Architect', 'Jobs', 'Published value'], group(b => b.architect || '(not set)').map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
-    fillTable('#an-sector', ['Sector', 'Jobs', 'Published value'], group(b => b.sector || '(not set)').map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
-    fillTable('#an-month', ['Month', 'Jobs', 'Published value'], group(b => (b.decided_at || b.bid_date || '').slice(0, 7) || '(no date)').sort((a, z) => z[0].localeCompare(a[0])).map(([k, g]) => [k === '(no date)' ? k : new Date(k + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }), g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-reason', ['Reason', 'Jobs', 'ROM'], group(b => reasonsOf(b).length ? reasonsOf(b) : ['(none given)']).map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-arch', ['Architect', 'Jobs', 'ROM'], group(b => b.architect || '(not set)').map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-sector', ['Sector', 'Jobs', 'ROM'], group(b => b.sector || '(not set)').map(([k, g]) => [k, g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
+    fillTable('#an-month', ['Month', 'Jobs', 'ROM'], group(b => (b.decided_at || b.bid_date || '').slice(0, 7) || '(no date)').sort((a, z) => z[0].localeCompare(a[0])).map(([k, g]) => [k === '(no date)' ? k : new Date(k + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }), g.n, g.v ? money(g.v) : '—']), 'No passed jobs yet.');
     // Does the Go score predict wins? Go decisions with a score and a final won / lost outcome.
     const bands = [['80 and up', 80, 101], ['60 – 79', 60, 80], ['Under 60', 0, 60]];
     const goes = S.bids.filter(b => b.decision === 'go' && b.decision_score != null && ['Won', 'Lost'].includes(statusOf(b)));
@@ -1451,7 +1450,7 @@
     const rows = plRows();
     const q = (v) => { const x = v == null ? '' : String(v); return /[",\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
     const qsList = (FM.scorecard && FM.scorecard.questions) || [];
-    const head = ['Decided', 'Bid date', 'Folder', 'Project', 'Owner', 'Architect', 'Location', 'Sector', 'Delivery', 'Published value', 'Score', 'Gate failed', 'Reasons', 'Note', 'Decided by', 'Winner', 'Winning price'].concat(qsList.flatMap(qq => [qq.label, qq.label + ' – why']));
+    const head = ['Decided', 'Bid date', 'Folder', 'Project', 'Owner', 'Architect', 'Location', 'Sector', 'Delivery', 'ROM', 'Score', 'Gate failed', 'Reasons', 'Note', 'Decided by', 'Winner', 'Winning price'].concat(qsList.flatMap(qq => [qq.label, qq.label + ' – why']));
     const lines = [head.join(',')].concat(rows.map(b => { const sc = scoreOf(b) || {}; const r = (b.scorecard && b.scorecard.ratings) || {}; const n = b.score_notes || {};
       return [b.decided_at ? b.decided_at.slice(0, 10) : '', b.bid_date, b.id || b._id, b.project, b.owner, b.architect, b.location, b.sector, b.delivery, ceilingOf(b) || '', b.decision_score ?? (sc.rated ? sc.score : ''), sc.gate || '', reasonsOf(b).join('; '), b.decision_note, b.decided_by || b.nobid_by, b.passed_winner, b.passed_amount || ''].concat(qsList.flatMap(qq => [r[qq.key] || '', n[qq.key] || ''])).map(q).join(','); }));
     const dl = await claude.use('downloads');
@@ -1476,11 +1475,13 @@
       const pbtn = el('button', 'proj-btn', b.project); pbtn.type = 'button'; pbtn.title = 'Edit details';
       pbtn.addEventListener('click', () => { S.editing = b._id; renderGoNoGo(); });
       ttl.appendChild(pbtn);
-      ttl.appendChild(el('span', 'o', [b.owner, b.location, b.value_label && b.value_label !== 'Not published' ? fmtVal(b.value_label) : '', b.source ? 'via ' + b.source : ''].filter(Boolean).join(' · ')));
+      ttl.appendChild(el('span', 'o', [b.owner, b.location, b.source ? 'via ' + b.source : ''].filter(Boolean).join(' · ')));
       { const af = el('label', 'garch'); af.appendChild(el('span', 'fl', 'Architect')); const ai = el('input'); ai.type = 'text'; ai.maxLength = 120; ai.placeholder = 'Firm (city) – contact'; ai.value = b.architect || ''; ai.disabled = !S.canWrite; ai.setAttribute('aria-label', 'Architect for ' + b.project); ai.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ architect: ai.value.trim() }); } catch (e) { writeFailed(e); } }); af.appendChild(ai);
         af.appendChild(el('span', 'fl', 'Sector')); const ss = el('select'); ss.disabled = !S.canWrite; ss.setAttribute('aria-label', 'Sector for ' + b.project);
         ['', ...SECTORS.concat(b.sector && !SECTORS.includes(b.sector) ? [b.sector] : [])].forEach(v => { const o = el('option', null, v || '—'); o.value = v; if ((b.sector || '') === v) o.selected = true; ss.appendChild(o); });
         ss.addEventListener('change', async () => { try { await S.db.doc('bids/' + b._id).update({ sector: ss.value }); } catch (e) { writeFailed(e); } }); af.appendChild(ss);
+        af.appendChild(el('span', 'fl', 'ROM')); const ri = el('input'); ri.type = 'text'; ri.inputMode = 'decimal'; ri.className = 'grom'; ri.placeholder = '$0'; ri.value = romOf(b) ? money(romOf(b)) : ''; ri.disabled = !S.canWrite; ri.setAttribute('aria-label', 'ROM for ' + b.project);
+        ri.addEventListener('change', async () => { const v = ri.value.trim() ? parseMoney(ri.value) : null; if (Number.isNaN(v)) { ri.value = romOf(b) ? money(romOf(b)) : ''; showBanner('Enter the ROM as a dollar amount, like $1,250,000 or 1.25M.'); return; } ri.value = v ? money(v) : ''; try { await S.db.doc('bids/' + b._id).update({ rom: v }); } catch (e) { writeFailed(e); } }); af.appendChild(ri);
         ttl.appendChild(af); }
       head.appendChild(ttl);
       const right = el('div', 'cright');
@@ -1557,7 +1558,7 @@
     ev.preventDefault(); const m = $('#gng-msg'); m.className = 'msg';
     if (!S.db || !S.canWrite) { m.className = 'msg err'; m.textContent = 'You need edit access to add bids.'; return; }
     const project = $('#g-project').value.trim(); if (!project) { m.className = 'msg err'; m.textContent = 'Project name is required.'; return; }
-    const f = { project, date: $('#g-date').value || '', owner: $('#g-owner').value.trim(), architect: $('#g-arch').value.trim(), location: $('#g-loc').value.trim(), value: $('#g-val').value.trim() };
+    const f = { project, date: $('#g-date').value || '', owner: $('#g-owner').value.trim(), architect: $('#g-arch').value.trim(), location: $('#g-loc').value.trim(), rom: $('#g-val').value.trim() };
     try {
       let id = safeId(project.toUpperCase()).slice(0, 40); if (S.bids.some(b => b._id === id)) id = id.slice(0, 32) + '-' + Date.now().toString(36).slice(-6);
       const docData = Object.assign(newBidDoc(f), { status: 'Lead', source: $('#g-source').value || '', sector: $('#g-sector').value || '', bid_time: '' });
@@ -1577,7 +1578,7 @@
   $('#addform').addEventListener('submit', async (ev) => {
     ev.preventDefault(); const m = $('#add-msg'); m.className = 'msg';
     if (!S.db || !S.canWrite) { m.className = 'msg err'; m.textContent = 'You need edit access to add bids.'; return; }
-    const f = { project: $('#f-project').value.trim(), folder: $('#f-folder').value.trim(), date: $('#f-date').value, time: $('#f-time').value.trim(), bid_opening: $('#f-open').value.trim(), owner: $('#f-owner').value.trim(), architect: $('#f-arch').value.trim(), location: $('#f-loc').value.trim(), value: $('#f-val').value.trim() };
+    const f = { project: $('#f-project').value.trim(), folder: $('#f-folder').value.trim(), date: $('#f-date').value, time: $('#f-time').value.trim(), bid_opening: $('#f-open').value.trim(), owner: $('#f-owner').value.trim(), architect: $('#f-arch').value.trim(), location: $('#f-loc').value.trim(), rom: $('#f-val').value.trim() };
     if (!f.project || !f.date) { m.className = 'msg err'; m.textContent = 'Project name and bid date are required.'; return; }
     try { await addBid(f); $('#addform').reset(); $('#addform').hidden = true; m.textContent = ''; }
     catch (e) { m.className = 'msg err'; m.textContent = e.message && !e.code ? e.message : 'That bid did not save.'; if (e.code) writeFailed(e); }
