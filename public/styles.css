@@ -438,3 +438,8 @@ header.top .spacer { flex: 1; }
 .fav-star.on { color: #F5B400; }
 .fav-gap { display: inline-block; width: 24px; }
 @media (max-width: 860px) { .fav-bar { display: none; } }
+
+/* User Permissions grid */
+.perm-grid th.c, .perm-grid td.c { text-align: center; width: 90px; }
+.perm-grid tr.pg td { background: var(--tint, #f3f3f3); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--soft, #666); }
+.perm-grid input[type=radio] { width: 18px; height: 18px; accent-color: var(--orange, #F15A22); }

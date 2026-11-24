@@ -121,10 +121,14 @@ const ID_RE = /^[A-Za-z0-9_.~:@+-]{1,200}$/;
 const MAX_DOC = 256 * 1024;
 
 // Estimating is for office logins only: the Workforce Manager, Office Staff and the Office Manager.
-const canEstimateUser = (u) => !!u && ['admin', 'office', 'office_admin'].includes(u.role);
+const estLvl = (u) => (u && u.perm ? Math.max(u.perm.est_schedule || 0, u.perm.est_gng || 0, u.perm.est_history || 0) : 0);
+const canEstimateUser = (u) => estLvl(u) >= 1;
 
 function mountEstimating(api, db, h) {
   const { audit, bad, num, int, HttpError, adminOnly } = h;
+  const importOnly = h.importOnly || adminOnly;
+  // Reading the board needs Read only on any estimating page; saving needs Standard on one of them.
+  const canEditEst = (req, res, next) => (estLvl(req.user) >= 2 ? next() : res.status(403).json({ error: 'You can view the bid board but not change it.' }));
   db.exec(SCHEMA);
   db.exec(STORE_SCHEMA);
   migrateLeads(db);
@@ -208,14 +212,14 @@ function mountEstimating(api, db, h) {
     if (coll === 'timeoff') return res.json({ id, data: liveTimeOff() });
     res.json({ id, data: read(coll, id) });
   });
-  api.put('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+  api.put('/estimating/store/:coll/:id', canEditEst, (req, res) => {
     const [coll, id] = target(req.params.coll, req.params.id);
     if (coll === 'timeoff') return res.json({ id }); // built from the app's time off; nothing to store
     write(req, coll, id, body(req));
     if (coll === 'bids') audit(req, read(coll, id) ? 'save' : 'create', 'est_bid', null, { id, project: req.body.project });
     res.json({ id });
   });
-  api.patch('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+  api.patch('/estimating/store/:coll/:id', canEditEst, (req, res) => {
     const [coll, id] = target(req.params.coll, req.params.id);
     if (coll === 'timeoff') return res.json({ id });
     const cur = read(coll, id);
@@ -225,14 +229,14 @@ function mountEstimating(api, db, h) {
     if (coll === 'bids' && ('status' in patch || 'decision' in patch)) audit(req, 'update', 'est_bid', null, { id, status: patch.status, decision: patch.decision });
     res.json({ id });
   });
-  api.post('/estimating/store/:coll', canEstimate, (req, res) => {
+  api.post('/estimating/store/:coll', canEditEst, (req, res) => {
     const { coll } = req.params;
     if (!COLLECTIONS.has(coll)) throw new HttpError(404, 'Unknown board collection.');
     const id = require('node:crypto').randomBytes(10).toString('base64url');
     write(req, coll, id, body(req));
     res.json({ id });
   });
-  api.delete('/estimating/store/:coll/:id', canEstimate, (req, res) => {
+  api.delete('/estimating/store/:coll/:id', canEditEst, (req, res) => {
     const [coll, id] = target(req.params.coll, req.params.id);
     const cur = read(coll, id);
     db.prepare('DELETE FROM est_docs WHERE coll = ? AND id = ?').run(coll, id);
@@ -242,7 +246,7 @@ function mountEstimating(api, db, h) {
 
   // One-time load of the Claude bid board's data: { docs: [{ coll, id, data }] }. Existing documents
   // with the same id are replaced, so running it again is safe.
-  api.post('/estimating/import', adminOnly, (req, res) => {
+  api.post('/estimating/import', importOnly, (req, res) => {
     const docs = Array.isArray(req.body?.docs) ? req.body.docs : null;
     if (!docs || !docs.length) throw bad('Nothing to import.');
     const counts = {};

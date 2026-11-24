@@ -1308,7 +1308,10 @@
   const RATING = { good: 1, ok: 0.5, poor: 0 };
   const RATE_LBL = [['good', 'Good'], ['ok', 'OK'], ['poor', 'Poor']];
   const FM = { me: null, scorecard: null, nobid: NOBID_REASONS, sources: [] };
-  (window.FM_READY || Promise.resolve(null)).then(x => { if (x) Object.assign(FM, x); { const ss = $('#g-sector'); if (ss && !ss.options.length) ['', ...SECTORS].forEach(v => { const o = el('option', null, v || '—'); o.value = v; ss.appendChild(o); }); }
+  (window.FM_READY || Promise.resolve(null)).then(x => { if (x) Object.assign(FM, x);
+    // Read only on this page (User Permissions): show everything, change nothing.
+    { const key = { schedule: 'est_schedule', gng: 'est_gng', history: 'est_history' }[VIEW]; const lv = FM.me && FM.me.perm ? FM.me.perm[key] || 0 : 2;
+      if (lv < 2) { S.canWrite = false; ['#add-open', '#gng-add-open'].forEach(sel => { const b = $(sel); if (b) b.hidden = true; }); showBanner('Read only: you can view this page but not change it. Ask the Workforce Manager or Office Manager for access.'); renderAll(); } } { const ss = $('#g-sector'); if (ss && !ss.options.length) ['', ...SECTORS].forEach(v => { const o = el('option', null, v || '—'); o.value = v; ss.appendChild(o); }); }
     const sel = $('#g-source'); if (sel) { sel.textContent = ''; [''].concat(FM.sources || []).forEach(v => { const o = el('option', null, v || '—'); o.value = v; sel.appendChild(o); }); } renderGoNoGo(); });
   function scoreOf(b) {
     const cfg = FM.scorecard; if (!cfg) return null;

@@ -161,7 +161,7 @@ test('hours already used before the app count as used, and can be cleared', asyn
   assert.equal(b.prior_used, 0); assert.equal(b.left, 80);
 });
 
-test('requests: staff -> Office Manager, superintendents -> both managers, union -> Workforce Manager', async () => {
+test('requests: staff and superintendents -> Office Manager, union -> Workforce Manager', async () => {
   sent.length = 0;
   // Mon Mar 1 – Fri Mar 5 next year style range; weekends skipped.
   const r = await alice('POST', '/time-off/request', { from: `${year}-06-07`, to: `${year}-06-13`, weekdays_only: true, reason: 'Vacation', note: 'Lake week' });
@@ -172,7 +172,7 @@ test('requests: staff -> Office Manager, superintendents -> both managers, union
   sent.length = 0;
   assert.equal((await sue('POST', '/time-off/request', { from: `${year}-04-12`, reason: 'PTO' })).status, 200);
   await flush();
-  assert.equal(sent[0].to, 'boss@example.com, om@example.com');
+  assert.equal(sent[0].to, 'om@example.com');
   sent.length = 0;
   assert.equal((await dan('POST', '/time-off/request', { from: `${year}-04-12`, reason: 'Jury duty' })).status, 200);
   await flush();
@@ -301,7 +301,7 @@ test('upgrade from v9: office roster, logins, requests and allowances move onto 
   assert.equal(up.prepare('SELECT COUNT(*) AS n FROM time_off WHERE employee_id = ?').get(emp('Sarah').id).n, 0); // cancelled not carried over
   assert.equal(up.prepare("SELECT hours FROM leave_allowances WHERE employee_id = ? AND kind = 'pto'").get(emp('Pat').id).hours, 160);
   assert.equal(up.prepare("SELECT value FROM settings WHERE key = 'staff_pto_default_hours'").get().value, '96');
-  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(up.prepare('PRAGMA user_version').get().user_version, 15);
   up.close();
   require('node:fs').rmSync(file, { force: true });
 });
