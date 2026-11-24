@@ -65,6 +65,8 @@ const tradeChoices = () => [...new Set(['Carpenter', 'Laborer', 'Operating Engin
 const isSuperOrForeman = (e) => ['superintendent', 'general_foreman'].includes(e.employee_type) || (e.employee_type === 'union' && /\bforeman\b/i.test(e.classification || ''));
 const isProjectManager = (e) => e.employee_type === 'project_manager';
 const isOfficeType = (t) => t === 'staff' || t === 'project_manager';
+// A partial day off (e.g. 1 hour) doesn't block scheduling that day.
+const partialOff = (o) => !!o && Number(o.hours) > 0 && Number(o.hours) < ((S.settings && S.settings.default_hours) || 8);
 const fullName = (e) => `${e.first_name} ${e.last_name}`;
 const shortName = (e) => `${e.first_name} ${e.last_name.charAt(0)}.`;
 const isWeekend = (i) => i >= 5;
@@ -227,7 +229,6 @@ function shell() {
   const r = currentRoute();
   const roleName = ROLE_NAMES[S.user.role];
   const visible = ROUTES.filter((x) => !x.show || x.show());
-  const groupName = Object.fromEntries(MENU_GROUPS);
   const favs = getFavs().filter((p) => visible.some((x) => x.path === p));
   const favBarHtml = (list) => (list.length ? `<div class="fav-bar" role="navigation" aria-label="Favorites"><span class="fav-lbl">★ Favorites</span>${list.map((p) => { const x = visible.find((v) => v.path === p); return x ? `<a href="#/${p}" class="${x === r ? 'active' : ''}">${esc(x.label)}</a>` : ''; }).join('')}</div>`
     : '<div class="fav-bar empty"><span class="fav-lbl">★ Favorites</span><span class="fav-hint">Star pages in the menu to pin them here</span></div>');
@@ -242,7 +243,7 @@ function shell() {
     <header class="top">
       <a class="brand" href="#/${visible[0].path}" title="${esc(S.settings.company_name || '')}"><img src="/logo.jpg" alt="Fager-McGee Commercial Construction"></a>
       <button class="tools-btn" aria-haspopup="true" aria-expanded="false" aria-controls="tools-panel">
-        <span class="tools-kicker">${esc(groupName[r.group || 'company'] || 'Tools')}</span>
+        <span class="tools-kicker">Company Tools</span>
         <span class="tools-cur">${esc(r.label)} <span class="caret">▾</span></span></button>
       ${favBar}
       <span class="spacer"></span>
@@ -622,11 +623,12 @@ function personBoard() {
           const list = map[`${e.id}|${day}`] || []; const o = off[`${e.id}|${day}`];
           const split = list.length > 1;
           const inner = list.length ? list.map((a) => chip(a, split ? a.job_number : `${a.job_number} ${a.project_name}`)).join('')
+              + (o ? `<div class="chip off" data-off="${o.id}" title="${esc(o.reason || '')}">Off ${fmtH(o.hours)}h${o.reason ? ' – ' + esc(o.reason) : ''}</div>` : '')
               + (canSchedule() ? `<button class="add-btn split" data-emp="${e.id}|${day}" title="Add a second job this day">+ split</button>` : '')
-            : o ? `<div class="chip off" data-off="${o.id}" title="${esc(o.reason || '')}">Off${o.reason ? ' – ' + esc(o.reason) : ''}</div>`
+            : o ? `<div class="chip off" data-off="${o.id}" title="${esc(o.reason || '')}">Off${partialOff(o) ? ` ${fmtH(o.hours)}h` : ''}${o.reason ? ' – ' + esc(o.reason) : ''}</div>`
             : `<span class="avail">available</span>`;
           const total = list.reduce((sum, a) => sum + a.planned_hours, 0);
-          return `<td class="person-cell ${total > (d.totals.warn_daily_hours || 8) ? 'over-day' : ''} ${!list.length && !o && canSchedule() ? 'can' : ''} ${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''} ${holidayOn(day) ? 'holiday' : ''}" ${!list.length && !o ? `data-emp="${e.id}|${day}"` : ''}>${inner}</td>`;
+          return `<td class="person-cell ${total > (d.totals.warn_daily_hours || 8) ? 'over-day' : ''} ${!list.length && !(o && !partialOff(o)) && canSchedule() ? 'can' : ''} ${isWeekend(i) ? 'weekend' : ''} ${day === today ? 'today' : ''} ${holidayOn(day) ? 'holiday' : ''}" ${!list.length && !(o && !partialOff(o)) ? `data-emp="${e.id}|${day}"` : ''}>${inner}</td>`;
         }).join('')}
         <td class="tot ${wk > 40 ? 'over40' : ''}">${fmtH(wk)}</td></tr>`;
     }).join('')}</tbody>
@@ -640,12 +642,13 @@ function personMobile() {
   return `${dayTabs()}<div class="pcard"><div class="pb">${personRows().map((e) => {
     const list = map[e.id] || []; const o = off[e.id];
     const total = list.reduce((sum, a) => sum + a.planned_hours, 0);
-    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--tint)" ${!list.length && !o ? `data-emp="${e.id}|${day}" class="person-cell ${canSchedule() ? 'can' : ''}"` : ''}>
+    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--tint)" ${!list.length && !(o && !partialOff(o)) ? `data-emp="${e.id}|${day}" class="person-cell ${canSchedule() ? 'can' : ''}"` : ''}>
       <div><b>${esc(fullName(e))}</b><div class="small muted">${esc(e.trade || '')}</div></div>
       <div class="right" style="max-width:60%;display:grid;gap:4px;justify-items:end;align-content:start">${list.length
         ? list.map((a) => `<span class="pill job" data-aid="${a.id}">${esc(a.job_number)} ${list.length > 1 ? `${fmtH(a.planned_hours)}h` : esc(a.project_name)}</span>`).join('')
           + (total > (d.totals.warn_daily_hours || 8) ? `<span class="over-flag">⚠ ${fmtH(total)} h</span>` : '')
-        : o ? '<span class="pill off">Off</span>' : '<span class="avail">available</span>'}</div>
+          + (o ? `<span class="pill off">Off ${fmtH(o.hours)}h</span>` : '')
+        : o ? `<span class="pill off">Off${partialOff(o) ? ` ${fmtH(o.hours)}h` : ''}</span>` : '<span class="avail">available</span>'}</div>
     </div>`;
   }).join('')}</div></div>`;
 }
@@ -662,7 +665,7 @@ function dispatchBoard(el) {
   const off = new Map(d.time_off.filter((o) => o.off_date === day).map((o) => [o.employee_id, o]));
   const trades = [...new Set(S.crew.map((e) => e.trade).filter(Boolean))].sort();
   const trade = S.dispatchTrade || '';
-  const pool = S.crew.filter((e) => !byPerson[e.id] && !off.has(e.id) && (!trade || e.trade === trade));
+  const pool = S.crew.filter((e) => !byPerson[e.id] && !(off.has(e.id) && !partialOff(off.get(e.id))) && (!trade || e.trade === trade));
   const groups = {};
   for (const e of pool) (groups[e.trade || 'No trade'] ||= []).push(e);
   const projects = visibleProjects(day);
@@ -869,7 +872,7 @@ function assignModal(pre) {
     booked = {}; offMap = {};
     for (const w of weeks.values()) {
       for (const a of w.assignments) ((booked[a.employee_id] ||= {})[a.work_date] ||= []).push(a);
-      for (const o of w.time_off) (offMap[o.employee_id] ||= {})[o.off_date] = true;
+      for (const o of w.time_off) if (!partialOff(o)) (offMap[o.employee_id] ||= {})[o.off_date] = true;
     }
   };
   indexWeeks();

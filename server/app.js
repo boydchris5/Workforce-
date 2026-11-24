@@ -926,7 +926,11 @@ function createApp(db, opts = {}) {
   // ---- assignments (double-booking protected) -------------------------------------
   const findBookings = db.prepare(`SELECT a.id, a.project_id, a.planned_hours, p.job_number, p.name AS project_name
     FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? AND a.work_date = ? AND a.approval_status <> 'rejected' ORDER BY a.id`);
-  const findOff = db.prepare("SELECT reason FROM time_off WHERE employee_id = ? AND off_date = ? AND status = 'approved'");
+  const findOff = db.prepare("SELECT reason, hours FROM time_off WHERE employee_id = ? AND off_date = ? AND status = 'approved'");
+  // Partial days off (fewer hours than a normal day, e.g. leaving an hour early) don't block the
+  // day: the person can still be scheduled and the time off can be approved alongside the work.
+  const fullDayHours = () => Number(getSettings(db).default_hours) || 8;
+  const isPartialOff = (h) => h != null && Number(h) > 0 && Number(h) < fullDayHours();
   const empName = db.prepare("SELECT first_name || ' ' || last_name AS name, active FROM employees WHERE id = ?");
   const dayHours = db.prepare("SELECT COALESCE(SUM(planned_hours), 0) AS h FROM assignments WHERE employee_id = ? AND work_date = ? AND approval_status <> 'rejected'");
   // A rejected row for the same person/job/day is replaced when they're requested again.
@@ -937,7 +941,7 @@ function createApp(db, opts = {}) {
   // would pass the hard daily limit.
   function conflictFor(employeeId, workDate, { projectId, hours = 0 }, ignoreId) {
     const off = findOff.get(employeeId, workDate);
-    if (off) return { type: 'time_off', message: `is off${off.reason ? ` (${off.reason})` : ''}` };
+    if (off && !isPartialOff(off.hours)) return { type: 'time_off', message: `is off${off.reason ? ` (${off.reason})` : ''}` };
     const others = findBookings.all(employeeId, workDate).filter((b) => b.id !== ignoreId);
     const same = others.find((b) => b.project_id === projectId);
     if (same) return { type: 'booked', message: `is already scheduled on ${same.job_number} – ${same.project_name}`, project_id: same.project_id };
@@ -1418,8 +1422,8 @@ function createApp(db, opts = {}) {
         decided_by = excluded.decided_by, decided_at = excluded.decided_at, reject_reason = NULL WHERE time_off.status <> 'approved'`);
     tx(db, () => {
       for (const d of dates) {
-        const booked = findBookings.all(eid, d);
-        if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((x) => x.job_number).join(', ')}. Remove that first.`); continue; }
+        const booked = isPartialOff(h) ? [] : findBookings.all(eid, d);
+        if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((x) => x.job_number).join(', ')}. Remove that first, or enter fewer hours for a partial day.`); continue; }
         added += up.run(eid, d, reason, h, str(req.body.note, 500), batch, req.user.id, req.user.id).changes;
       }
     });
@@ -1485,7 +1489,7 @@ function createApp(db, opts = {}) {
     tx(db, () => {
       for (const r of rows) {
         if (approve) {
-          const booked = findBookings.all(r.employee_id, r.off_date);
+          const booked = isPartialOff(r.hours) ? [] : findBookings.all(r.employee_id, r.off_date);
           if (booked.length) { conflicts.push(`${r.first_name} ${r.last_name} ${r.off_date}: scheduled on ${booked.map((x) => x.job_number).join(', ')} – move them first`); continue; }
         }
         db.prepare(`UPDATE time_off SET status = ?, decided_by = ?, decided_at = datetime('now'), reject_reason = ? WHERE id = ?`)
@@ -1618,7 +1622,7 @@ function createApp(db, opts = {}) {
       for (const d of dates) {
         if (other.get(first.employee_id, d)) { conflicts.push(`${d}: already has other time off`); continue; }
         if (status === 'approved') {
-          const booked = findBookings.all(first.employee_id, d);
+          const booked = isPartialOff(h) ? [] : findBookings.all(first.employee_id, d);
           if (booked.length) { conflicts.push(`${d}: scheduled on ${booked.map((x) => x.job_number).join(', ')} – move them first`); continue; }
         }
         ins.run(first.employee_id, d, reason, h, note, batch, first.created_by, status, first.created_at || new Date().toISOString(),
