@@ -352,3 +352,21 @@ test('Verify Hours: the Office Manager and accounting (Payroll access) can use i
   assert.equal((await om('POST', '/timecards/rematch', { from: d, to: d })).status, 200);
   assert.ok(a);
 });
+
+test('a partial day off (e.g. 1 hour) can be requested, approved and scheduled alongside work', async () => {
+  const d = `${year}-05-12`;
+  await boss('POST', '/assignments', { project_id: job, employee_ids: [eSue], dates: [d], planned_hours: 8 });
+  assert.equal((await sue('POST', '/time-off/request', { from: d, reason: 'PTO', hours: 1, note: 'leaving an hour early' })).status, 200);
+  const g = (await boss('GET', '/leave/requests')).body.pending.find((x) => x.employee_id === eSue && x.start_date === d);
+  const r = (await boss('POST', '/time-off/decide', { ids: g.ids, action: 'approve' })).body;
+  assert.equal(r.approved, 1, JSON.stringify(r)); assert.equal(r.conflicts.length, 0);
+  // Still schedulable the same day on another job, and the 1 hour shows on the schedule.
+  const job2 = (await boss('POST', '/projects', { job_number: 'PD-2', name: 'Partial Day Job', superintendent_employee_id: eSue })).body.id;
+  assert.equal((await boss('POST', '/assignments', { project_id: job2, employee_ids: [eSue], dates: [d], planned_hours: 1 })).status, 200);
+  const off = (await boss('GET', `/schedule?start=${d}`)).body.time_off.find((o) => o.employee_id === eSue && o.off_date === d);
+  assert.equal(off.hours, 1);
+  // A full day off still blocks.
+  const d2 = `${year}-05-13`;
+  await boss('POST', '/time-off', { employee_id: eSue, from: d2, to: d2, reason: 'PTO', hours: 8 });
+  assert.equal((await boss('POST', '/assignments', { project_id: job2, employee_ids: [eSue], dates: [d2], planned_hours: 8 })).status, 409);
+});
