@@ -2908,44 +2908,91 @@ function estImportModal(page) {
 }
 
 // ---------------------------------------------------------------------------
-// User Permissions (Procore-style grid per login)
+// User Permissions (Procore-style grid per login) and editable templates
 // ---------------------------------------------------------------------------
+function permGrid(box, r, cur, locked, onChange) {
+  box.innerHTML = `<table class="list perm-grid"><thead><tr><th>Tool</th>${r.levels.map((l) => `<th class="c">${esc(l)}</th>`).join('')}</tr></thead>
+    <tbody>${r.tools.map((t, i) => `${i === 0 || r.tools[i - 1].group !== t.group ? `<tr class="pg"><td colspan="${r.levels.length + 1}">${esc(t.group)}</td></tr>` : ''}<tr>
+      <td>${esc(t.label)}${locked.has(t.key) ? ' <span class="small muted">(Workforce Manager only)</span>' : ''}<div class="small muted">${esc(cur[t.key] && t.levels[cur[t.key]] ? t.levels[cur[t.key]] : 'No access')}</div></td>
+      ${r.levels.map((_, li) => `<td class="c">${li === 0 || t.levels[li] ? `<input type="radio" name="p_${t.key}" value="${li}" ${cur[t.key] === li ? 'checked' : ''} ${locked.has(t.key) ? 'disabled' : ''} title="${esc(li ? t.levels[li] : 'None')}" aria-label="${esc(t.label)}: ${esc(r.levels[li])}">` : ''}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  $$('input', box).forEach((x) => (x.onchange = () => { cur[x.name.slice(2)] = Number(x.value); onChange(); permGrid(box, r, cur, locked, onChange); }));
+}
+const permSummary = (r, p) => { const lv = ['—', 'R', 'S', 'A']; return r.tools.filter((t) => p[t.key] > 0).map((t) => `${t.label} ${lv[p[t.key]]}`).join(' · ') || 'No access'; };
+
 async function renderPermissions(page) {
   const r = await api('GET', '/permissions');
-  const tpl = r.templates; const lv = ['—', 'R', 'S', 'A'];
-  const summary = (p) => r.tools.filter((t) => p[t.key] > 0).map((t) => `${t.label} ${lv[p[t.key]]}`).join(' · ') || 'No access';
+  const tpl = r.templates; const tab = S.permTab || 'users';
   page.innerHTML = `<div class="toolbar"><h1 style="margin:0">User Permissions</h1><span class="spacer"></span>
-      <span class="small muted">R = Read only · S = Standard · A = Admin. Click a login to change what it can see and do.</span></div>
-    <div class="table-wrap"><table class="list"><thead><tr><th>Login</th><th>Type / department</th><th>Template</th><th>Access</th></tr></thead>
+      <div class="seg">${[['users', 'Users'], ['templates', 'Templates']].map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="small muted" style="margin:-4px 0 10px">R = Read only · S = Standard · A = Admin. ${tab === 'users' ? 'Click a login to change what it can see and do.' : 'Click a template to change it. New logins and anyone set to a template pick up its access.'}</div>
+    <div id="perm-body"></div>`;
+  $$('[data-tab]', page).forEach((b) => (b.onclick = () => { S.permTab = b.dataset.tab; renderPermissions(page); }));
+  const body = $('#perm-body', page);
+  if (tab === 'templates') {
+    body.innerHTML = `<div class="toolbar"><span class="spacer"></span><button class="primary" data-act="new-tpl">+ New template</button></div>
+      <div class="table-wrap"><table class="list"><thead><tr><th>Template</th><th class="right">People using it</th><th>Access</th><th></th></tr></thead>
+      <tbody>${Object.entries(tpl).map(([k, t]) => `<tr class="click" data-tpl="${esc(k)}"><td><b>${esc(t.label)}</b></td><td class="right">${t.users || 0}</td>
+        <td class="small">${esc(permSummary(r, t.perm))}</td><td class="nowrap"><button class="link" data-del-tpl="${esc(k)}">delete</button></td></tr>`).join('')}</tbody></table></div>`;
+    $$('tr[data-tpl]', body).forEach((tr) => (tr.onclick = (e) => { if (e.target.closest('[data-del-tpl]')) return; templateModal(r, tr.dataset.tpl, () => renderPermissions(page)); }));
+    $('[data-act=new-tpl]', body).onclick = () => templateModal(r, null, () => renderPermissions(page));
+    $$('[data-del-tpl]', body).forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation(); const t = tpl[b.dataset.delTpl];
+      if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = t.users ? `delete? (${t.users} keep their access, shown as Custom)` : 'delete?'; return; }
+      try { await api('DELETE', `/permissions/templates/${encodeURIComponent(b.dataset.delTpl)}`); toast(`Deleted ${t.label}`); renderPermissions(page); } catch (err) { toast(err.message, true); }
+    }));
+    return;
+  }
+  body.innerHTML = `<div class="table-wrap"><table class="list"><thead><tr><th>Login</th><th>Type / department</th><th>Template</th><th>Access</th></tr></thead>
     <tbody>${r.users.map((u) => `<tr class="${u.editable ? 'click' : ''}" data-id="${u.id}" style="${u.active ? '' : 'opacity:.55'}">
       <td><b>${esc(u.name)}</b><div class="small muted">${esc(u.username)} · ${esc(ROLE_NAMES[u.role] || u.role)}${u.active ? '' : ' · inactive'}</div></td>
       <td class="small">${esc([TYPE_LABEL[u.employee_type] || '', u.department || ''].filter(Boolean).join(' · ') || '—')}</td>
-      <td class="small">${u.template ? esc(tpl[u.template]?.label || u.template) : u.custom ? 'Custom' : `<span class="muted">Not set (suggested: ${esc(tpl[u.suggested]?.label || '')})</span>`}</td>
-      <td class="small">${esc(summary(u.perm))}</td></tr>`).join('')}</tbody></table></div>`;
-  $$('tr[data-id]', page).forEach((tr) => { const u = r.users.find((x) => x.id === Number(tr.dataset.id)); if (u.editable) tr.onclick = () => permModal(u, r, () => renderPermissions(page)); });
+      <td class="small">${u.template && tpl[u.template] ? esc(tpl[u.template].label) : u.custom ? 'Custom' : `<span class="muted">Not set${u.suggested && tpl[u.suggested] ? ` (suggested: ${esc(tpl[u.suggested].label)})` : ''}</span>`}</td>
+      <td class="small">${esc(permSummary(r, u.perm))}</td></tr>`).join('')}</tbody></table></div>`;
+  $$('tr[data-id]', body).forEach((tr) => { const u = r.users.find((x) => x.id === Number(tr.dataset.id)); if (u.editable) tr.onclick = () => permModal(u, r, () => renderPermissions(page)); });
 }
 
 function permModal(u, r, after) {
   let cur = { ...u.perm }; let template = u.template || '';
   const locked = new Set(r.locked || []);
-  const draw = () => {
-    $('#perm-grid', m.el).innerHTML = `<table class="list perm-grid"><thead><tr><th>Tool</th>${r.levels.map((l) => `<th class="c">${esc(l)}</th>`).join('')}</tr></thead>
-      <tbody>${r.tools.map((t, i) => `${i === 0 || r.tools[i - 1].group !== t.group ? `<tr class="pg"><td colspan="${r.levels.length + 1}">${esc(t.group)}</td></tr>` : ''}<tr>
-        <td>${esc(t.label)}${locked.has(t.key) ? ' <span class="small muted">(Workforce Manager only)</span>' : ''}<div class="small muted">${esc(t.levels[cur[t.key]] && cur[t.key] ? t.levels[cur[t.key]] : 'No access')}</div></td>
-        ${r.levels.map((_, li) => `<td class="c">${li === 0 || t.levels[li] ? `<input type="radio" name="p_${t.key}" value="${li}" ${cur[t.key] === li ? 'checked' : ''} ${locked.has(t.key) ? 'disabled' : ''} title="${esc(li ? t.levels[li] : 'None')}" aria-label="${esc(t.label)}: ${esc(r.levels[li])}">` : ''}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-    $$('#perm-grid input', m.el).forEach((x) => (x.onchange = () => { cur[x.name.slice(2)] = Number(x.value); template = ''; $('[name=tpl]', m.el).value = ''; draw(); }));
-  };
   const m = modal({
     title: `Permissions – ${u.name}`, wide: true,
     body: `<div class="grid2"><label>Permissions template<select name="tpl"><option value="">Custom (as set below)</option>${Object.entries(r.templates).map(([k, t]) => opt(k, t.label + (k === u.suggested ? ' (suggested)' : ''), template)).join('')}</select></label>
-        <div class="small muted" style="align-self:end">Picking a template fills in the grid. You can then change any row for this person.</div></div>
+        <div class="small muted" style="align-self:end">Picking a template fills in the grid. Changing a row afterwards makes this person Custom, so later template changes leave them alone.</div></div>
       <div id="perm-grid"></div>`,
     footer: '<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save permissions</button>',
   });
-  $('[name=tpl]', m.el).onchange = (e) => { template = e.target.value; if (template) { const t = r.templates[template].perm; cur = { ...t }; for (const k of locked) cur[k] = u.perm[k]; } draw(); };
+  const box = $('#perm-grid', m.el);
+  const draw = () => permGrid(box, r, cur, locked, () => { template = ''; $('[name=tpl]', m.el).value = ''; });
+  $('[name=tpl]', m.el).onchange = (e) => { template = e.target.value; if (template) { cur = { ...r.templates[template].perm }; for (const k of locked) cur[k] = u.perm[k]; } draw(); };
   draw();
   $('[data-act=save]', m.el).onclick = async () => {
     try { await api('PUT', `/permissions/${u.id}`, { perm: cur, template: template || null }); m.close(); toast(`Saved – ${u.name}'s access updates the next time they open the app`); after(); }
     catch (e) { errorBox(m.el, e.message); }
+  };
+}
+
+function templateModal(r, key, after) {
+  const t = key ? r.templates[key] : { label: '', perm: Object.fromEntries(r.tools.map((x) => [x.key, 0])), users: 0 };
+  const cur = { ...t.perm }; const locked = new Set(r.locked || []);
+  const m = modal({
+    title: key ? `Template – ${t.label}` : 'New permissions template', wide: true,
+    body: `<label>Template name<input name="label" maxlength="60" value="${esc(t.label)}" placeholder="e.g. Senior Estimator"></label>
+      <div id="tpl-grid"></div>
+      ${key && t.users ? `<div class="card" style="margin-top:10px"><b>${t.users} ${t.users === 1 ? 'person uses' : 'people use'} this template.</b>
+        <label class="check"><input type="radio" name="apply" value="all" checked> Update everyone using it now</label>
+        <label class="check"><input type="radio" name="apply" value="new"> Only use it for people I assign it to from now on</label>
+        <div class="small muted">People you changed by hand show as Custom and are never updated.</div></div>` : ''}`,
+    footer: '<span class="spacer"></span><button data-close>Cancel</button><button class="primary" data-act="save">Save template</button>',
+  });
+  permGrid($('#tpl-grid', m.el), r, cur, locked, () => {});
+  $('[data-act=save]', m.el).onclick = async () => {
+    const label = $('[name=label]', m.el).value.trim();
+    if (!label) return errorBox(m.el, 'Give the template a name.');
+    const apply = ($('[name=apply]:checked', m.el) || {}).value || 'new';
+    try {
+      if (key) { const res = await api('PUT', `/permissions/templates/${encodeURIComponent(key)}`, { label, perm: cur, apply }); m.close(); toast(res.updated ? `Saved – ${res.updated} ${res.updated === 1 ? 'person' : 'people'} updated` : 'Template saved'); }
+      else { await api('POST', '/permissions/templates', { label, perm: cur }); m.close(); toast(`Added ${label}`); }
+      after();
+    } catch (e) { errorBox(m.el, e.message); }
   };
 }

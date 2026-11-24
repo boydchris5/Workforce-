@@ -324,6 +324,13 @@ CREATE TABLE IF NOT EXISTS office_time_off_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_otor_staff ON office_time_off_requests(office_staff_id, start_date);
 CREATE INDEX IF NOT EXISTS idx_otor_status ON office_time_off_requests(status, start_date);
+-- Permission templates (User Permissions → Templates). Empty = the built-in set.
+CREATE TABLE IF NOT EXISTS perm_templates (
+  key TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  perm TEXT NOT NULL,
+  sort INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 const DEFAULT_SETTINGS = {
