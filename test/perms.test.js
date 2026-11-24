@@ -69,3 +69,32 @@ test('the Office Manager manages permissions but never Admin / Payroll, her own 
   // Field logins can't open permissions at all.
   assert.equal((await (await login('sup'))('GET', '/permissions')).status, 403);
 });
+
+test('templates can be edited, added and deleted; "update everyone" only touches logins still on the template', async () => {
+  const boss = await login('boss');
+  // Two logins on the Field template; one later changed by hand (becomes Custom).
+  await boss('PUT', `/permissions/${idOf('field')}`, { template: 'field' });
+  await boss('PUT', `/permissions/${idOf('sup')}`, { template: 'field' });
+  await boss('PUT', `/permissions/${idOf('sup')}`, { perm: { ...perms.TEMPLATES.field.perm, verify: 2 }, template: null });
+  let list = (await boss('GET', '/permissions')).body;
+  assert.equal(list.templates.field.users, 1);
+  // Give Field read-only Go / No-Go, applied to everyone using it.
+  const r = await boss('PUT', '/permissions/templates/field', { label: 'Field', perm: { ...perms.TEMPLATES.field.perm, est_gng: 1 }, apply: 'all' });
+  assert.equal(r.body.updated, 1);
+  list = (await boss('GET', '/permissions')).body;
+  assert.equal(list.users.find((u) => u.username === 'field').perm.est_gng, 1);
+  assert.equal(list.users.find((u) => u.username === 'sup').perm.est_gng, 0); // Custom: left alone
+  // A new template can be assigned to a login.
+  const nt = await boss('POST', '/permissions/templates', { label: 'Senior Estimator', perm: { est_schedule: 3, est_gng: 3, est_history: 2, timeoff: 1 } });
+  assert.equal(nt.body.key, 'senior_estimator');
+  assert.equal((await boss('PUT', `/permissions/${idOf('clerk')}`, { template: 'senior_estimator' })).body.perm.est_gng, 3);
+  // Deleting it keeps the clerk's access; they just show as Custom.
+  assert.equal((await boss('DELETE', '/permissions/templates/senior_estimator')).status, 200);
+  const clerk = (await boss('GET', '/permissions')).body.users.find((u) => u.username === 'clerk');
+  assert.equal(clerk.template, null); assert.equal(clerk.perm.est_gng, 3);
+  // The Office Manager can't raise Admin / Payroll in a template.
+  const om = await login('om');
+  await om('PUT', '/permissions/templates/field', { label: 'Field', perm: { ...perms.TEMPLATES.field.perm, admin: 3, payroll: 3 } });
+  const f = (await boss('GET', '/permissions')).body.templates.field;
+  assert.equal(f.perm.admin, 0); assert.equal(f.perm.payroll, 0);
+});

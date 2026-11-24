@@ -2137,25 +2137,83 @@ function createApp(db, opts = {}) {
   // never the Admin or Payroll rows and never their own, so nobody can raise their own access.
   function canManagePerms(req) { return lvl(req, 'admin') >= 3 || req.user.role === 'office_admin'; }
   const LOCKED_FOR_OM = ['admin', 'payroll'];
+  // Templates live in perm_templates once anyone edits them; until then, the built-in set.
+  function seedTemplates() {
+    if (db.prepare('SELECT COUNT(*) AS n FROM perm_templates').get().n) return;
+    const ins = db.prepare('INSERT INTO perm_templates (key, label, perm, sort) VALUES (?, ?, ?, ?)');
+    Object.entries(perms.TEMPLATES).forEach(([k, t], i) => ins.run(k, t.label, JSON.stringify(t.perm), i));
+  }
+  function getTemplates() {
+    const rows = db.prepare('SELECT key, label, perm FROM perm_templates ORDER BY sort, label').all();
+    if (!rows.length) return Object.fromEntries(Object.entries(perms.TEMPLATES).map(([k, t]) => [k, { label: t.label, perm: { ...t.perm } }]));
+    return Object.fromEntries(rows.map((r) => [r.key, { label: r.label, perm: perms.normalize(JSON.parse(r.perm)) }]));
+  }
+  const needPermsAdmin = (req) => { if (!canManagePerms(req)) throw new HttpError(403, 'You do not have access to this.'); };
   api.get('/permissions', (req, res) => {
-    if (!canManagePerms(req)) throw new HttpError(403, 'You do not have access to this.');
+    needPermsAdmin(req);
+    const templates = getTemplates();
     const users = db.prepare(`SELECT u.id, u.username, u.name, u.role, u.active, u.can_view_payroll, u.can_view_schedule, u.permissions, u.perm_template,
       e.employee_type, e.department, e.first_name, e.last_name FROM users u LEFT JOIN employees e ON e.id = u.employee_id ORDER BY u.active DESC, u.name`).all()
       .map((u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, active: !!u.active, employee_type: u.employee_type, department: u.department,
-        perm: perms.permsFor(u), custom: !!u.permissions, template: u.perm_template || null, suggested: perms.suggestTemplate(u),
+        perm: perms.permsFor(u), custom: !!u.permissions, template: u.perm_template || null, suggested: templates[perms.suggestTemplate(u)] ? perms.suggestTemplate(u) : null,
         editable: lvl(req, 'admin') >= 3 || (u.id !== req.user.id && u.role !== 'admin') }));
-    res.json({ levels: perms.LEVELS, tools: perms.TOOLS, templates: Object.fromEntries(Object.entries(perms.TEMPLATES).map(([k, t]) => [k, { label: t.label, perm: t.perm }])),
-      locked: lvl(req, 'admin') >= 3 ? [] : LOCKED_FOR_OM, users });
+    for (const t of Object.values(templates)) t.users = 0;
+    for (const u of users) if (u.template && templates[u.template]) templates[u.template].users += 1;
+    res.json({ levels: perms.LEVELS, tools: perms.TOOLS, templates, locked: lvl(req, 'admin') >= 3 ? [] : LOCKED_FOR_OM, users });
+  });
+  // Create or change a template. apply = 'all' also updates every login using it (logins changed
+  // by hand show as Custom and are left alone); otherwise it's used for new assignments only.
+  api.post('/permissions/templates', (req, res) => {
+    needPermsAdmin(req); seedTemplates();
+    const label = str(req.body.label, 60); if (!label) throw bad('Give the template a name.');
+    let key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'template';
+    while (db.prepare('SELECT 1 FROM perm_templates WHERE key = ?').get(key)) key += '_2';
+    const next = perms.normalize(req.body.perm || {});
+    if (lvl(req, 'admin') < 3) for (const k of LOCKED_FOR_OM) next[k] = 0;
+    db.prepare('INSERT INTO perm_templates (key, label, perm, sort) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM perm_templates))').run(key, label, JSON.stringify(next));
+    audit(req, 'create', 'perm_template', null, { key, label, perm: next });
+    res.json({ key });
+  });
+  api.put('/permissions/templates/:key', (req, res) => {
+    needPermsAdmin(req); seedTemplates();
+    const key = String(req.params.key);
+    const row = db.prepare('SELECT * FROM perm_templates WHERE key = ?').get(key);
+    if (!row) throw new HttpError(404, 'Template not found.');
+    const full = lvl(req, 'admin') >= 3;
+    const label = str(req.body.label, 60) || row.label;
+    const next = perms.normalize(req.body.perm || JSON.parse(row.perm));
+    if (!full) { const old = perms.normalize(JSON.parse(row.perm)); for (const k of LOCKED_FOR_OM) next[k] = old[k]; }
+    db.prepare('UPDATE perm_templates SET label = ?, perm = ? WHERE key = ?').run(label, JSON.stringify(next), key);
+    let updated = 0;
+    if (req.body.apply === 'all') {
+      const users = db.prepare('SELECT * FROM users WHERE perm_template = ?').all(key)
+        .filter((u) => full || (u.id !== req.user.id && u.role !== 'admin'));
+      const up = db.prepare('UPDATE users SET permissions = ?, can_view_payroll = ? WHERE id = ?');
+      tx(db, () => { for (const u of users) { const p = { ...next }; if (!full) { const cur = perms.permsFor(u); for (const k of LOCKED_FOR_OM) p[k] = cur[k]; } if (u.id === req.user.id && p.admin < 3) p.admin = 3; up.run(JSON.stringify(p), p.payroll >= 1 ? 1 : 0, u.id); updated += 1; } });
+    }
+    audit(req, 'update', 'perm_template', null, { key, label, perm: next, apply: req.body.apply === 'all', updated });
+    res.json({ key, updated });
+  });
+  api.delete('/permissions/templates/:key', (req, res) => {
+    needPermsAdmin(req); seedTemplates();
+    const key = String(req.params.key);
+    if (!db.prepare('SELECT 1 FROM perm_templates WHERE key = ?').get(key)) throw new HttpError(404, 'Template not found.');
+    if (db.prepare('SELECT COUNT(*) AS n FROM perm_templates').get().n <= 1) throw bad('Keep at least one template.');
+    // People using it keep their current access; they just show as Custom.
+    tx(db, () => { db.prepare('UPDATE users SET perm_template = NULL WHERE perm_template = ?').run(key); db.prepare('DELETE FROM perm_templates WHERE key = ?').run(key); });
+    audit(req, 'delete', 'perm_template', null, { key });
+    res.json({ ok: true });
   });
   api.put('/permissions/:id', (req, res) => {
-    if (!canManagePerms(req)) throw new HttpError(403, 'You do not have access to this.');
+    needPermsAdmin(req);
     const id = int(req.params.id);
     const u = db.prepare('SELECT u.*, e.employee_type, e.department FROM users u LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ?').get(id);
     if (!u) throw new HttpError(404, 'User not found.');
     const full = lvl(req, 'admin') >= 3;
     if (!full && (u.id === req.user.id || u.role === 'admin')) throw new HttpError(403, 'Only the Workforce Manager can change this login.');
-    const template = req.body.template && perms.TEMPLATES[req.body.template] ? req.body.template : null;
-    let next = perms.normalize(req.body.perm || (template ? perms.TEMPLATES[template].perm : {}));
+    const templates = getTemplates();
+    const template = req.body.template && templates[req.body.template] ? req.body.template : null;
+    let next = perms.normalize(req.body.perm || (template ? templates[template].perm : {}));
     if (!full) { const cur = perms.permsFor(u); for (const k of LOCKED_FOR_OM) next[k] = cur[k]; } // the Office Manager can't change these
     if (u.id === req.user.id && next.admin < 3) throw bad('You can\'t remove your own Admin access.');
     db.prepare('UPDATE users SET permissions = ?, perm_template = ?, can_view_payroll = ? WHERE id = ?').run(JSON.stringify(next), template, next.payroll >= 1 ? 1 : 0, id);
