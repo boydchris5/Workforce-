@@ -17,6 +17,6 @@ test('a v13 database without users.can_estimate is upgraded on open', () => {
   const conn = db.open(file);
   const cols = conn.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   assert.ok(cols.includes('can_estimate'));
-  assert.equal(conn.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(conn.prepare('PRAGMA user_version').get().user_version, 15);
   conn.close();
 });

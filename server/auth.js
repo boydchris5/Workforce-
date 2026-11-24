@@ -1,4 +1,5 @@
 'use strict';
+const { permsFor } = require('./perms');
 const crypto = require('node:crypto');
 
 const SESSION_DAYS = 30;
@@ -42,7 +43,7 @@ function cookieHeader(token, secure) {
 
 function sessionMiddleware(db) {
   const find = db.prepare(`
-    SELECT u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.can_view_schedule, u.can_estimate, e.employee_type
+    SELECT u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.can_view_schedule, u.can_estimate, u.permissions, u.perm_template, e.employee_type, e.department
     FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN employees e ON e.id = u.employee_id
     WHERE s.token = ? AND s.expires_at > ? AND u.active = 1`);
   return (req, _res, next) => {
@@ -53,8 +54,12 @@ function sessionMiddleware(db) {
       if (u) {
         // A login linked to a Project Manager employee requests crew on their own jobs, like a superintendent.
         const isPm = u.role !== 'admin' && u.employee_type === 'project_manager';
-        req.user = { ...u, can_view_payroll: u.role === 'admin' || !!u.can_view_payroll, is_pm: isPm,
-          can_schedule: ['admin', 'super'].includes(u.role) || isPm, can_view_schedule: u.can_view_schedule || (isPm ? 1 : 0), can_estimate: ['admin', 'office', 'office_admin'].includes(u.role) };
+        // Per-tool permission grid (saved, or worked out from the role for logins not yet edited).
+        const perm = permsFor(u);
+        const { permissions: _p, ...rest } = u;
+        req.user = { ...rest, perm, is_pm: isPm,
+          can_view_payroll: perm.payroll >= 1, can_schedule: perm.schedule >= 2, can_view_schedule: perm.schedule >= 1 ? 1 : 0,
+          can_estimate: perm.est_schedule >= 1 || perm.est_gng >= 1 || perm.est_history >= 1 };
         req.sessionToken = token;
       }
     }

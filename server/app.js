@@ -10,6 +10,7 @@ const { createNotifier, renderEmail } = require('./notify');
 const { holidaysForYear, holidayMap } = require('./holidays');
 const leavePolicy = require('./leavepolicy');
 const { mountEstimating } = require('./estimating');
+const perms = require('./perms');
 
 class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -66,23 +67,26 @@ function createApp(db, opts = {}) {
   const api = express.Router();
   // Schedule / request crew: the Workforce Manager, superintendents, and project managers (a login
   // linked to a Project Manager employee).
-  const canSchedule = (req, res, next) => (req.user && req.user.can_schedule ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
+  // Per-tool permissions (server/perms.js): need('projects', 2) = Standard or higher on Projects.
+  const lvl = (req, tool) => (req.user && req.user.perm ? req.user.perm[tool] || 0 : 0);
+  const need = (tool, min) => (req, res, next) => (lvl(req, tool) >= min ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
+  const isMgr = (req) => lvl(req, 'schedule') >= 3; // schedules anyone, approves crew requests
+  const canSchedule = need('schedule', 2);
   // Add / edit projects and change orders: Workforce Manager, superintendents, project managers.
-  const canEditProjects = canSchedule;
+  const canEditProjects = need('projects', 2);
   // Procore project sync and spreadsheet import: Workforce Manager and project managers.
-  const canSyncProjects = (req, res, next) => (req.user && (req.user.role === 'admin' || req.user.is_pm) ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
-  const adminOnly = auth.requireRole('admin');
+  const canSyncProjects = need('projects', 3);
+  const adminOnly = need('admin', 3);
   // Verify Hours: the Workforce Manager, superintendents, the Office Manager, and accounting
   // (any login with Payroll access). Importing / syncing time cards: everyone but superintendents.
-  const canVerify = (req, res, next) => (req.user && (['admin', 'super', 'office_admin'].includes(req.user.role) || req.user.can_view_payroll)
-    ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
-  const canTimecards = (req, res, next) => (req.user && (['admin', 'office_admin'].includes(req.user.role) || req.user.can_view_payroll)
-    ? next() : res.status(403).json({ error: 'You do not have access to this.' }));
+  const canVerify = need('verify', 2);
+  const canViewVerify = need('verify', 1);
+  const canTimecards = need('verify', 3);
   // The Office Manager adds and edits employees too (office staff live in the same list).
-  const canEditPeople = auth.requireRole('admin', 'super', 'office_admin');
+  const canEditPeople = need('employees', 2);
   // Everyone but the Workforce Manager and superintendents sees approved field work only
   // and can't edit it (field staff, and office logins allowed to view the schedule).
-  const viewOnly = (req) => !req.user.can_schedule;
+  const viewOnly = (req) => lvl(req, 'schedule') < 2;
   const today = () => new Date().toISOString().slice(0, 10);
 
   // ---- email notifications -----------------------------------------------------
@@ -276,7 +280,7 @@ function createApp(db, opts = {}) {
     db.prepare('INSERT OR IGNORE INTO skills (name) VALUES (?)').run(name);
     res.json(db.prepare('SELECT * FROM skills WHERE name = ?').get(name));
   });
-  api.delete('/skills/:id', adminOnly, (req, res) => {
+  api.delete('/skills/:id', need('employees', 3), (req, res) => {
     db.prepare('DELETE FROM skills WHERE id = ?').run(int(req.params.id));
     res.json({ ok: true });
   });
@@ -305,7 +309,7 @@ function createApp(db, opts = {}) {
     e.recent = db.prepare(`SELECT a.work_date, a.planned_hours, a.actual_hours, a.status, p.job_number, p.name AS project_name
       FROM assignments a JOIN projects p ON p.id = a.project_id WHERE a.employee_id = ? ORDER BY a.work_date DESC LIMIT 60`).all(e.id);
     e.time_off = db.prepare("SELECT id, off_date, reason, hours, status, reject_reason FROM time_off WHERE employee_id = ? AND off_date >= ? AND status <> 'rejected' ORDER BY off_date").all(e.id, addDays(today(), -30));
-    if (!viewOnly(req) || req.user.role === 'office_admin' || req.user.employee_id === e.id) e.leave = leaveBalance(e.id, Number(req.query.year) || Number(today().slice(0, 4)));
+    if (!viewOnly(req) || lvl(req, 'timeoff') >= 2 || req.user.employee_id === e.id) e.leave = leaveBalance(e.id, Number(req.query.year) || Number(today().slice(0, 4)));
     e.no_shows = db.prepare(`SELECT a.work_date, a.verify_note, p.job_number, p.name AS project_name, u.name AS verified_by_name
       FROM assignments a JOIN projects p ON p.id = a.project_id LEFT JOIN users u ON u.id = a.verified_by
       WHERE a.employee_id = ? AND a.status = 'no_show' ORDER BY a.work_date DESC LIMIT 50`).all(e.id);
@@ -418,7 +422,7 @@ function createApp(db, opts = {}) {
     throw new Error(`"${v}" is not Yes/No for Active`);
   }
 
-  api.post('/employees/import', adminOnly, (req, res) => {
+  api.post('/employees/import', need('employees', 3), (req, res) => {
     const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
     if (!rows.length) throw bad('The file has no rows.');
     if (rows.length > 5000) throw bad('Import at most 5,000 rows at a time.');
@@ -485,7 +489,7 @@ function createApp(db, opts = {}) {
     res.json({ committed: commit, summary, results: results.map(({ rec, existing_id, ...x }) => x) });
   });
 
-  api.delete('/employees/:id', adminOnly, (req, res) => {
+  api.delete('/employees/:id', need('employees', 3), (req, res) => {
     const id = int(req.params.id);
     const used = db.prepare('SELECT COUNT(*) AS n FROM assignments WHERE employee_id = ?').get(id).n;
     if (used) {
@@ -847,7 +851,7 @@ function createApp(db, opts = {}) {
   // Superintendents and project managers request crew on jobs where they are the listed
   // superintendent or project manager.
   function assertCanEdit(req, projectId) {
-    if (req.user.role === 'admin') return;
+    if (isMgr(req)) return;
     const p = projectRow.get(projectId);
     if (!p) throw bad('Project not found.');
     if (!req.user.employee_id) throw new HttpError(403, 'Your login is not linked to an employee record, so you have no projects to request crew for. Ask the workforce manager.');
@@ -855,11 +859,11 @@ function createApp(db, opts = {}) {
       throw new HttpError(403, `You can only request crew on your own projects. You are not the superintendent or project manager on ${p.job_number}.`);
     }
   }
-  const approvalFor = (req) => (req.user.role === 'admin'
+  const approvalFor = (req) => (isMgr(req)
     ? { approval_status: 'approved', approved_by: req.user.id, approved_at: new Date().toISOString() }
     : { approval_status: 'pending', approved_by: null, approved_at: null });
 
-  api.get('/schedule', (req, res) => {
+  api.get('/schedule', need('schedule', 1), (req, res) => {
     const start = weekStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10));
     const days = weekDates(start);
     const end = days[6];
@@ -907,7 +911,7 @@ function createApp(db, opts = {}) {
     res.json({
       start, end, days, projects, assignments, time_off: timeOff, slots, holidays: holidayMap(start, end),
       totals: { approval, open_slots: slots.filter((x) => x.status === 'open').length,
-        time_off_pending: req.user.role === 'admin' ? db.prepare("SELECT COUNT(DISTINCT COALESCE(batch, id)) AS n FROM time_off WHERE status = 'pending'").get().n : 0, hours: totalHours, assignments: assignments.length - approval.rejected, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
+        time_off_pending: lvl(req, 'timeoff') >= 3 ? new Set(db.prepare("SELECT COALESCE(t.batch, t.id) AS k, e.employee_type FROM time_off t JOIN employees e ON e.id = t.employee_id WHERE t.status = 'pending'").all().filter((r) => canApproveType(req, r.employee_type)).map((r) => r.k)).size : 0, hours: totalHours, assignments: assignments.length - approval.rejected, people: Object.keys(byEmployee).length, by_project: byProject, by_day: byDay, by_employee: byEmployee, over_day: overDay, warn_daily_hours: warnAt },
     });
   });
 
@@ -1040,7 +1044,7 @@ function createApp(db, opts = {}) {
     if (next.project_id !== cur.project_id) assertCanEdit(req, next.project_id);
     // A superintendent's change (or resubmitting a rejection) goes back to the manager for approval.
     const changed = ['employee_id', 'project_id', 'work_date', 'planned_hours', 'task'].some((k) => next[k] !== cur[k]);
-    const appr = req.user.role === 'admin'
+    const appr = isMgr(req)
       ? { approval_status: cur.approval_status === 'rejected' ? 'rejected' : 'approved', approved_by: cur.approved_by ?? req.user.id, approved_at: cur.approved_at ?? new Date().toISOString(), reject_reason: cur.reject_reason }
       : changed || cur.approval_status === 'rejected' ? { approval_status: 'pending', approved_by: null, approved_at: null, reject_reason: null }
         : { approval_status: cur.approval_status, approved_by: cur.approved_by, approved_at: cur.approved_at, reject_reason: cur.reject_reason };
@@ -1060,12 +1064,12 @@ function createApp(db, opts = {}) {
     res.json({ id, approval_status: next.approval_status, warnings: overWarnings([[next.employee_id, next.work_date]]) });
   });
 
-  api.delete('/assignments/:id', canVerify, (req, res) => {
+  api.delete('/assignments/:id', (req, res, next) => (lvl(req, 'schedule') >= 2 || lvl(req, 'verify') >= 2 ? next() : res.status(403).json({ error: 'You do not have access to this.' })), (req, res) => {
     const id = int(req.params.id);
     const cur = db.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
     if (!cur) throw new HttpError(404, 'Assignment not found.');
     // The Office Manager / accounting only remove time card entries on Verify Hours, never schedule entries.
-    if (req.user.can_schedule) assertCanEdit(req, cur.project_id);
+    if (lvl(req, 'schedule') >= 2) assertCanEdit(req, cur.project_id);
     else if (cur.source !== 'timecard') throw new HttpError(403, 'Only the Workforce Manager or a superintendent can remove scheduled work.');
     // If this person filled a trade request, the request goes back to open.
     db.prepare("UPDATE crew_request_slots SET status = 'open', assignment_id = NULL, decided_by = NULL, decided_at = NULL WHERE assignment_id = ?").run(id);
@@ -1081,7 +1085,7 @@ function createApp(db, opts = {}) {
     if (from === to) throw bad('Pick a different target week.');
     const projectId = int(req.body.project_id);
     if (projectId) assertCanEdit(req, projectId);
-    else if (req.user.role !== 'admin') throw bad('Pick one of your projects to copy.');
+    else if (!isMgr(req)) throw bad('Pick one of your projects to copy.');
     const offset = daysBetween(from, to);
     const appr = approvalFor(req);
     const src = db.prepare(`SELECT * FROM assignments WHERE work_date BETWEEN ? AND ? AND approval_status <> 'rejected' ${projectId ? 'AND project_id = ?' : ''} ORDER BY work_date, id`)
@@ -1108,8 +1112,8 @@ function createApp(db, opts = {}) {
   // ---- approvals -------------------------------------------------------------------
   // Pending requests (manager: all; superintendent: own projects) plus recent rejections.
   api.get('/requests', canSchedule, (req, res) => {
-    const mine = req.user.role === 'admin' ? '' : 'AND (p.superintendent_employee_id = ? OR p.project_manager_employee_id = ?)';
-    const args = req.user.role === 'admin' ? [] : [req.user.employee_id ?? -1, req.user.employee_id ?? -1];
+    const mine = isMgr(req) ? '' : 'AND (p.superintendent_employee_id = ? OR p.project_manager_employee_id = ?)';
+    const args = isMgr(req) ? [] : [req.user.employee_id ?? -1, req.user.employee_id ?? -1];
     const since = addDays(new Date().toISOString().slice(0, 10), -14);
     res.json({
       pending: db.prepare(`${assignmentSelect} WHERE a.approval_status = 'pending' ${mine} ORDER BY a.work_date, p.job_number, e.last_name`).all(...args),
@@ -1117,7 +1121,7 @@ function createApp(db, opts = {}) {
       open_slots: db.prepare(`${slotSelect} WHERE s.status = 'open' ${mine} ORDER BY s.work_date, p.job_number, s.trade, s.id`).all(...args),
       rejected_slots: db.prepare(`${slotSelect} WHERE s.status = 'rejected' AND s.work_date >= ? ${mine} ORDER BY s.work_date, p.job_number`).all(since, ...args),
       // Each pending day carries the person's balance for that year, so the manager can decide at a glance.
-      time_off: req.user.role === 'admin' ? db.prepare(`${timeOffSelect} WHERE t.status = 'pending' ORDER BY t.off_date, e.last_name`).all()
+      time_off: lvl(req, 'timeoff') >= 3 ? db.prepare(`${timeOffSelect} WHERE t.status = 'pending' ORDER BY t.off_date, e.last_name`).all().filter((r) => canApproveType(req, r.employee_type))
         .map((r) => { const kb = leaveBalance(r.employee_id, Number(r.off_date.slice(0, 4)))?.kinds[reasonKind(r.reason)]; return { ...r, counts: !!kb, pto_left: kb ? kb.left : null }; }) : [],
     });
   });
@@ -1199,7 +1203,7 @@ function createApp(db, opts = {}) {
   });
 
   // Manager puts a named employee on a trade request: creates the (approved) schedule entry.
-  api.post('/crew-requests/:id/fill', adminOnly, (req, res) => {
+  api.post('/crew-requests/:id/fill', need('schedule', 3), (req, res) => {
     const slot = db.prepare('SELECT * FROM crew_request_slots WHERE id = ?').get(int(req.params.id));
     if (!slot) throw new HttpError(404, 'Request not found.');
     if (slot.status !== 'open') throw bad('That request is no longer open.');
@@ -1221,7 +1225,7 @@ function createApp(db, opts = {}) {
     res.json({ assignment_id: id, warnings: overWarnings([[eid, slot.work_date]]) });
   });
 
-  api.post('/crew-requests/reject', adminOnly, (req, res) => {
+  api.post('/crew-requests/reject', need('schedule', 3), (req, res) => {
     const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
     const reason = str(req.body.reason, 300);
     if (!ids.length) throw bad('Nothing selected.');
@@ -1250,7 +1254,7 @@ function createApp(db, opts = {}) {
     res.json({ ok: true });
   });
 
-  api.post('/assignments/approve', adminOnly, (req, res) => {
+  api.post('/assignments/approve', need('schedule', 3), (req, res) => {
     const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
     if (!ids.length) throw bad('Nothing selected.');
     const conflicts = []; let approved = 0; const touched = [];
@@ -1273,7 +1277,7 @@ function createApp(db, opts = {}) {
     res.json({ approved, conflicts, warnings: overWarnings(touched) });
   });
 
-  api.post('/assignments/reject', adminOnly, (req, res) => {
+  api.post('/assignments/reject', need('schedule', 3), (req, res) => {
     const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(int).filter(Boolean);
     const reason = str(req.body.reason, 300);
     if (!ids.length) throw bad('Nothing selected.');
@@ -1297,7 +1301,11 @@ function createApp(db, opts = {}) {
   // Approved days block scheduling and show on the schedule and the Time Off calendar.
   const timeOffSelect = `SELECT t.*, e.first_name, e.last_name, e.trade, e.employee_type, e.department, cu.name AS requested_by_name, du.name AS decided_by_name
     FROM time_off t JOIN employees e ON e.id = t.employee_id LEFT JOIN users cu ON cu.id = t.created_by LEFT JOIN users du ON du.id = t.decided_by`;
-  const leaveApprover = auth.requireRole('admin', 'office_admin');
+  const leaveApprover = need('timeoff', 3);
+  // Who an approver can act for: the Workforce Manager (Admin) everyone; other approvers (the
+  // Office Manager) office staff, project managers and superintendents. Union crew go to the Workforce Manager.
+  const approvesAll = (req) => lvl(req, 'admin') >= 3;
+  function canApproveType(req, type) { return approvesAll(req) || isOffice(type) || type === 'superintendent'; }
   const empRow = db.prepare('SELECT * FROM employees WHERE id = ?');
   // Reasons each kind of employee can pick. Only PTO and Vacation use up allowance hours.
   const UNION_REASONS = ['Vacation', 'Sick / medical', 'Family leave', 'Jury duty', 'Union business', 'Training', 'Bereavement', 'Unpaid', 'Laid off', 'Other'];
@@ -1401,16 +1409,17 @@ function createApp(db, opts = {}) {
   function requestRecipients(type) {
     const om = emailsFor(['office_admin']); const wm = emailsFor(['admin']);
     if (isOffice(type)) return om.length ? om : wm;
-    if (type === 'superintendent') return [...wm, ...om];
+    if (type === 'superintendent') return om.length ? om : wm;
     return wm;
   }
 
   // Manager (or a superintendent, or the Office Manager for staff) enters time off: approved right away.
-  api.post('/time-off', auth.requireRole('admin', 'super', 'office_admin'), (req, res) => {
+  api.post('/time-off', need('timeoff', 2), (req, res) => {
     const eid = int(req.body.employee_id);
     const emp = empRow.get(eid);
     if (!emp) throw bad('Pick an employee.');
-    if (req.user.role === 'office_admin' && !isOffice(emp.employee_type)) throw new HttpError(403, 'The Office Manager enters time off for office staff only.');
+    const mayEnter = approvesAll(req) || (lvl(req, 'timeoff') >= 3 && canApproveType(req, emp.employee_type)) || (lvl(req, 'timeoff') === 2 && ['union', 'general_foreman'].includes(emp.employee_type) && emp.id !== req.user.employee_id);
+    if (!mayEnter) throw new HttpError(403, lvl(req, 'timeoff') >= 3 ? 'Union crew time off is entered by the Workforce Manager.' : 'You can enter time off for field crew only.');
     const dates = offDates(req.body);
     const reason = str(req.body.reason, 200); const h = offHours(req.body);
     checkWholeHours(emp, reason, h);
@@ -1523,9 +1532,9 @@ function createApp(db, opts = {}) {
     if (!row) return res.json({ ok: true });
     const type = typeOf(empRow.get(row.employee_id));
     const own = row.employee_id === req.user.employee_id && row.status !== 'approved';
-    const om = req.user.role === 'office_admin' && isOffice(type);
-    const sup = req.user.role === 'super' && ['union', 'general_foreman'].includes(type) && row.employee_id !== req.user.employee_id;
-    if (req.user.role !== 'admin' && !own && !om && !sup) {
+    const om = lvl(req, 'timeoff') >= 3 && canApproveType(req, type) && row.employee_id !== req.user.employee_id;
+    const sup = lvl(req, 'timeoff') === 2 && ['union', 'general_foreman'].includes(type) && row.employee_id !== req.user.employee_id;
+    if (!approvesAll(req) && !own && !om && !sup) {
       throw new HttpError(403, row.employee_id === req.user.employee_id && row.status === 'approved'
         ? 'Approved time off is locked. Ask the Office Manager or Workforce Manager to change it.'
         : 'You can only cancel your own requests.');
@@ -1596,7 +1605,7 @@ function createApp(db, opts = {}) {
     const rows = db.prepare(`${timeOffSelect} WHERE t.id IN (${ids.map(() => '?').join(',')}) ORDER BY t.off_date`).all(...ids);
     if (!rows.length) throw new HttpError(404, 'That time off no longer exists.');
     if (new Set(rows.map((r) => r.employee_id)).size > 1) throw bad('Edit one person\'s request at a time.');
-    if (req.user.role === 'office_admin' && !isOffice(rows[0].employee_type)) throw new HttpError(403, 'The Office Manager edits office staff time off only.');
+    if (!canApproveType(req, rows[0].employee_type)) throw new HttpError(403, 'Union crew time off is handled by the Workforce Manager only.');
     return rows;
   }
   const spanText = (rows) => shortDates(rows.map((r) => r.off_date));
@@ -1654,7 +1663,7 @@ function createApp(db, opts = {}) {
   });
 
   // Balances for everyone who has allowances (superintendents and office staff).
-  api.get('/leave/balances', auth.requireRole('admin', 'super', 'office_admin'), (req, res) => {
+  api.get('/leave/balances', need('timeoff', 2), (req, res) => {
     const year = int(req.query.year) || Number(today().slice(0, 4));
     const s = getSettings(db);
     res.json({
@@ -1710,7 +1719,7 @@ function createApp(db, opts = {}) {
   // Verify Hours works on the payroll week (settings.payroll_week_start, e.g. Wed–Tue).
   const payrollStart = (d) => periodStart(d || new Date().toISOString().slice(0, 10), Number(getSettings(db).payroll_week_start ?? 1));
 
-  api.get('/verification', canVerify, (req, res) => {
+  api.get('/verification', canViewVerify, (req, res) => {
     const start = payrollStart(date(req.query.start, 'start'));
     const end = addDays(start, 6);
     const projectId = int(req.query.project_id);
@@ -1991,7 +2000,7 @@ function createApp(db, opts = {}) {
     return db.prepare(`${assignmentSelect} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.work_date DESC, p.job_number, e.last_name LIMIT 20000`).all(...args);
   }
 
-  api.get('/records', (req, res) => {
+  api.get('/records', need('records', 1), (req, res) => {
     const rows = recordQuery(req.query);
     if (req.query.format === 'csv') {
       res.set('Content-Type', 'text/csv; charset=utf-8');
@@ -2021,7 +2030,7 @@ function createApp(db, opts = {}) {
   const allRates = () => db.prepare('SELECT * FROM employee_pay_rates').all();
 
   // Current rate (as of today) plus the full dated history for each active employee.
-  api.get('/payroll/rates', auth.requirePayroll, (_req, res) => {
+  api.get('/payroll/rates', need('payroll', 1), (_req, res) => {
     const today = new Date().toISOString().slice(0, 10);
     const history = db.prepare(`SELECT r.*, u.name AS created_by_name FROM employee_pay_rates r LEFT JOIN users u ON u.id = r.created_by
       ORDER BY r.employee_id, r.effective_date DESC`).all();
@@ -2036,7 +2045,7 @@ function createApp(db, opts = {}) {
   });
 
   // Add a rate effective on a date (replaces any rate already on that exact date).
-  api.post('/payroll/rates/:employeeId', auth.requirePayroll, (req, res) => {
+  api.post('/payroll/rates/:employeeId', need('payroll', 3), (req, res) => {
     const eid = int(req.params.employeeId);
     if (!empName.get(eid)) throw new HttpError(404, 'Employee not found.');
     const eff = date(req.body.effective_date, 'Effective date', true);
@@ -2051,7 +2060,7 @@ function createApp(db, opts = {}) {
   });
 
   // Remove a rate entered by mistake.
-  api.delete('/payroll/rates/entry/:id', auth.requirePayroll, (req, res) => {
+  api.delete('/payroll/rates/entry/:id', need('payroll', 3), (req, res) => {
     const r = db.prepare('SELECT employee_id, effective_date FROM employee_pay_rates WHERE id = ?').get(int(req.params.id));
     if (!r) throw new HttpError(404, 'Rate not found.');
     db.prepare('DELETE FROM employee_pay_rates WHERE id = ?').run(int(req.params.id));
@@ -2059,7 +2068,7 @@ function createApp(db, opts = {}) {
     res.json({ ok: true });
   });
 
-  api.get('/payroll/forecast', auth.requirePayroll, (req, res) => {
+  api.get('/payroll/forecast', need('payroll', 1), (req, res) => {
     const settings0 = getSettings(db);
     const payDow = Number(settings0.payroll_week_start ?? 1);
     const start = periodStart(date(req.query.start, 'start') || new Date().toISOString().slice(0, 10), payDow);
@@ -2100,9 +2109,9 @@ function createApp(db, opts = {}) {
   });
 
   // ---- users & settings (admin) -----------------------------------------------------
-  api.get('/users', canSchedule, (req, res) => {
-    const cols = req.user.role === 'admin' ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate' : 'u.id, u.name, u.role';
-    res.json(db.prepare(`SELECT ${cols} FROM users u WHERE u.active = 1 OR ? ORDER BY u.name`).all(req.user.role === 'admin' ? 1 : 0));
+  api.get('/users', (req, res, next) => (lvl(req, 'schedule') >= 2 || canManagePerms(req) ? next() : res.status(403).json({ error: 'You do not have access to this.' })), (req, res) => {
+    const cols = lvl(req, 'admin') >= 3 ? 'u.id, u.username, u.name, u.role, u.can_view_payroll, u.employee_id, u.office_staff_id, u.active, u.created_at, u.email, u.notify_requests, u.can_view_schedule, u.can_estimate' : 'u.id, u.name, u.role';
+    res.json(db.prepare(`SELECT ${cols} FROM users u WHERE u.active = 1 OR ? ORDER BY u.name`).all(lvl(req, 'admin') >= 3 ? 1 : 0));
   });
 
   const USER_ROLES = ['admin', 'super', 'viewer', 'office', 'office_admin'];
@@ -2122,6 +2131,37 @@ function createApp(db, opts = {}) {
     if ((isNew || pw) && pw.length < 8) throw bad('Password must be at least 8 characters.');
     return { u, pw };
   }
+
+  // ---- user permissions (Procore-style grid) -------------------------------------------
+  // The Workforce Manager edits anyone's. The Office Manager edits other non-admin logins, but
+  // never the Admin or Payroll rows and never their own, so nobody can raise their own access.
+  function canManagePerms(req) { return lvl(req, 'admin') >= 3 || req.user.role === 'office_admin'; }
+  const LOCKED_FOR_OM = ['admin', 'payroll'];
+  api.get('/permissions', (req, res) => {
+    if (!canManagePerms(req)) throw new HttpError(403, 'You do not have access to this.');
+    const users = db.prepare(`SELECT u.id, u.username, u.name, u.role, u.active, u.can_view_payroll, u.can_view_schedule, u.permissions, u.perm_template,
+      e.employee_type, e.department, e.first_name, e.last_name FROM users u LEFT JOIN employees e ON e.id = u.employee_id ORDER BY u.active DESC, u.name`).all()
+      .map((u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, active: !!u.active, employee_type: u.employee_type, department: u.department,
+        perm: perms.permsFor(u), custom: !!u.permissions, template: u.perm_template || null, suggested: perms.suggestTemplate(u),
+        editable: lvl(req, 'admin') >= 3 || (u.id !== req.user.id && u.role !== 'admin') }));
+    res.json({ levels: perms.LEVELS, tools: perms.TOOLS, templates: Object.fromEntries(Object.entries(perms.TEMPLATES).map(([k, t]) => [k, { label: t.label, perm: t.perm }])),
+      locked: lvl(req, 'admin') >= 3 ? [] : LOCKED_FOR_OM, users });
+  });
+  api.put('/permissions/:id', (req, res) => {
+    if (!canManagePerms(req)) throw new HttpError(403, 'You do not have access to this.');
+    const id = int(req.params.id);
+    const u = db.prepare('SELECT u.*, e.employee_type, e.department FROM users u LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ?').get(id);
+    if (!u) throw new HttpError(404, 'User not found.');
+    const full = lvl(req, 'admin') >= 3;
+    if (!full && (u.id === req.user.id || u.role === 'admin')) throw new HttpError(403, 'Only the Workforce Manager can change this login.');
+    const template = req.body.template && perms.TEMPLATES[req.body.template] ? req.body.template : null;
+    let next = perms.normalize(req.body.perm || (template ? perms.TEMPLATES[template].perm : {}));
+    if (!full) { const cur = perms.permsFor(u); for (const k of LOCKED_FOR_OM) next[k] = cur[k]; } // the Office Manager can't change these
+    if (u.id === req.user.id && next.admin < 3) throw bad('You can\'t remove your own Admin access.');
+    db.prepare('UPDATE users SET permissions = ?, perm_template = ?, can_view_payroll = ? WHERE id = ?').run(JSON.stringify(next), template, next.payroll >= 1 ? 1 : 0, id);
+    audit(req, 'permissions', 'user', id, { template, perm: next });
+    res.json({ id, perm: next, template });
+  });
 
   api.post('/users', adminOnly, (req, res) => {
     const { u, pw } = readUser(req.body, true);
@@ -2188,7 +2228,7 @@ function createApp(db, opts = {}) {
   });
 
   // ---- Estimating: possible bids, Go / No-Go scorecard ------------------------------
-  mountEstimating(api, db, { audit, bad, num, int, HttpError, adminOnly });
+  mountEstimating(api, db, { audit, bad, num, int, HttpError, adminOnly: need('est_gng', 3), importOnly: need('est_schedule', 3) });
 
   app.use('/api', api);
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
